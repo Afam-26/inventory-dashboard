@@ -8,7 +8,26 @@ import dashboardRoutes from "./routes/dashboard.js";
 import stockRoutes from "./routes/stock.js";
 
 const app = express();
-app.use(cors());
+const allowedOrigins = [
+  "https://inventory-dashboard-omega-five.vercel.app",
+  "http://localhost:5173",
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow non-browser requests (like curl/postman) with no origin
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    credentials: false,
+  })
+);
+
 app.use(express.json());
 
 app.get("/", (req, res) => res.send("Inventory API running ✅"));

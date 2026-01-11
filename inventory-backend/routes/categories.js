@@ -18,21 +18,16 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   try {
     const { name } = req.body;
-    if (!name?.trim()) {
-      return res.status(400).json({ message: "Name required" });
-    }
+    if (!name?.trim()) return res.status(400).json({ message: "Name required" });
 
-    await db.query(
-      "INSERT INTO categories (name) VALUES (?)",
-      [name.trim()]
-    );
-
+    await db.query("INSERT INTO categories (name) VALUES (?)", [name.trim()]);
     res.json({ message: "Category created" });
   } catch (err) {
-  console.error("CATEGORIES DB ERROR:", err.code, err.sqlMessage);
-  res.status(500).json({ message: "Database error", code: err.code });
+    console.error("CATEGORIES POST ERROR:", err.code, err.sqlMessage);
+    res.status(500).json({ message: "Database error", code: err.code });
   }
 });
+
 
 export default router;
 

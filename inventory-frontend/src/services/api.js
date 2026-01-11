@@ -1,4 +1,5 @@
-const API_BASE = "http://localhost:5000/api";
+const API_BASE = "https://inventory-dashboard-production.up.railway.app/api";
+
 
 async function safeJson(res) {
   const text = await res.text();

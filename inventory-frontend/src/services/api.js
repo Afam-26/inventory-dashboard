@@ -1,14 +1,15 @@
-const API_BASE = "https://inventory-dashboard-production.up.railway.app/api";
 
+const API_BASE =
+  (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
 
 async function safeJson(res) {
-  const text = await res.text();
   try {
-    return JSON.parse(text);
+    return await res.json();
   } catch {
-    throw new Error(text || "Invalid server response");
+    return {};
   }
 }
+
 
 export async function getCategories() {
   const res = await fetch(`${API_BASE}/categories`);

@@ -15,27 +15,17 @@ const allowedOrigins = new Set([
 
 app.use(
   cors({
-    origin: (origin, callback) => {
-      // Allow non-browser tools (curl, Postman) where Origin is undefined
-      if (!origin) return callback(null, true);
-
-      // Allow exact match
-      if (allowedOrigins.has(origin)) return callback(null, true);
-
-      // Allow Vercel preview deployments (optional but recommended)
-      // e.g. https://inventory-dashboard-xyz.vercel.app
-      if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(null, false); // <-- IMPORTANT: don't throw, just deny
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.has(origin)) return cb(null, true);
+      if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin)) return cb(null, true);
+      return cb(null, false);
     },
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
-app.options("*", cors());
+// Preflight
+app.options("/*", cors());
 
 
 app.use(express.json());

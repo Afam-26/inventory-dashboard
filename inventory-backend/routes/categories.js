@@ -20,6 +20,8 @@ router.post("/", async (req, res) => {
     const { name } = req.body;
     if (!name?.trim()) return res.status(400).json({ message: "Name required" });
 
+    console.log("POST /categories body:", req.body);
+
     await db.query("INSERT INTO categories (name) VALUES (?)", [name.trim()]);
     res.json({ message: "Category created" });
   } catch (err) {

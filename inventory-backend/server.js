@@ -8,25 +8,35 @@ import dashboardRoutes from "./routes/dashboard.js";
 import stockRoutes from "./routes/stock.js";
 
 const app = express();
-const allowedOrigins = [
+const allowedOrigins = new Set([
   "https://inventory-dashboard-omega-five.vercel.app",
   "http://localhost:5173",
-];
+]);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow non-browser requests (like curl/postman) with no origin
+      // Allow non-browser tools (curl, Postman) where Origin is undefined
       if (!origin) return callback(null, true);
 
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+      // Allow exact match
+      if (allowedOrigins.has(origin)) return callback(null, true);
 
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
+      // Allow Vercel preview deployments (optional but recommended)
+      // e.g. https://inventory-dashboard-xyz.vercel.app
+      if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(null, false); // <-- IMPORTANT: don't throw, just deny
     },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    credentials: false,
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+
+app.options("*", cors());
+
 
 app.use(express.json());
 

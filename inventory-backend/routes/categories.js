@@ -29,8 +29,8 @@ router.post("/", async (req, res) => {
 
     res.json({ message: "Category created" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Database error" });
+  console.error("CATEGORIES DB ERROR:", err.code, err.sqlMessage);
+  res.status(500).json({ message: "Database error", code: err.code });
   }
 });
 

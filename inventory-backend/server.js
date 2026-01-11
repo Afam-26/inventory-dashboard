@@ -8,6 +8,7 @@ import dashboardRoutes from "./routes/dashboard.js";
 import stockRoutes from "./routes/stock.js";
 
 const app = express();
+
 const allowedOrigins = new Set([
   "https://inventory-dashboard-omega-five.vercel.app",
   "http://localhost:5173",
@@ -18,15 +19,13 @@ app.use(
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (allowedOrigins.has(origin)) return cb(null, true);
-      if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin)) return cb(null, true);
+      if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin))
+        return cb(null, true);
       return cb(null, false);
     },
+    optionsSuccessStatus: 200,
   })
 );
-
-// Preflight
-app.options("/*", cors());
-
 
 app.use(express.json());
 

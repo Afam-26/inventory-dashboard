@@ -41,32 +41,14 @@ export default function App() {
           <main style={{ flex: 1, padding: 20 }}>
             <Routes>
               <Route path="/" element={<Dashboard />} />
-              <Route path="/products" element={<Products />} />
-              <Route path="/categories" element={<Categories />} />
-              <Route path="/stock" element={<Stock />} />
-
+              <Route path="/products" element={<RequireAdmin> <Products/> </RequireAdmin>}/>
+              <Route path="/categories"  element={<RequireAdmin> <Categories/> </RequireAdmin>}/>
+              <Route path="/stock" element={<RequireAdmin> <Stock /></RequireAdmin>}/>      
               {/* fallback */}
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </main>
-        </div>
-        <Route
-  path="/categories"
-  element={
-    <RequireAdmin>
-      <Categories />
-    </RequireAdmin>
-  }
-/>
-
-<Route
-  path="/products"
-  element={
-    <RequireAdmin>
-      <Products />
-    </RequireAdmin>
-  }
-/>
+        </div>  
       </div>
     </BrowserRouter>
   );

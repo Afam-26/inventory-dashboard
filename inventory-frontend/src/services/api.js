@@ -14,13 +14,15 @@ let authToken = localStorage.getItem("token") || "";
 
 export function setToken(token) {
   authToken = token || "";
-  if (token) localStorage.setItem("token", token);
+  if (authToken) localStorage.setItem("token", authToken);
   else localStorage.removeItem("token");
 }
 
-export function getToken() {
-  return authToken;
+function authHeaders() {
+  const t = authToken || localStorage.getItem("token");
+  return t ? { Authorization: `Bearer ${t}` } : {};
 }
+
 
 export function getStoredUser() {
   try {
@@ -34,12 +36,6 @@ export function setStoredUser(user) {
   if (user) localStorage.setItem("user", JSON.stringify(user));
   else localStorage.removeItem("user");
 }
-
-function authHeaders() {
-  const token = localStorage.getItem("token");
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 
 export async function login(email, password) {
   const res = await fetch(`${API_BASE}/auth/login`, {
@@ -66,13 +62,17 @@ export async function getCategories() {
 export async function addCategory(name) {
   const res = await fetch(`${API_BASE}/categories`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ name }),    
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ name }),
   });
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to add category");
   return data;
 }
+
 
 export async function getProducts() {
   const res = await fetch(`${API_BASE}/products`, {
@@ -97,13 +97,17 @@ export async function addProduct(payload) {
 export async function updateStock(payload) {
   const res = await fetch(`${API_BASE}/stock/update`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
     body: JSON.stringify(payload),
   });
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Stock update failed");
   return data;
 }
+
 
 export async function getMovements() {
   const res = await fetch(`${API_BASE}/stock/movements`, {
@@ -113,4 +117,5 @@ export async function getMovements() {
   if (!res.ok) throw new Error(data.message || "Failed to load movements");
   return data;
 }
+
 

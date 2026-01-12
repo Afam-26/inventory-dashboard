@@ -8,6 +8,7 @@ import dashboardRoutes from "./routes/dashboard.js";
 import stockRoutes from "./routes/stock.js";
 import authRoutes from "./routes/auth.js";
 
+
 const app = express();
 
 const allowedOrigins = new Set([
@@ -33,6 +34,7 @@ app.use("/api/auth", authRoutes);
 
 app.get("/", (req, res) => res.send("Inventory API running ✅"));
 
+app.use("/api/auth", authRoutes);
 app.use("/api/products", productsRoutes);
 app.use("/api/categories", categoriesRoutes);
 app.use("/api/dashboard", dashboardRoutes);

@@ -19,6 +19,7 @@ export default function Sidebar() {
         </Link>
         <Link to="/categories" style={{ color: "#fff", textDecoration: "none" }}>
           Categories
+          
         </Link>
         <Link to="/stock" style={{ color: "#fff", textDecoration: "none" }}>
           Stock In / Out

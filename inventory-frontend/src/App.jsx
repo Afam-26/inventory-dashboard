@@ -39,14 +39,13 @@ export default function App() {
         <div style={{ display: "flex", minHeight: "100vh" }}>
           <Sidebar user={user} />
           <main style={{ flex: 1, padding: 20 }}>
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/products" element={<RequireAdmin> <Products/> </RequireAdmin>}/>
-              <Route path="/categories"  element={<RequireAdmin> <Categories/> </RequireAdmin>}/>
-              <Route path="/stock" element={<RequireAdmin> <Stock /></RequireAdmin>}/>      
-              {/* fallback */}
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Routes>
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/products" element={<Products user={user} />} />
+                <Route path="/categories" element={<Categories user={user} />} />
+                <Route path="/stock" element={<Stock user={user} />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
           </main>
         </div>  
       </div>

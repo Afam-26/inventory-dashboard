@@ -8,18 +8,22 @@ export function requireAuth(req, res, next) {
     if (!token) return res.status(401).json({ message: "Missing token" });
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = payload; // { id, role, email }
+    req.user = payload; // { id, email, role, iat, exp }
     next();
-  } catch {
+  } catch (err) {
     return res.status(401).json({ message: "Invalid or expired token" });
   }
 }
 
 export function requireRole(...roles) {
   return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ message: "Unauthorized" });
-    if (!roles.includes(req.user.role))
+    if (!req.user) return res.status(401).json({ message: "Not authenticated" });
+    if (!roles.includes(req.user.role)) {
       return res.status(403).json({ message: "Forbidden" });
+    }
     next();
   };
 }
+
+// optional shortcut
+export const requireAdmin = requireRole("admin");

@@ -36,8 +36,10 @@ export function setStoredUser(user) {
 }
 
 function authHeaders() {
-  return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+  const token = localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
+
 
 export async function login(email, password) {
   const res = await fetch(`${API_BASE}/auth/login`, {

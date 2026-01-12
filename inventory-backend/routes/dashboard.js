@@ -1,9 +1,10 @@
 import express from "express";
 import { db } from "../config/db.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.get("/summary", async (req, res) => {
+router.get("/summary", requireAuth, async (req, res) => {
   const [[totalProducts]] = await db.query("SELECT COUNT(*) AS total FROM products");
 
   const [[lowStock]] = await db.query(

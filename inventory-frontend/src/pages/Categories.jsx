@@ -4,7 +4,8 @@ import { getCategories, addCategory } from "../services/api";
 
 
 
-export default function Categories() {
+export default function Categories({user}) {
+  const isAdmin = user?.role === "admin";
   const [categories, setCategories] = useState([]);
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(true);
@@ -44,6 +45,7 @@ export default function Categories() {
   return (
     <div>
       <h1>Categories</h1>
+      {isAdmin && (<form onSubmit={handleSubmit}>
 
       <form onSubmit={handleSubmit} style={{ marginBottom: 20 }}>
         <input
@@ -56,9 +58,11 @@ export default function Categories() {
           Add
         </button>
       </form>
+      </form>)}
 
       {loading && <p>Loading...</p>}
       {error && <p style={{ color: "red" }}>{error}</p>}
+     
 
       <ul>
         {categories.map((c) => (

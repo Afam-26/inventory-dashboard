@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { getProducts, updateStock, getMovements } from "../services/api";
 
-export default function Stock() {
+export default function Stock({user}) {
+  const isAdmin = user?.role === "admin";
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
   const [error, setError] = useState("");
@@ -57,6 +58,7 @@ export default function Stock() {
     <div>
       <h1>Stock In / Out</h1>
 
+      {isAdmin && (<form onSubmit={handleSubmit}>
       <form onSubmit={handleSubmit} style={{ display: "grid", gap: 10, maxWidth: 600, marginBottom: 20 }}>
         <select
           className="input"
@@ -66,7 +68,7 @@ export default function Stock() {
           <option value="">Select product</option>
           {products.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.name} (Stock: {p.quantity})
+              {p.name} (Stock: {p.quantity ?? 0})
             </option>
           ))}
         </select>
@@ -102,9 +104,11 @@ export default function Stock() {
           Update Stock
         </button>
       </form>
+      </form>)}
 
       {loading && <p>Loading...</p>}
       {error && <p style={{ color: "red" }}>{error}</p>}
+      
 
       <h2>Recent Movements</h2>
       <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>

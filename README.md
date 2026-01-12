@@ -34,3 +34,17 @@ npm run dev
 
 SKU stands for Stock Keeping Unit.
 
+
+
+What you’ve achieved (big deal)
+
+You now have:
+
+✔ React SPA on Vercel
+✔ Node/Express API on Railway
+✔ MySQL on Railway
+✔ Proper CORS (no crashes, no wildcards)
+✔ Real production data flow
+✔ Inventory system working end-to-end
+
+This is exactly how real production systems are deployed.

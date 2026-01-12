@@ -1,10 +1,12 @@
 import express from "express";
 import { db } from "../config/db.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+
 
 const router = express.Router();
 
 // Get latest movements
-router.get("/movements", async (req, res) => {
+router.get("/movements", requireAuth, async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT sm.id, sm.product_id, p.name AS product_name, sm.type, sm.quantity, sm.reason, sm.created_at
@@ -21,7 +23,7 @@ router.get("/movements", async (req, res) => {
 });
 
 // Stock IN / OUT
-router.post("/update", async (req, res) => {
+router.post("/update", requireAuth, requireRole("admin"), async (req, res) => {
   const connection = await db.getConnection();
   try {
     const { product_id, type, quantity, reason = "" } = req.body;

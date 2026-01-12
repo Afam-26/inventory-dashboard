@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { getProducts, addProduct, getCategories } from "../services/api";
 
+
+
 export default function Products() {
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -130,7 +132,7 @@ export default function Products() {
             <tr><td colSpan="7" style={{ textAlign: "center" }}>No products yet</td></tr>
           )}
         </tbody>
-      </table>
+      </table>      
     </div>
   );
 }

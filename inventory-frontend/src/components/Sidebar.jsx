@@ -27,3 +27,6 @@ export default function Sidebar() {
     </div>
   );
 }
+
+
+console.log("API BASE:", import.meta.env.VITE_API_BASE);

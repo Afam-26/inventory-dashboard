@@ -1,25 +1,72 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
+import { useState } from "react";
+import Login from "./pages/Login";
+import { getStoredUser, setToken, setStoredUser } from "./services/api";
+import RequireAdmin from "./components/RequireAdmin";
 
-// ✅ Import your real pages (not inline test components)
 import Dashboard from "./pages/Dashboard";
 import Products from "./pages/Products";
 import Categories from "./pages/Categories";
 import Stock from "./pages/Stock";
 
 export default function App() {
+  const [user, setUser] = useState(() => getStoredUser());
+
+  function logout() {
+    setToken("");
+    setStoredUser(null);
+    setUser(null);
+  }
+
+  // ✅ Auth Gate
+  if (!user) {
+    return <Login onSuccess={(u) => setUser(u)} />;
+  }
+
   return (
     <BrowserRouter>
-      <div style={{ display: "flex", minHeight: "100vh" }}>
-        <Sidebar />
-        <main style={{ flex: 1, padding: 20 }}>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/products" element={<Products />} />
-            <Route path="/categories" element={<Categories />} />
-            <Route path="/stock" element={<Stock />} />
-          </Routes>
-        </main>
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", padding: 10 }}>
+          <p>
+            Logged in as <b>{user.email}</b> ({user.role})
+          </p>
+          <button className="btn" onClick={logout}>
+            Logout
+          </button>
+        </div>
+
+        <div style={{ display: "flex", minHeight: "100vh" }}>
+          <Sidebar user={user} />
+          <main style={{ flex: 1, padding: 20 }}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/products" element={<Products />} />
+              <Route path="/categories" element={<Categories />} />
+              <Route path="/stock" element={<Stock />} />
+
+              {/* fallback */}
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </main>
+        </div>
+        <Route
+  path="/categories"
+  element={
+    <RequireAdmin>
+      <Categories />
+    </RequireAdmin>
+  }
+/>
+
+<Route
+  path="/products"
+  element={
+    <RequireAdmin>
+      <Products />
+    </RequireAdmin>
+  }
+/>
       </div>
     </BrowserRouter>
   );

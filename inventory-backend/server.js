@@ -6,6 +6,7 @@ import productsRoutes from "./routes/products.js";
 import categoriesRoutes from "./routes/categories.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import stockRoutes from "./routes/stock.js";
+import authRoutes from "./routes/auth.js";
 
 const app = express();
 
@@ -28,6 +29,7 @@ app.use(
 );
 
 app.use(express.json());
+app.use("/api/auth", authRoutes);
 
 app.get("/", (req, res) => res.send("Inventory API running ✅"));
 

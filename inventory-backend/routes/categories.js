@@ -1,9 +1,11 @@
 import express from "express";
 import { db } from "../config/db.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+
 
 const router = express.Router();
 
-router.get("/", async (req, res) => {
+router.get("/", requireAuth, async (req, res) => {
   try {
     const [rows] = await db.query(
       "SELECT * FROM categories ORDER BY name ASC"
@@ -15,7 +17,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-router.post("/", async (req, res) => {
+router.post("/", requireAuth, requireRole("admin"),  async (req, res) => {
   try {
     const { name } = req.body;
     if (!name?.trim()) return res.status(400).json({ message: "Name required" });
@@ -29,7 +31,6 @@ router.post("/", async (req, res) => {
     res.status(500).json({ message: "Database error", code: err.code });
   }
 });
-
 
 export default router;
 

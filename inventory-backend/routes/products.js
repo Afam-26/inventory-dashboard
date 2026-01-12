@@ -1,10 +1,12 @@
 import express from "express";
 import { db } from "../config/db.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
+
 
 const router = express.Router();
 
 // GET all products (include category name)
-router.get("/", async (req, res) => {
+router.get("/", requireAuth, async (req, res) => {
   try {
     const [rows] = await db.query(
       `SELECT p.id, p.name, p.sku, p.quantity, p.cost_price, p.selling_price, p.reorder_level,
@@ -22,7 +24,7 @@ router.get("/", async (req, res) => {
 });
 
 // POST create product
-router.post("/", async (req, res) => {
+router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const {
       name,

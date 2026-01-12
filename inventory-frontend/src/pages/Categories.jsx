@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { getCategories, addCategory } from "../services/api";
 
+
+
+
 export default function Categories() {
   const [categories, setCategories] = useState([]);
   const [name, setName] = useState("");
@@ -32,6 +35,7 @@ export default function Categories() {
       setError(err.message);
     }
   }
+  
 
   useEffect(() => {
     loadCategories();
@@ -60,7 +64,11 @@ export default function Categories() {
         {categories.map((c) => (
           <li key={c.id}>{c.name}</li>
         ))}
-      </ul>
+      </ul>  
+     
+
     </div>
   );
 }
+
+

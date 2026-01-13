@@ -1,112 +1,73 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 
-// Routes
-import authRoutes from "./routes/auth.js";
 import productsRoutes from "./routes/products.js";
 import categoriesRoutes from "./routes/categories.js";
-import stockRoutes from "./routes/stock.js";
 import dashboardRoutes from "./routes/dashboard.js";
+import stockRoutes from "./routes/stock.js";
+import authRoutes from "./routes/auth.js";
 
 const app = express();
 
-/* ======================================================
-   🔐 CORS LOCKDOWN (Vercel + Localhost ONLY)
-====================================================== */
+app.set("trust proxy", 1);
 
-const ALLOWED_ORIGINS = new Set([
-  "http://localhost:5173",
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+
+const allowedOrigins = new Set([
   "https://inventory-dashboard-omega-five.vercel.app",
+  "http://localhost:5173",
 ]);
 
-function isAllowedOrigin(origin) {
-  if (!origin) return true; // allow curl, Postman, Railway health checks
-  if (ALLOWED_ORIGINS.has(origin)) return true;
-
-  // Allow Vercel preview deployments
-  if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin)) {
-    return true;
-  }
-
-  return false;
-}
-
 const corsOptions = {
-  origin(origin, callback) {
-    if (isAllowedOrigin(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("CORS_NOT_ALLOWED"));
-    }
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.has(origin)) return cb(null, true);
+    if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin)) return cb(null, true);
+    return cb(new Error("Not allowed by CORS"));
   },
-
-  credentials: false, // JWT auth, NOT cookies
+  credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   exposedHeaders: ["Authorization"],
-  maxAge: 86400, // cache preflight 24h
-  optionsSuccessStatus: 204,
 };
 
-// Apply CORS globally
+// ✅ This alone is enough for preflight
 app.use(cors(corsOptions));
 
-// IMPORTANT: Express 5 safe preflight handler
-app.options(/.*/, cors(corsOptions));
-
-/* ======================================================
-   🧠 BODY PARSING
-====================================================== */
-
-app.use(express.json());
-
-/* ======================================================
-   🟢 HEALTH CHECK
-====================================================== */
-
-app.get("/", (req, res) => {
-  res.send("Inventory API running ✅");
+// ✅ Optional: short-circuit OPTIONS without wildcard routes (no path-to-regexp)
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
 });
 
-/* ======================================================
-   🔐 API ROUTES
-====================================================== */
+app.use(express.json({ limit: "1mb" }));
+
+app.get("/", (req, res) => res.send("Inventory API running ✅"));
+app.get("/health", (req, res) => res.json({ ok: true }));
 
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productsRoutes);
 app.use("/api/categories", categoriesRoutes);
-app.use("/api/stock", stockRoutes);
 app.use("/api/dashboard", dashboardRoutes);
-
-/* ======================================================
-   🚫 CORS ERROR HANDLER
-====================================================== */
+app.use("/api/stock", stockRoutes);
 
 app.use((err, req, res, next) => {
-  if (err?.message === "CORS_NOT_ALLOWED") {
-    return res.status(403).json({
-      message: "CORS blocked: origin not allowed",
-    });
+  console.error("SERVER ERROR:", err?.message || err);
+
+  if (err?.message === "Not allowed by CORS") {
+    return res.status(403).json({ message: "CORS blocked" });
   }
-  next(err);
+
+  res.status(500).json({ message: "Server error" });
 });
 
-/* ======================================================
-   ❌ FALLBACK ERROR HANDLER
-====================================================== */
-
-app.use((err, req, res, next) => {
-  console.error("SERVER ERROR:", err);
-  res.status(500).json({ message: "Internal server error" });
-});
-
-/* ======================================================
-   🚀 START SERVER
-====================================================== */
-
-const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
+app.listen(process.env.PORT || 5000, () => {
+  console.log(`Backend running on http://localhost:${process.env.PORT || 5000}`);
 });

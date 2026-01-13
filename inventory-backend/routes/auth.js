@@ -11,6 +11,7 @@ const loginLimiter = rateLimit({
   max: 15,
   standardHeaders: true,
   legacyHeaders: false,
+  message: { message: "Too many login attempts. Try again in a few minutes." },
 });
 
 router.post("/login", loginLimiter, async (req, res) => {
@@ -32,14 +33,17 @@ router.post("/login", loginLimiter, async (req, res) => {
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) return res.status(401).json({ message: "Invalid credentials" });
 
+    const expiresInSeconds = 60 * 60 * 8;
+
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: "8h" }
+      { expiresIn: expiresInSeconds }
     );
 
     res.json({
       token,
+      expiresInSeconds,
       user: { id: user.id, email: user.email, role: user.role, full_name: user.full_name },
     });
   } catch (err) {

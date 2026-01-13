@@ -51,6 +51,9 @@ export default function Login({ onSuccess }) {
       </form>
 
       {err && <p style={{ color: "red" }}>{err}</p>}
+      <p style={{ marginTop: 10 }}>
+      <a href="/forgot-password">Forgot password?</a></p>
+
     </div>
   );
 }

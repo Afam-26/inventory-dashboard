@@ -36,6 +36,14 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
       [name.trim(), sku.trim(), cid, Number(quantity)||0, Number(cost_price)||0, Number(selling_price)||0, Number(reorder_level)||10]
     );
 
+    await audit(req, {
+      action: "PRODUCT_CREATE",
+      entity_type: "product",
+      entity_id: result.insertId,
+      details: { name: name.trim(), sku: sku.trim(), category_id: cid },
+    });
+
+
     res.json({ message: "Product created", id: result.insertId });
   } catch (err) {
     console.error("PRODUCTS POST ERROR:", err);

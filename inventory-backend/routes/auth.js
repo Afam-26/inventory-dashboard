@@ -174,4 +174,113 @@ router.post("/logout", async (req, res) => {
   }
 });
 
+router.post("/forgot-password", loginLimiter, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email?.trim()) return res.status(400).json({ message: "Email required" });
+
+    const normalized = email.trim().toLowerCase();
+
+    const [rows] = await db.query(
+      "SELECT id, email FROM users WHERE email=? LIMIT 1",
+      [normalized]
+    );
+
+    // Always return success (prevents user enumeration)
+    if (!rows.length) return res.json({ message: "If the email exists, a reset link was sent." });
+
+    const user = rows[0];
+
+    // Generate raw token (send to user) + store HASH in DB
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+    // Expires in 30 minutes
+    await db.query(
+      `INSERT INTO password_resets (user_id, token_hash, expires_at)
+       VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 30 MINUTE))`,
+      [user.id, tokenHash]
+    );
+
+    // ✅ SEND EMAIL (choose one)
+    // For now, return link in response for testing:
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalized)}`;
+
+    // In production you should send email via nodemailer/mailgun/resend/etc.
+    return res.json({
+      message: "If the email exists, a reset link was sent.",
+      // remove in production:
+      dev_reset_link: resetLink,
+    });
+  } catch (err) {
+    console.error("FORGOT PASSWORD ERROR:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.post("/reset-password", loginLimiter, async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body;
+
+    if (!email?.trim() || !token?.trim() || !newPassword) {
+      return res.status(400).json({ message: "Email, token and new password are required" });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+
+    const normalized = email.trim().toLowerCase();
+    const tokenHash = crypto.createHash("sha256").update(token.trim()).digest("hex");
+
+    const [urows] = await db.query(
+      "SELECT id FROM users WHERE email=? LIMIT 1",
+      [normalized]
+    );
+    if (!urows.length) return res.status(400).json({ message: "Invalid token" });
+
+    const userId = urows[0].id;
+
+    // Find the newest valid reset record
+    const [rrows] = await db.query(
+      `SELECT id, expires_at, used_at
+       FROM password_resets
+       WHERE user_id=? AND token_hash=? 
+       ORDER BY id DESC
+       LIMIT 1`,
+      [userId, tokenHash]
+    );
+
+    if (!rrows.length) return res.status(400).json({ message: "Invalid token" });
+
+    const resetRow = rrows[0];
+
+    if (resetRow.used_at) return res.status(400).json({ message: "Token already used" });
+
+    // check expiration
+    const [expCheck] = await db.query(
+      `SELECT (NOW() > ?) AS expired`,
+      [resetRow.expires_at]
+    );
+    if (expCheck[0].expired) return res.status(400).json({ message: "Token expired" });
+
+    // Update password
+    const password_hash = await bcrypt.hash(newPassword, 10);
+    await db.query("UPDATE users SET password_hash=? WHERE id=?", [password_hash, userId]);
+
+    // Mark token used
+    await db.query("UPDATE password_resets SET used_at=NOW() WHERE id=?", [resetRow.id]);
+
+    // Optional: revoke all refresh tokens for this user (recommended)
+    await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL", [userId]);
+
+    res.json({ message: "Password reset successful. Please login." });
+  } catch (err) {
+    console.error("RESET PASSWORD ERROR:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+
+
 export default router;

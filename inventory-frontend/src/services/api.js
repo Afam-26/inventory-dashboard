@@ -1,5 +1,16 @@
-const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
+/**
+ * ============================
+ * API BASE
+ * ============================
+ */
+const API_BASE =
+  (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
 
+/**
+ * ============================
+ * Safe JSON helper
+ * ============================
+ */
 async function safeJson(res) {
   try {
     return await res.json();
@@ -8,6 +19,11 @@ async function safeJson(res) {
   }
 }
 
+/**
+ * ============================
+ * Token handling
+ * ============================
+ */
 let authToken = localStorage.getItem("token") || "";
 
 export function setToken(token) {
@@ -21,6 +37,11 @@ function authHeaders() {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
+/**
+ * ============================
+ * User storage
+ * ============================
+ */
 export function getStoredUser() {
   try {
     return JSON.parse(localStorage.getItem("user") || "null");
@@ -34,69 +55,15 @@ export function setStoredUser(user) {
   else localStorage.removeItem("user");
 }
 
-function hardLogout() {
-  setToken("");
-  setStoredUser(null);
-}
-
-export async function refreshToken() {
-  const res = await fetch(`${API_BASE}/auth/refresh`, {
-    method: "POST",
-    credentials: "include",
-  });
-
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Refresh failed");
-
-  return data; // { token, user }
-}
-
-async function fetchWithAuth(url, options = {}) {
-  const res = await fetch(url, {
-    ...options,
-    credentials: "include",
-    headers: {
-      ...(options.headers || {}),
-      ...authHeaders(),
-    },
-  });
-
-  // If token expired, try refresh once
-  if (res.status === 401) {
-    try {
-      const refreshed = await refreshToken();
-      setToken(refreshed.token);
-      setStoredUser(refreshed.user);
-
-      // retry once with new token
-      const res2 = await fetch(url, {
-        ...options,
-        credentials: "include",
-        headers: {
-          ...(options.headers || {}),
-          ...authHeaders(),
-        },
-      });
-
-      return res2;
-    } catch (e) {
-      // refresh failed -> logout
-      hardLogout();
-      throw e;
-    }
-  }
-
-  return res;
-}
-
 /**
+ * ============================
  * AUTH
+ * ============================
  */
 export async function login(email, password) {
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    credentials: "include",
     body: JSON.stringify({ email, password }),
   });
 
@@ -105,34 +72,58 @@ export async function login(email, password) {
   return data; // { token, user }
 }
 
-export async function logout() {
-  // tell backend to revoke refresh token cookie
-  try {
-    await fetch(`${API_BASE}/auth/logout`, {
-      method: "POST",
-      credentials: "include",
-    });
-  } catch {
-    // ignore network issues
-  } finally {
-    hardLogout();
-  }
+/**
+ * Forgot password
+ */
+export async function requestPasswordReset(email) {
+  const res = await fetch(`${API_BASE}/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.message || "Request failed");
+  return data;
 }
 
 /**
+ * Reset password
+ */
+export async function resetPassword(token, password) {
+  const res = await fetch(`${API_BASE}/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, password }),
+  });
+
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.message || "Reset failed");
+  return data;
+}
+
+/**
+ * ============================
  * CATEGORIES
+ * ============================
  */
 export async function getCategories() {
-  const res = await fetchWithAuth(`${API_BASE}/categories`);
+  const res = await fetch(`${API_BASE}/categories`, {
+    headers: { ...authHeaders() },
+  });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to load categories");
   return data;
 }
 
 export async function addCategory(name) {
-  const res = await fetchWithAuth(`${API_BASE}/categories`, {
+  const res = await fetch(`${API_BASE}/categories`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
     body: JSON.stringify({ name }),
   });
 
@@ -142,19 +133,27 @@ export async function addCategory(name) {
 }
 
 /**
+ * ============================
  * PRODUCTS
+ * ============================
  */
 export async function getProducts() {
-  const res = await fetchWithAuth(`${API_BASE}/products`);
+  const res = await fetch(`${API_BASE}/products`, {
+    headers: { ...authHeaders() },
+  });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to load products");
   return data;
 }
 
 export async function addProduct(payload) {
-  const res = await fetchWithAuth(`${API_BASE}/products`, {
+  const res = await fetch(`${API_BASE}/products`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
     body: JSON.stringify(payload),
   });
 
@@ -164,12 +163,17 @@ export async function addProduct(payload) {
 }
 
 /**
+ * ============================
  * STOCK
+ * ============================
  */
 export async function updateStock(payload) {
-  const res = await fetchWithAuth(`${API_BASE}/stock/update`, {
+  const res = await fetch(`${API_BASE}/stock/update`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
     body: JSON.stringify(payload),
   });
 
@@ -179,18 +183,25 @@ export async function updateStock(payload) {
 }
 
 export async function getMovements() {
-  const res = await fetchWithAuth(`${API_BASE}/stock/movements`);
+  const res = await fetch(`${API_BASE}/stock/movements`, {
+    headers: { ...authHeaders() },
+  });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to load movements");
   return data;
 }
 
 /**
- * DASHBOARD (if you have these endpoints)
- * Uncomment if needed.
+ * ============================
+ * DASHBOARD
+ * ============================
  */
 export async function getDashboard() {
-  const res = await fetchWithAuth(`${API_BASE}/dashboard`);
+  const res = await fetch(`${API_BASE}/dashboard`, {
+    headers: { ...authHeaders() },
+  });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to load dashboard");
   return data;

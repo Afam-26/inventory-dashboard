@@ -10,8 +10,10 @@ import categoriesRoutes from "./routes/categories.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import stockRoutes from "./routes/stock.js";
 import authRoutes from "./routes/auth.js";
+import auditRoutes from "./routes/audit.js";
 
 const app = express();
+app.use("/api/audit", auditRoutes);
 
 /**
  * Behind Railway/Proxies:

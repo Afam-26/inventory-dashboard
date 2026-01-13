@@ -118,4 +118,12 @@ export async function getMovements() {
   return data;
 }
 
+export async function getDashboard() {
+  const res = await fetch(`${API_BASE}/dashboard`, {
+    headers: { ...authHeaders() },
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.message || "Failed to load dashboard");
+  return data; // { totalProducts, lowStockCount, inventoryValue }
+}
 

@@ -1,33 +1,50 @@
-export default function Dashboard() {
-  const stats = [
-    { title: "Total Products", value: 150 },
-    { title: "Low Stock Items", value: 12 },
-    { title: "Inventory Value", value: "₦250,000" },
-  ];
+import { useEffect, useState } from "react";
+import { getDashboard } from "../services/api";
 
-  return (    
-    <div style={{ padding: 20 }}>
+export default function Dashboard() {
+  const [data, setData] = useState({ totalProducts: 0, lowStockCount: 0, inventoryValue: 0 });
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        setError("");
+        setLoading(true);
+        const d = await getDashboard();
+        setData(d);
+      } catch (e) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  if (loading) return <p>Loading...</p>;
+  if (error) return <p style={{ color: "red" }}>{error}</p>;
+
+  return (
+    <div>
       <h1>Dashboard</h1>
 
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(3, 1fr)",
-        gap: 20,
-        marginTop: 20
-      }}>
-        {stats.map((stat, i) => (
-          <div className="card" key={i} style={{
-            background: "#f3f4f6",
-            padding: 20,
-            borderRadius: 8,
-            boxShadow: "0 2px 5px rgba(0,0,0,0.1)"
-          }}>
-            <h3>{stat.title}</h3>
-            <p style={{ fontSize: 24, fontWeight: "bold" }}>{stat.value}</p>
-            <button className="btn">Add Product</button>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+        <div className="card">
+          <h3>Total Products</h3>
+          <p style={{ fontSize: 24 }}>{data.totalProducts}</p>
+        </div>
 
-          </div>
-        ))}
+        <div className="card">
+          <h3>Low Stock Items</h3>
+          <p style={{ fontSize: 24 }}>{data.lowStockCount}</p>
+        </div>
+
+        <div className="card">
+          <h3>Inventory Value</h3>
+          <p style={{ fontSize: 24 }}>
+            ${Number(data.inventoryValue).toFixed(2)}
+          </p>
+        </div>
       </div>
     </div>
   );

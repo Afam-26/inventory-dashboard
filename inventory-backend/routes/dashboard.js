@@ -4,22 +4,37 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.get("/summary", requireAuth, async (req, res) => {
-  const [[totalProducts]] = await db.query("SELECT COUNT(*) AS total FROM products");
+router.get("/", requireAuth, async (req, res) => {
+  try {
+    // 1) total products
+    const [[totalRow]] = await db.query(
+      `SELECT COUNT(*) AS totalProducts FROM products`
+    );
 
-  const [[lowStock]] = await db.query(
-    "SELECT COUNT(*) AS low FROM products WHERE quantity <= reorder_level"
-  );
+    // 2) low stock count
+    const [[lowRow]] = await db.query(
+      `SELECT COUNT(*) AS lowStockCount
+       FROM products
+       WHERE COALESCE(quantity, 0) <= COALESCE(reorder_level, 0)`
+    );
 
-  const [[inventoryValue]] = await db.query(
-    "SELECT SUM(quantity * cost_price) AS value FROM products"
-  );
+    // 3) inventory value (choose cost_price or selling_price)
+    const [[valueRow]] = await db.query(
+      `SELECT COALESCE(SUM(COALESCE(quantity, 0) * COALESCE(cost_price, 0)), 0) AS inventoryValue
+       FROM products`
+      // If you want selling_price instead:
+      // `SELECT COALESCE(SUM(COALESCE(quantity, 0) * COALESCE(selling_price, 0)), 0) AS inventoryValue FROM products`
+    );
 
-  res.json({
-    totalProducts: totalProducts.total,
-    lowStock: lowStock.low,
-    inventoryValue: inventoryValue.value || 0,
-  });
+    res.json({
+      totalProducts: Number(totalRow.totalProducts || 0),
+      lowStockCount: Number(lowRow.lowStockCount || 0),
+      inventoryValue: Number(valueRow.inventoryValue || 0),
+    });
+  } catch (err) {
+    console.error("DASHBOARD ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
 });
 
 export default router;

@@ -1,6 +1,6 @@
 import express from "express";
 import { db } from "../config/db.js";
-import { requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -21,7 +21,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-router.post("/", requireRole("admin"), async (req, res) => {
+router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const { name, sku, category_id, quantity=0, cost_price=0, selling_price=0, reorder_level=10 } = req.body;
 

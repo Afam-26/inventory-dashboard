@@ -1,12 +1,15 @@
 import express from "express";
 import { db } from "../config/db.js";
-import { requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.get("/", async (req, res) => {
+// anyone logged in can view categories
+router.get("/", requireAuth, async (req, res) => {
   try {
-    const [rows] = await db.query("SELECT id, name FROM categories ORDER BY name ASC");
+    const [rows] = await db.query(
+      "SELECT id, name FROM categories ORDER BY name ASC"
+    );
     res.json(rows);
   } catch (err) {
     console.error("CATEGORIES GET ERROR:", err);
@@ -14,7 +17,8 @@ router.get("/", async (req, res) => {
   }
 });
 
-router.post("/", requireRole("admin"), async (req, res) => {
+// admin only can create categories
+router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
   try {
     const { name } = req.body;
     if (!name?.trim()) return res.status(400).json({ message: "Name is required" });

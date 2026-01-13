@@ -70,9 +70,7 @@ export default function Products({user}) {
       <h1>Products</h1>
 
       {isAdmin && (
-  <form
-    onSubmit={handleSubmit}
-    style={{ display: "grid", gap: 10, maxWidth: 600, marginBottom: 20 }}
+  <form onSubmit={handleSubmit} style={{ display: "grid", gap: 10, maxWidth: 600, marginBottom: 20 }}
   >
     <div style={{ display: "flex", gap: 10 }}>
       <input

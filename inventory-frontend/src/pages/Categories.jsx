@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCategories, addCategory } from "../services/api";
 
-
-
-
-export default function Categories({user}) {
+export default function Categories({ user }) {
   const isAdmin = user?.role === "admin";
   const [categories, setCategories] = useState([]);
   const [name, setName] = useState("");
@@ -31,12 +28,11 @@ export default function Categories({user}) {
     try {
       await addCategory(name);
       setName("");
-      loadCategories();
+      await loadCategories(); // ✅ await
     } catch (err) {
       setError(err.message);
     }
   }
-  
 
   useEffect(() => {
     loadCategories();
@@ -45,34 +41,29 @@ export default function Categories({user}) {
   return (
     <div>
       <h1>Categories</h1>
-      {isAdmin && (<form onSubmit={handleSubmit}>
 
-      <form onSubmit={handleSubmit} style={{ marginBottom: 20 }}>
-        <input
-          className="input"
-          placeholder="Category name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <button className="btn" style={{ marginLeft: 10 }}>
-          Add
-        </button>
-      </form>
-      </form>)}
+      {isAdmin && (
+        <form onSubmit={handleSubmit} style={{ marginBottom: 20 }}>
+          <input
+            className="input"
+            placeholder="Category name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <button className="btn" type="submit" style={{ marginLeft: 10 }}>
+            Add
+          </button>
+        </form>
+      )}
 
       {loading && <p>Loading...</p>}
       {error && <p style={{ color: "red" }}>{error}</p>}
-     
 
       <ul>
         {categories.map((c) => (
           <li key={c.id}>{c.name}</li>
         ))}
-      </ul>  
-     
-
+      </ul>
     </div>
   );
 }
-
-

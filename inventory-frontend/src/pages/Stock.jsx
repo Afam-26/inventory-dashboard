@@ -58,8 +58,7 @@ export default function Stock({user}) {
     <div>
       <h1>Stock In / Out</h1>
 
-      {isAdmin && (<form onSubmit={handleSubmit}>
-      <form onSubmit={handleSubmit} style={{ display: "grid", gap: 10, maxWidth: 600, marginBottom: 20 }}>
+      {isAdmin && (<form onSubmit={handleSubmit} style={{ display: "grid", gap: 10, maxWidth: 600, marginBottom: 20 }}>
         <select
           className="input"
           value={form.product_id}
@@ -103,7 +102,6 @@ export default function Stock({user}) {
         <button className="btn" type="submit" disabled={!form.product_id}>
           Update Stock
         </button>
-      </form>
       </form>)}
 
       {loading && <p>Loading...</p>}

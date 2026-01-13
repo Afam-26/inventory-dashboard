@@ -2,6 +2,8 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import cookieParser from "cookie-parser";
 
 import productsRoutes from "./routes/products.js";
 import categoriesRoutes from "./routes/categories.js";
@@ -11,8 +13,15 @@ import authRoutes from "./routes/auth.js";
 
 const app = express();
 
+/**
+ * Behind Railway/Proxies:
+ * needed for correct IP + rate-limit behavior
+ */
 app.set("trust proxy", 1);
 
+/**
+ * ✅ Helmet (security headers)
+ */
 app.use(
   helmet({
     contentSecurityPolicy: false,
@@ -20,6 +29,26 @@ app.use(
   })
 );
 
+/**
+ * ✅ Body + cookies
+ */
+app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
+
+/**
+ * ✅ Rate limit (global /api)
+ */
+const apiLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use("/api", apiLimiter);
+
+/**
+ * ✅ CORS (tight allowlist)
+ */
 const allowedOrigins = new Set([
   "https://inventory-dashboard-omega-five.vercel.app",
   "http://localhost:5173",
@@ -27,9 +56,14 @@ const allowedOrigins = new Set([
 
 const corsOptions = {
   origin: (origin, cb) => {
+    // allow curl/postman/no-origin
     if (!origin) return cb(null, true);
+
     if (allowedOrigins.has(origin)) return cb(null, true);
+
+    // allow Vercel preview deploys
     if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin)) return cb(null, true);
+
     return cb(new Error("Not allowed by CORS"));
   },
   credentials: true,
@@ -38,26 +72,32 @@ const corsOptions = {
   exposedHeaders: ["Authorization"],
 };
 
-// ✅ This alone is enough for preflight
 app.use(cors(corsOptions));
 
-// ✅ Optional: short-circuit OPTIONS without wildcard routes (no path-to-regexp)
-app.use((req, res, next) => {
-  if (req.method === "OPTIONS") return res.sendStatus(204);
-  next();
-});
+/**
+ * ✅ Preflight (Express 5 safe)
+ * NOTE: app.options("*") can crash in Express 5.
+ * Using RegExp is safe.
+ */
+app.options(/.*/, cors(corsOptions));
 
-app.use(express.json({ limit: "1mb" }));
-
+/**
+ * Health
+ */
 app.get("/", (req, res) => res.send("Inventory API running ✅"));
-app.get("/health", (req, res) => res.json({ ok: true }));
 
+/**
+ * Routes
+ */
 app.use("/api/auth", authRoutes);
 app.use("/api/products", productsRoutes);
 app.use("/api/categories", categoriesRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/stock", stockRoutes);
 
+/**
+ * ✅ Central error handler (includes CORS rejection)
+ */
 app.use((err, req, res, next) => {
   console.error("SERVER ERROR:", err?.message || err);
 

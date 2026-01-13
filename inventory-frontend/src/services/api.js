@@ -1,6 +1,4 @@
-
-const API_BASE =
-  (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
+const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
 
 async function safeJson(res) {
   try {
@@ -23,7 +21,6 @@ function authHeaders() {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-
 export function getStoredUser() {
   try {
     return JSON.parse(localStorage.getItem("user") || "null");
@@ -37,93 +34,164 @@ export function setStoredUser(user) {
   else localStorage.removeItem("user");
 }
 
+function hardLogout() {
+  setToken("");
+  setStoredUser(null);
+}
+
+export async function refreshToken() {
+  const res = await fetch(`${API_BASE}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+  });
+
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.message || "Refresh failed");
+
+  return data; // { token, user }
+}
+
+async function fetchWithAuth(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    credentials: "include",
+    headers: {
+      ...(options.headers || {}),
+      ...authHeaders(),
+    },
+  });
+
+  // If token expired, try refresh once
+  if (res.status === 401) {
+    try {
+      const refreshed = await refreshToken();
+      setToken(refreshed.token);
+      setStoredUser(refreshed.user);
+
+      // retry once with new token
+      const res2 = await fetch(url, {
+        ...options,
+        credentials: "include",
+        headers: {
+          ...(options.headers || {}),
+          ...authHeaders(),
+        },
+      });
+
+      return res2;
+    } catch (e) {
+      // refresh failed -> logout
+      hardLogout();
+      throw e;
+    }
+  }
+
+  return res;
+}
+
+/**
+ * AUTH
+ */
 export async function login(email, password) {
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ email, password }),
   });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Login failed");
   return data; // { token, user }
 }
 
+export async function logout() {
+  // tell backend to revoke refresh token cookie
+  try {
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch {
+    // ignore network issues
+  } finally {
+    hardLogout();
+  }
+}
 
-
+/**
+ * CATEGORIES
+ */
 export async function getCategories() {
-  const res = await fetch(`${API_BASE}/categories`, {
-    headers: { ...authHeaders() },
-  });
+  const res = await fetchWithAuth(`${API_BASE}/categories`);
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to load categories");
   return data;
 }
 
 export async function addCategory(name) {
-  const res = await fetch(`${API_BASE}/categories`, {
+  const res = await fetchWithAuth(`${API_BASE}/categories`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
   });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to add category");
   return data;
 }
 
-
+/**
+ * PRODUCTS
+ */
 export async function getProducts() {
-  const res = await fetch(`${API_BASE}/products`, {
-    headers: { ...authHeaders() },
-  });
+  const res = await fetchWithAuth(`${API_BASE}/products`);
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to load products");
   return data;
 }
 
 export async function addProduct(payload) {
-  const res = await fetch(`${API_BASE}/products`, {
+  const res = await fetchWithAuth(`${API_BASE}/products`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to add product");
   return data;
 }
 
+/**
+ * STOCK
+ */
 export async function updateStock(payload) {
-  const res = await fetch(`${API_BASE}/stock/update`, {
+  const res = await fetchWithAuth(`${API_BASE}/stock/update`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Stock update failed");
   return data;
 }
 
-
 export async function getMovements() {
-  const res = await fetch(`${API_BASE}/stock/movements`, {
-    headers: { ...authHeaders() },
-  });
+  const res = await fetchWithAuth(`${API_BASE}/stock/movements`);
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to load movements");
   return data;
 }
 
+/**
+ * DASHBOARD (if you have these endpoints)
+ * Uncomment if needed.
+ */
 export async function getDashboard() {
-  const res = await fetch(`${API_BASE}/dashboard`, {
-    headers: { ...authHeaders() },
-  });
+  const res = await fetchWithAuth(`${API_BASE}/dashboard`);
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data.message || "Failed to load dashboard");
-  return data; // { totalProducts, lowStockCount, inventoryValue }
+  return data;
 }
-

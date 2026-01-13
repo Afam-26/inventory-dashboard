@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import Sidebar from "./components/Sidebar";
 import { useState } from "react";
 import Login from "./pages/Login";
-import { getStoredUser, setToken, setStoredUser } from "./services/api";
+import { getStoredUser, setToken, setStoredUser, logout as apiLogout } from "./services/api";
 import RequireAdmin from "./components/RequireAdmin";
 
 import Dashboard from "./pages/Dashboard";
@@ -13,11 +13,18 @@ import Stock from "./pages/Stock";
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
 
-  function logout() {
+  async function logout() {
+  try {
+    await apiLogout(); // 🔐 tells backend to revoke refresh token
+  } catch {
+    // ignore network errors
+  } finally {
     setToken("");
     setStoredUser(null);
     setUser(null);
+    }
   }
+
 
   // ✅ Auth Gate
   if (!user) {

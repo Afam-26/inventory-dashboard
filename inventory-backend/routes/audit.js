@@ -1,6 +1,7 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { db } from "../config/db.js";
+import { logAudit } from "../utils/audit.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -111,6 +112,14 @@ const parsed = rows.map((r) => {
   }
   return { ...r, details: d };
 });
+
+await logAudit(req, {
+  action: "LOGIN",
+  entity_type: "user",
+  entity_id: user.id,
+  details: { email: user.email, role: user.role },
+});
+
 
 res.json({
   page: pageNum,

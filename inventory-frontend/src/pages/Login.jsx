@@ -1,7 +1,10 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { login, setToken, setStoredUser } from "../services/api";
 
 export default function Login({ onSuccess }) {
+  const navigate = useNavigate();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -14,11 +17,16 @@ export default function Login({ onSuccess }) {
 
     try {
       const data = await login(email, password); // { token, user }
+
       setToken(data.token);
       setStoredUser(data.user);
+
       onSuccess?.(data.user);
+
+      // ✅ redirect into your protected app
+      navigate("/", { replace: true });
     } catch (e2) {
-      setErr(e2.message);
+      setErr(e2?.message || "Login failed");
     } finally {
       setLoading(false);
     }
@@ -45,15 +53,19 @@ export default function Login({ onSuccess }) {
           style={{ marginTop: 10 }}
         />
 
-        <button className="btn" style={{ marginTop: 10, width: "100%" }} disabled={loading}>
+        <button
+          className="btn"
+          style={{ marginTop: 10, width: "100%" }}
+          disabled={loading}
+        >
           {loading ? "Signing in..." : "Sign in"}
         </button>
       </form>
 
       {err && <p style={{ color: "red" }}>{err}</p>}
       <p style={{ marginTop: 10 }}>
-      <a href="/forgot-password">Forgot password?</a></p>
-
+        <a href="/forgot-password">Forgot password?</a>
+      </p>
     </div>
   );
 }

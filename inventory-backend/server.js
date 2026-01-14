@@ -13,7 +13,6 @@ import authRoutes from "./routes/auth.js";
 import auditRoutes from "./routes/audit.js";
 
 const app = express();
-app.use("/api/audit", auditRoutes);
 
 /**
  * Behind Railway/Proxies:
@@ -22,7 +21,13 @@ app.use("/api/audit", auditRoutes);
 app.set("trust proxy", 1);
 
 /**
+ * Hide Express signature
+ */
+app.disable("x-powered-by");
+
+/**
  * ✅ Helmet (security headers)
+ * - Keep CSP off unless configured (can break apps)
  */
 app.use(
   helmet({
@@ -32,24 +37,8 @@ app.use(
 );
 
 /**
- * ✅ Body + cookies
- */
-app.use(express.json({ limit: "1mb" }));
-app.use(cookieParser());
-
-/**
- * ✅ Rate limit (global /api)
- */
-const apiLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 300,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use("/api", apiLimiter);
-
-/**
  * ✅ CORS (tight allowlist)
+ * IMPORTANT: CORS must run BEFORE rate limit so OPTIONS/preflight isn't blocked.
  */
 const allowedOrigins = new Set([
   "https://inventory-dashboard-omega-five.vercel.app",
@@ -78,10 +67,30 @@ app.use(cors(corsOptions));
 
 /**
  * ✅ Preflight (Express 5 safe)
- * NOTE: app.options("*") can crash in Express 5.
- * Using RegExp is safe.
+ * app.options("*") / "/*" can crash in Express 5 due to path-to-regexp changes.
+ * RegExp is safe.
  */
 app.options(/.*/, cors(corsOptions));
+
+/**
+ * ✅ Body + cookies
+ * cookieParser is required for refresh token cookie flows.
+ */
+app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
+
+/**
+ * ✅ Rate limit (global /api)
+ * Skip OPTIONS so preflight never gets blocked.
+ */
+const apiLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.method === "OPTIONS",
+});
+app.use("/api", apiLimiter);
 
 /**
  * Health
@@ -96,6 +105,14 @@ app.use("/api/products", productsRoutes);
 app.use("/api/categories", categoriesRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/stock", stockRoutes);
+app.use("/api/audit", auditRoutes);
+
+/**
+ * 404
+ */
+app.use((req, res) => {
+  res.status(404).json({ message: "Not found" });
+});
 
 /**
  * ✅ Central error handler (includes CORS rejection)

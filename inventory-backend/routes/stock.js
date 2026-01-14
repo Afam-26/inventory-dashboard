@@ -1,11 +1,11 @@
 import express from "express";
 import { db } from "../config/db.js";
+import { logAudit } from "../utils/audit.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-
 
 const router = express.Router();
 
-// Get latest movements
+// ✅ movements (any logged in user)
 router.get("/movements", requireAuth, async (req, res) => {
   try {
     const [rows] = await db.query(
@@ -22,9 +22,10 @@ router.get("/movements", requireAuth, async (req, res) => {
   }
 });
 
-// Stock IN / OUT
+// ✅ stock update (admin only)
 router.post("/update", requireAuth, requireRole("admin"), async (req, res) => {
   const connection = await db.getConnection();
+
   try {
     const { product_id, type, quantity, reason = "" } = req.body;
 
@@ -37,9 +38,8 @@ router.post("/update", requireAuth, requireRole("admin"), async (req, res) => {
 
     await connection.beginTransaction();
 
-    // Get current stock
     const [[product]] = await connection.query(
-      "SELECT quantity FROM products WHERE id=? FOR UPDATE",
+      "SELECT id, name, quantity FROM products WHERE id=? FOR UPDATE",
       [pid]
     );
 
@@ -48,32 +48,29 @@ router.post("/update", requireAuth, requireRole("admin"), async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const currentQty = Number(product.quantity);
-    const newQty = type === "IN" ? currentQty + qty : currentQty - qty;
+    const oldQty = Number(product.quantity ?? 0);
+    const newQty = type === "IN" ? oldQty + qty : oldQty - qty;
 
     if (newQty < 0) {
       await connection.rollback();
       return res.status(400).json({ message: "Not enough stock to stock out" });
     }
 
-    // Update product quantity
     await connection.query("UPDATE products SET quantity=? WHERE id=?", [newQty, pid]);
 
-    // Insert movement record
     await connection.query(
       "INSERT INTO stock_movements (product_id, type, quantity, reason) VALUES (?,?,?,?)",
       [pid, type, qty, reason]
     );
 
     await connection.commit();
-    
-    await audit(req, {
-      action: type === "IN" ? "STOCK_IN" : "STOCK_OUT",
-      entity_type: "product",
-      entity_id: pid,
-      details: { quantity: qty, reason, oldQty: currentQty, newQty },
-    });
 
+    await logAudit(req, {
+      action: type === "IN" ? "STOCK_IN" : "STOCK_OUT",
+      entity: "product",
+      entity_id: pid,
+      metadata: { product_name: product.name, qty, reason, oldQty, newQty },
+    });
 
     res.json({ message: "Stock updated", newQty });
   } catch (err) {

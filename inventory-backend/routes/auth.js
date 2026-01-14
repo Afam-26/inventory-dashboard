@@ -25,33 +25,40 @@ function makeRefreshToken() {
 }
 
 function refreshCookieOptions() {
-  // IMPORTANT for Vercel -> Railway cross-site cookies:
-  // - sameSite must be "none"
-  // - secure must be true in production (HTTPS)
   return {
     httpOnly: true,
-    secure: isProd, // true on Railway
-    sameSite: isProd ? "none" : "lax", // local dev works with lax
+    secure: isProd, // true on Railway/HTTPS
+    sameSite: isProd ? "none" : "lax", // cross-site in prod
     path: "/",
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
   };
 }
 
 /**
- * Rate limiters
+ * ✅ Rate limiters (DEV vs PROD)
  */
 const loginLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 15,
+  windowMs: isProd ? 5 * 60 * 1000 : 10 * 1000, // prod 5m, dev 10s
+  max: isProd ? 15 : 100, // prod 15 attempts, dev 100
   standardHeaders: true,
   legacyHeaders: false,
+  message: { message: "Too many login attempts. Try again shortly." },
 });
 
 const refreshLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 60,
+  windowMs: isProd ? 5 * 60 * 1000 : 60 * 1000,
+  max: isProd ? 60 : 300,
   standardHeaders: true,
   legacyHeaders: false,
+  message: { message: "Too many refresh attempts. Try again shortly." },
+});
+
+const resetLimiter = rateLimit({
+  windowMs: isProd ? 10 * 60 * 1000 : 60 * 1000,
+  max: isProd ? 10 : 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many requests. Try again shortly." },
 });
 
 /**
@@ -78,10 +85,10 @@ router.post("/login", loginLimiter, async (req, res) => {
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) return res.status(401).json({ message: "Invalid credentials" });
 
-    // Access token (short-lived)
+    // short-lived access token
     const accessToken = signAccessToken(user);
 
-    // Refresh token (long-lived, stored in DB)
+    // long-lived refresh token stored in DB
     const refreshToken = makeRefreshToken();
 
     await db.query(
@@ -90,12 +97,17 @@ router.post("/login", loginLimiter, async (req, res) => {
       [user.id, refreshToken]
     );
 
-    // Set refresh token cookie
+    // cookie for refresh
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
 
     res.json({
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, full_name: user.full_name },
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        full_name: user.full_name,
+      },
     });
   } catch (err) {
     console.error("LOGIN ERROR:", err);
@@ -105,11 +117,11 @@ router.post("/login", loginLimiter, async (req, res) => {
 
 /**
  * POST /api/auth/refresh
- * Uses httpOnly cookie refresh_token
+ * Reads refresh_token from httpOnly cookie
  */
 router.post("/refresh", refreshLimiter, async (req, res) => {
   try {
-    const rt = req.cookies?.refresh_token;
+    const rt = req.cookies?.refresh_token; // requires cookie-parser in server.js
     if (!rt) return res.status(401).json({ message: "Missing refresh token" });
 
     const [rows] = await db.query(
@@ -137,12 +149,16 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
     const user = users[0];
     if (!user) return res.status(401).json({ message: "User not found" });
 
-    // Issue new access token
     const newAccess = signAccessToken(user);
 
     res.json({
       token: newAccess,
-      user: { id: user.id, email: user.email, role: user.role, full_name: user.full_name },
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        full_name: user.full_name,
+      },
     });
   } catch (err) {
     console.error("REFRESH ERROR:", err);
@@ -162,10 +178,7 @@ router.post("/logout", async (req, res) => {
       await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE token=?", [rt]);
     }
 
-    res.clearCookie("refresh_token", {
-      ...refreshCookieOptions(),
-      maxAge: 0,
-    });
+    res.clearCookie("refresh_token", { ...refreshCookieOptions(), maxAge: 0 });
 
     res.json({ message: "Logged out" });
   } catch (err) {
@@ -174,40 +187,39 @@ router.post("/logout", async (req, res) => {
   }
 });
 
-router.post("/forgot-password", loginLimiter, async (req, res) => {
+/**
+ * POST /api/auth/forgot-password
+ */
+router.post("/forgot-password", resetLimiter, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email?.trim()) return res.status(400).json({ message: "Email required" });
 
     const normalized = email.trim().toLowerCase();
 
-    const [rows] = await db.query(
-      "SELECT id, email FROM users WHERE email=? LIMIT 1",
-      [normalized]
-    );
+    const [rows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [
+      normalized,
+    ]);
 
-    // Always return success (prevents user enumeration)
+    // prevent user enumeration
     if (!rows.length) return res.json({ message: "If the email exists, a reset link was sent." });
 
     const user = rows[0];
 
-    // Generate raw token (send to user) + store HASH in DB
     const rawToken = crypto.randomBytes(32).toString("hex");
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
 
-    // Expires in 30 minutes
     await db.query(
       `INSERT INTO password_resets (user_id, token_hash, expires_at)
        VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 30 MINUTE))`,
       [user.id, tokenHash]
     );
 
-    // ✅ SEND EMAIL (choose one)
-    // For now, return link in response for testing:
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalized)}`;
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${rawToken}&email=${encodeURIComponent(
+      normalized
+    )}`;
 
-    // In production you should send email via nodemailer/mailgun/resend/etc.
-    return res.json({
+    res.json({
       message: "If the email exists, a reset link was sent.",
       // remove in production:
       dev_reset_link: resetLink,
@@ -218,7 +230,10 @@ router.post("/forgot-password", loginLimiter, async (req, res) => {
   }
 });
 
-router.post("/reset-password", loginLimiter, async (req, res) => {
+/**
+ * POST /api/auth/reset-password
+ */
+router.post("/reset-password", resetLimiter, async (req, res) => {
   try {
     const { email, token, newPassword } = req.body;
 
@@ -226,26 +241,22 @@ router.post("/reset-password", loginLimiter, async (req, res) => {
       return res.status(400).json({ message: "Email, token and new password are required" });
     }
 
-    if (newPassword.length < 8) {
+    if (String(newPassword).length < 8) {
       return res.status(400).json({ message: "Password must be at least 8 characters" });
     }
 
     const normalized = email.trim().toLowerCase();
     const tokenHash = crypto.createHash("sha256").update(token.trim()).digest("hex");
 
-    const [urows] = await db.query(
-      "SELECT id FROM users WHERE email=? LIMIT 1",
-      [normalized]
-    );
+    const [urows] = await db.query("SELECT id FROM users WHERE email=? LIMIT 1", [normalized]);
     if (!urows.length) return res.status(400).json({ message: "Invalid token" });
 
     const userId = urows[0].id;
 
-    // Find the newest valid reset record
     const [rrows] = await db.query(
       `SELECT id, expires_at, used_at
        FROM password_resets
-       WHERE user_id=? AND token_hash=? 
+       WHERE user_id=? AND token_hash=?
        ORDER BY id DESC
        LIMIT 1`,
       [userId, tokenHash]
@@ -254,25 +265,21 @@ router.post("/reset-password", loginLimiter, async (req, res) => {
     if (!rrows.length) return res.status(400).json({ message: "Invalid token" });
 
     const resetRow = rrows[0];
-
     if (resetRow.used_at) return res.status(400).json({ message: "Token already used" });
 
-    // check expiration
-    const [expCheck] = await db.query(
-      `SELECT (NOW() > ?) AS expired`,
-      [resetRow.expires_at]
-    );
-    if (expCheck[0].expired) return res.status(400).json({ message: "Token expired" });
+    const expiresAt = new Date(resetRow.expires_at).getTime();
+    if (Date.now() > expiresAt) return res.status(400).json({ message: "Token expired" });
 
-    // Update password
     const password_hash = await bcrypt.hash(newPassword, 10);
     await db.query("UPDATE users SET password_hash=? WHERE id=?", [password_hash, userId]);
 
-    // Mark token used
     await db.query("UPDATE password_resets SET used_at=NOW() WHERE id=?", [resetRow.id]);
 
-    // Optional: revoke all refresh tokens for this user (recommended)
-    await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL", [userId]);
+    // revoke all refresh tokens (recommended)
+    await db.query(
+      "UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL",
+      [userId]
+    );
 
     res.json({ message: "Password reset successful. Please login." });
   } catch (err) {
@@ -280,7 +287,5 @@ router.post("/reset-password", loginLimiter, async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
-
-
 
 export default router;

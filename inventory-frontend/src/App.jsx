@@ -13,6 +13,7 @@ import Products from "./pages/Products";
 import Categories from "./pages/Categories";
 import Stock from "./pages/Stock";
 
+
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
 
@@ -77,7 +78,7 @@ export default function App() {
                           </RequireAdmin>
                         }
                       />
-
+                      
                       {/* fallback */}
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>

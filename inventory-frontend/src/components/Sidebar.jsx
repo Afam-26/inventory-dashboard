@@ -1,33 +1,27 @@
 import { Link } from "react-router-dom";
 
-export default function Sidebar() {
+export default function Sidebar({ user }) {
+  const isAdmin = user?.role === "admin";
+  const linkStyle = { color: "#fff", textDecoration: "none" };
+
   return (
-    <div style={{
-      width: 220,
-      background: "#111827",
-      color: "#fff",
-      padding: 20
-    }}>
+    <div style={{ width: 220, background: "#111827", color: "#fff", padding: 20 }}>
       <h2>Inventory</h2>
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <Link to="/" style={{ color: "#fff", textDecoration: "none" }}>
-          Dashboard
-        </Link>
-        <Link to="/products" style={{ color: "#fff", textDecoration: "none" }}>
-          Products
-        </Link>
-        <Link to="/categories" style={{ color: "#fff", textDecoration: "none" }}>
-          Categories
-          
-        </Link>
-        <Link to="/stock" style={{ color: "#fff", textDecoration: "none" }}>
-          Stock In / Out
-        </Link>
+        <Link to="/" style={linkStyle}>Dashboard</Link>
+
+        {/* ✅ Staff can view */}
+        <Link to="/products" style={linkStyle}>Products</Link>
+
+        {/* ✅ Admin only */}
+        {isAdmin && (
+          <>
+            <Link to="/categories" style={linkStyle}>Categories</Link>
+            <Link to="/stock" style={linkStyle}>Stock In / Out</Link>
+          </>
+        )}
       </nav>
     </div>
   );
 }
-
-
-console.log("API BASE:", import.meta.env.VITE_API_BASE);

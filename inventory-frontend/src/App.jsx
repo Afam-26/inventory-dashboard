@@ -1,18 +1,20 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import Sidebar from "./components/Sidebar";
 import { useState } from "react";
+
+import Sidebar from "./components/Sidebar";
+import RequireAdmin from "./components/RequireAdmin";
+
 import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
-
-import { getStoredUser, setToken, setStoredUser } from "./services/api";
-import RequireAdmin from "./components/RequireAdmin";
+import Unauthorized from "./pages/Unauthorized";
 
 import Dashboard from "./pages/Dashboard";
 import Products from "./pages/Products";
 import Categories from "./pages/Categories";
 import Stock from "./pages/Stock";
 
+import { getStoredUser, setToken, setStoredUser } from "./services/api";
 
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
@@ -26,19 +28,26 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* ✅ Public routes (no login required) */}
+        {/* ✅ Public routes */}
         <Route path="/login" element={<Login onSuccess={(u) => setUser(u)} />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
 
-        {/* ✅ Protected app (login required) */}
+        {/* ✅ Protected app (requires login) */}
         <Route
           path="/*"
           element={
             user ? (
               <div>
-                <div style={{ display: "flex", justifyContent: "space-between", padding: 10 }}>
-                  <p>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    padding: 10,
+                    alignItems: "center",
+                  }}
+                >
+                  <p style={{ margin: 0 }}>
                     Logged in as <b>{user.email}</b> ({user.role})
                   </p>
                   <button className="btn" onClick={logout}>
@@ -47,20 +56,17 @@ export default function App() {
                 </div>
 
                 <div style={{ display: "flex", minHeight: "100vh" }}>
+                  {/* ✅ Pass user to Sidebar */}
                   <Sidebar user={user} />
+
                   <main style={{ flex: 1, padding: 20 }}>
                     <Routes>
                       <Route path="/" element={<Dashboard user={user} />} />
 
-                      <Route
-                        path="/products"
-                        element={
-                          <RequireAdmin user={user}>
-                            <Products user={user} />
-                          </RequireAdmin>
-                        }
-                      />
+                      {/* ✅ Products: anyone logged in can view (read-only for staff handled inside Products page) */}
+                      <Route path="/products" element={<Products user={user} />} />
 
+                      {/* ✅ Admin-only */}
                       <Route
                         path="/categories"
                         element={
@@ -78,8 +84,10 @@ export default function App() {
                           </RequireAdmin>
                         }
                       />
-                      <Route path="/unauthorized" element={<h2>Access denied</h2>} />
-                        
+
+                      {/* ✅ Unauthorized page */}
+                      <Route path="/unauthorized" element={<Unauthorized />} />
+
                       {/* fallback */}
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
@@ -87,7 +95,6 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              // If not logged in, go to login
               <Navigate to="/login" replace />
             )
           }

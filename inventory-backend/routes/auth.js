@@ -101,12 +101,16 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     // cookie for refresh
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
+        
     await logAudit(req, {
       action: "LOGIN",
       entity_type: "user",
       entity_id: user.id,
+      user_id: user.id,
+      user_email: user.email,
       details: { email: user.email, role: user.role },
     });
+
 
 
     res.json({

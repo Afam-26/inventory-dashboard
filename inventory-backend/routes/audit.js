@@ -35,95 +35,90 @@ router.get(
   auditLimiter,
   async (req, res) => {
     try {
-      const {
-        q = "",
-        action = "",
-        entity = "",
-        actor_email = "",
-        page = "1",
-        limit = "50",
-      } = req.query;
+      // routes/audit.js (inside router.get handler)
+const {
+  q = "",
+  action = "",
+  entity_type = "",
+  user_email = "",
+  page = "1",
+  limit = "50",
+} = req.query;
 
-      const pageNum = Math.max(1, Number(page) || 1);
-      const limitNum = Math.min(200, Math.max(1, Number(limit) || 50));
-      const offset = (pageNum - 1) * limitNum;
+const pageNum = Math.max(1, Number(page) || 1);
+const limitNum = Math.min(200, Math.max(1, Number(limit) || 50));
+const offset = (pageNum - 1) * limitNum;
 
-      const where = [];
-      const params = [];
+const where = [];
+const params = [];
 
-      if (action) {
-        where.push("action = ?");
-        params.push(action);
-      }
+if (action) {
+  where.push("action = ?");
+  params.push(action);
+}
 
-      if (entity) {
-        where.push("entity = ?");
-        params.push(entity);
-      }
+if (entity_type) {
+  where.push("entity_type = ?");
+  params.push(entity_type);
+}
 
-      if (actor_email) {
-        where.push("actor_email = ?");
-        params.push(actor_email.toLowerCase());
-      }
+if (user_email) {
+  where.push("user_email = ?");
+  params.push(user_email.toLowerCase());
+}
 
-      if (q) {
-        where.push(
-          `(actor_email LIKE ? OR action LIKE ? OR entity LIKE ? OR entity_id LIKE ?)`
-        );
-        const like = `%${q}%`;
-        params.push(like, like, like, like);
-      }
+if (q) {
+  where.push(
+    `(user_email LIKE ? OR action LIKE ? OR entity_type LIKE ? OR CAST(entity_id AS CHAR) LIKE ?)`
+  );
+  const like = `%${q}%`;
+  params.push(like, like, like, like);
+}
 
-      const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-      /* total count */
-      const [[countRow]] = await db.query(
-        `SELECT COUNT(*) AS total FROM audit_logs ${whereSql}`,
-        params
-      );
+const [[countRow]] = await db.query(
+  `SELECT COUNT(*) AS total FROM audit_logs ${whereSql}`,
+  params
+);
 
-      /* rows */
-      const [rows] = await db.query(
-        `
-        SELECT
-          id,
-          actor_user_id,
-          actor_email,
-          actor_role,
-          action,
-          entity,
-          entity_id,
-          metadata,
-          ip,
-          user_agent,
-          created_at
-        FROM audit_logs
-        ${whereSql}
-        ORDER BY id DESC
-        LIMIT ? OFFSET ?
-        `,
-        [...params, limitNum, offset]
-      );
+const [rows] = await db.query(
+  `
+  SELECT
+    id,
+    user_id,
+    user_email,
+    action,
+    entity_type,
+    entity_id,
+    details,
+    ip_address,
+    user_agent,
+    created_at
+  FROM audit_logs
+  ${whereSql}
+  ORDER BY id DESC
+  LIMIT ? OFFSET ?
+  `,
+  [...params, limitNum, offset]
+);
 
-      /* parse metadata safely */
-      const parsed = rows.map((r) => {
-        let meta = r.metadata;
-        if (typeof meta === "string") {
-          try {
-            meta = JSON.parse(meta);
-          } catch {
-            /* leave as string */
-          }
-        }
-        return { ...r, metadata: meta };
-      });
+// details is JSON already; but some drivers return string
+const parsed = rows.map((r) => {
+  let d = r.details;
+  if (typeof d === "string") {
+    try { d = JSON.parse(d); } catch {}
+  }
+  return { ...r, details: d };
+});
 
-      res.json({
-        page: pageNum,
-        limit: limitNum,
-        total: Number(countRow?.total || 0),
-        rows: parsed,
-      });
+res.json({
+  page: pageNum,
+  limit: limitNum,
+  total: Number(countRow?.total || 0),
+  rows: parsed,
+});
+
     } catch (err) {
       console.error("AUDIT GET ERROR:", err);
       res.status(500).json({ message: "Database error" });

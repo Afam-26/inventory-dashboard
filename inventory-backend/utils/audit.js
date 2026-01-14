@@ -2,41 +2,47 @@
 import { db } from "../config/db.js";
 
 /**
- * logAudit(req, { action, entity, entity_id, metadata })
+ * logAudit(req, { action, entity_type, entity_id, details })
  *
- * Matches schema used in routes/audit.js:
- * actor_user_id, actor_email, actor_role, action, entity, entity_id,
- * metadata, ip, user_agent, created_at
+ * Writes into MySQL audit_logs table schema:
+ * (user_id, user_email, action, entity_type, entity_id, details, ip_address, user_agent)
+ *
+ * Best-effort: never crashes your API if auditing fails.
  */
-export async function logAudit(req, { action, entity = null, entity_id = null, metadata = {} }) {
+export async function logAudit(
+  req,
+  { action, entity_type, entity_id = null, details = null }
+) {
   try {
-    const actorUserId = req.user?.id ?? null;
-    const actorEmail = (req.user?.email ?? null)?.toLowerCase?.() ?? null;
-    const actorRole = req.user?.role ?? null;
+    const userId = req.user?.id ?? null;
+    const userEmail = (req.user?.email ?? null)?.toLowerCase?.() ?? null;
 
-    const ip =
+    const ipAddress =
       (req.headers["x-forwarded-for"]?.toString().split(",")[0] || "").trim() ||
       req.socket?.remoteAddress ||
       null;
 
     const userAgent = req.headers["user-agent"] || null;
 
-    // If your schema has metadata JSON/TEXT
-    const meta = metadata && typeof metadata === "object" ? metadata : { value: metadata };
+    const safeDetails =
+      details == null
+        ? null
+        : typeof details === "object"
+        ? details
+        : { value: details };
 
     await db.query(
       `INSERT INTO audit_logs
-        (actor_user_id, actor_email, actor_role, action, entity, entity_id, metadata, ip, user_agent)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (user_id, user_email, action, entity_type, entity_id, details, ip_address, user_agent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        actorUserId,
-        actorEmail,
-        actorRole,
+        userId,
+        userEmail,
         action,
-        entity,
+        entity_type,
         entity_id,
-        JSON.stringify(meta),
-        ip,
+        safeDetails ? JSON.stringify(safeDetails) : null,
+        ipAddress,
         userAgent,
       ]
     );

@@ -26,12 +26,13 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
     const [result] = await db.query("INSERT INTO categories (name) VALUES (?)", [name.trim()]);
 
     // ✅ audit (do NOT insert again)
-    await logAudit(req, {
-      action: "CATEGORY_CREATE",
-      entity: "category",
-      entity_id: result.insertId,
-      metadata: { name: name.trim() },
-    });
+  await logAudit(req, {
+    action: "CATEGORY_CREATE",
+    entity_type: "category",
+    entity_id: result.insertId,
+    details: { name: name.trim() },
+  });
+
 
     res.json({ message: "Category created", id: result.insertId });
   } catch (err) {

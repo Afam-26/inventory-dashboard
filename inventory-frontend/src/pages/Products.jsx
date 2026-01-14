@@ -165,7 +165,7 @@ export default function Products({user}) {
             <tr key={p.id}>
               <td>{p.name}</td>
               <td>{p.sku}</td>
-              <td>{p.category_name || "-"}</td>
+              <td>{p.category ?? "-"}</td>
               <td>{p.quantity}</td>
               <td>{p.cost_price}</td>
               <td>{p.selling_price}</td>

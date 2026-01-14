@@ -65,12 +65,13 @@ router.post("/update", requireAuth, requireRole("admin"), async (req, res) => {
 
     await connection.commit();
 
-    await logAudit(req, {
+   await logAudit(req, {
       action: type === "IN" ? "STOCK_IN" : "STOCK_OUT",
-      entity: "product",
+      entity_type: "product",
       entity_id: pid,
-      metadata: { product_name: product.name, qty, reason, oldQty, newQty },
+      details: { product_name: product.name, qty, reason, oldQty, newQty },
     });
+
 
     res.json({ message: "Stock updated", newQty });
   } catch (err) {

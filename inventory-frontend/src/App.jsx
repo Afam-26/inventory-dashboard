@@ -78,7 +78,8 @@ export default function App() {
                           </RequireAdmin>
                         }
                       />
-                      
+                      <Route path="/unauthorized" element={<h2>Access denied</h2>} />
+                        
                       {/* fallback */}
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>

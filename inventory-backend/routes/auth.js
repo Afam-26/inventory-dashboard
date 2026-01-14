@@ -4,6 +4,8 @@ import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { db } from "../config/db.js";
+import { logAudit } from "../utils/audit.js";
+
 
 const router = express.Router();
 
@@ -99,6 +101,13 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     // cookie for refresh
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
+    await logAudit(req, {
+      action: "LOGIN",
+      entity_type: "user",
+      entity_id: user.id,
+      details: { email: user.email, role: user.role },
+    });
+
 
     res.json({
       token: accessToken,

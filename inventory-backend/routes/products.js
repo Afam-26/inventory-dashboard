@@ -65,11 +65,11 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
       ]
     );
 
-    await logAudit(req, {
+   await logAudit(req, {
       action: "PRODUCT_CREATE",
-      entity: "product",
+      entity_type: "product",
       entity_id: result.insertId,
-      metadata: {
+      details: {
         name: name.trim(),
         sku: sku.trim(),
         category_id: cid,
@@ -79,6 +79,7 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
         reorder_level: Number(reorder_level) || 0,
       },
     });
+
 
     res.json({ message: "Product created", id: result.insertId });
   } catch (err) {

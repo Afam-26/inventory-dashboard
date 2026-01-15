@@ -1,16 +1,24 @@
 // utils/mailer.js
 import { Resend } from "resend";
 
-function must(name) {
+function getEnv(name) {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing env var: ${name}`);
-  return v;
+  return v && String(v).trim() ? String(v).trim() : "";
 }
 
-const resend = new Resend(must("RESEND_API_KEY"));
-
+/**
+ * sendEmail({ to, subject, html, text })
+ * - Does not crash app startup if RESEND_API_KEY is missing.
+ * - Throws ONLY when you actually try to send an email.
+ */
 export async function sendEmail({ to, subject, html, text }) {
-  const from = must("EMAIL_FROM");
+  const apiKey = getEnv("RESEND_API_KEY");
+  const from = getEnv("EMAIL_FROM");
+
+  if (!apiKey) throw new Error("Missing env var: RESEND_API_KEY");
+  if (!from) throw new Error("Missing env var: EMAIL_FROM");
+
+  const resend = new Resend(apiKey);
 
   const { error } = await resend.emails.send({
     from,
@@ -22,6 +30,3 @@ export async function sendEmail({ to, subject, html, text }) {
 
   if (error) throw new Error(error.message || "Resend send failed");
 }
-
-console.log("RESEND KEY PRESENT:", !!process.env.RESEND_API_KEY);
-console.log("EMAIL_FROM:", process.env.EMAIL_FROM);

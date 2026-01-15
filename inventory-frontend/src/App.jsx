@@ -13,6 +13,7 @@ import Dashboard from "./pages/Dashboard";
 import Products from "./pages/Products";
 import Categories from "./pages/Categories";
 import Stock from "./pages/Stock";
+import AuditLogs from "./pages/AuditLogs";
 
 import { getStoredUser, setToken, setStoredUser } from "./services/api";
 
@@ -87,6 +88,7 @@ export default function App() {
 
                       {/* ✅ Unauthorized page */}
                       <Route path="/unauthorized" element={<Unauthorized />} />
+                      <Route path="/audit" element={<AuditLogs user={user} />} />
 
                       {/* fallback */}
                       <Route path="*" element={<Navigate to="/" replace />} />

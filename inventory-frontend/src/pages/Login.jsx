@@ -16,17 +16,20 @@ export default function Login({ onSuccess }) {
     setLoading(true);
 
     try {
+      // ✅ Sends credentials (refresh_token cookie) via services/api.js
       const data = await login(email, password); // { token, user }
 
+      // ✅ Store access token + user
       setToken(data.token);
       setStoredUser(data.user);
 
+      // ✅ Lift user state to App.jsx
       onSuccess?.(data.user);
 
-      // ✅ redirect into your protected app
+      // ✅ Enter protected app
       navigate("/", { replace: true });
     } catch (e2) {
-      setErr(e2?.message || "Login failed");
+      setErr(e2?.message || "Invalid email or password");
     } finally {
       setLoading(false);
     }
@@ -39,18 +42,23 @@ export default function Login({ onSuccess }) {
       <form onSubmit={handleSubmit}>
         <input
           className="input"
+          type="email"
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
+          required
         />
 
         <input
           className="input"
-          placeholder="Password"
           type="password"
+          placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
+          autoComplete="current-password"
           style={{ marginTop: 10 }}
+          required
         />
 
         <button
@@ -62,7 +70,12 @@ export default function Login({ onSuccess }) {
         </button>
       </form>
 
-      {err && <p style={{ color: "red" }}>{err}</p>}
+      {err && (
+        <p style={{ color: "red", marginTop: 10 }}>
+          {err}
+        </p>
+      )}
+
       <p style={{ marginTop: 10 }}>
         <a href="/forgot-password">Forgot password?</a>
       </p>

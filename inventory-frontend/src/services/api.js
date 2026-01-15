@@ -57,29 +57,21 @@ export function setStoredUser(user) {
 
 /**
  * ============================
- * AUTH
+ * Base Fetch Helpers
  * ============================
+ * - useCookie=true => credentials: "include"
+ * - useAuth=true   => add Authorization header
  */
-export async function login(email, password) {
-  const res = await fetch(`${API_BASE}/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
+async function baseFetch(url, options = {}, { useCookie = false, useAuth = false } = {}) {
+  const headers = {
+    ...(options.headers || {}),
+    ...(useAuth ? authHeaders() : {}),
+  };
 
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Login failed");
-  return data; // { token, user }
-}
-
-/**
- * Forgot password
- */
-export async function requestPasswordReset(email) {
-  const res = await fetch(`${API_BASE}/auth/forgot-password`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
+  const res = await fetch(url, {
+    ...options,
+    headers,
+    ...(useCookie ? { credentials: "include" } : {}),
   });
 
   const data = await safeJson(res);
@@ -88,18 +80,72 @@ export async function requestPasswordReset(email) {
 }
 
 /**
- * Reset password
+ * ============================
+ * AUTH
+ * ============================
+ * These are the ones that should include cookies.
  */
-export async function resetPassword(token, password) {
-  const res = await fetch(`${API_BASE}/auth/reset-password`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, password }),
-  });
 
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Reset failed");
-  return data;
+/** POST /api/auth/login (sets refresh_token cookie) */
+export async function login(email, password) {
+  return baseFetch(
+    `${API_BASE}/auth/login`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    },
+    { useCookie: true, useAuth: false }
+  ); // returns { token, user }
+}
+
+/** POST /api/auth/refresh (uses refresh_token cookie) */
+export async function refresh() {
+  return baseFetch(
+    `${API_BASE}/auth/refresh`,
+    { method: "POST" },
+    { useCookie: true, useAuth: false }
+  ); // returns { token, user }
+}
+
+/** POST /api/auth/logout (revokes refresh token + clears cookie) */
+export async function logoutApi() {
+  return baseFetch(
+    `${API_BASE}/auth/logout`,
+    { method: "POST" },
+    { useCookie: true, useAuth: false }
+  ); // returns { message }
+}
+
+/**
+ * Forgot password
+ */
+export async function requestPasswordReset(email) {
+  return baseFetch(
+    `${API_BASE}/auth/forgot-password`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    },
+    { useCookie: false, useAuth: false }
+  );
+}
+
+/**
+ * Reset password
+ * NOTE: Your backend expects: { email, token, newPassword }
+ */
+export async function resetPassword(email, token, newPassword) {
+  return baseFetch(
+    `${API_BASE}/auth/reset-password`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, token, newPassword }),
+    },
+    { useCookie: false, useAuth: false }
+  );
 }
 
 /**
@@ -108,28 +154,23 @@ export async function resetPassword(token, password) {
  * ============================
  */
 export async function getCategories() {
-  const res = await fetch(`${API_BASE}/categories`, {
-    headers: { ...authHeaders() },
-  });
-
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to load categories");
-  return data;
+  return baseFetch(
+    `${API_BASE}/categories`,
+    { headers: {} },
+    { useCookie: false, useAuth: true }
+  );
 }
 
 export async function addCategory(name) {
-  const res = await fetch(`${API_BASE}/categories`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
+  return baseFetch(
+    `${API_BASE}/categories`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
     },
-    body: JSON.stringify({ name }),
-  });
-
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to add category");
-  return data;
+    { useCookie: false, useAuth: true }
+  );
 }
 
 /**
@@ -138,28 +179,23 @@ export async function addCategory(name) {
  * ============================
  */
 export async function getProducts() {
-  const res = await fetch(`${API_BASE}/products`, {
-    headers: { ...authHeaders() },
-  });
-
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to load products");
-  return data;
+  return baseFetch(
+    `${API_BASE}/products`,
+    { headers: {} },
+    { useCookie: false, useAuth: true }
+  );
 }
 
 export async function addProduct(payload) {
-  const res = await fetch(`${API_BASE}/products`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
+  return baseFetch(
+    `${API_BASE}/products`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to add product");
-  return data;
+    { useCookie: false, useAuth: true }
+  );
 }
 
 /**
@@ -168,28 +204,23 @@ export async function addProduct(payload) {
  * ============================
  */
 export async function updateStock(payload) {
-  const res = await fetch(`${API_BASE}/stock/update`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
+  return baseFetch(
+    `${API_BASE}/stock/update`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Stock update failed");
-  return data;
+    { useCookie: false, useAuth: true }
+  );
 }
 
 export async function getMovements() {
-  const res = await fetch(`${API_BASE}/stock/movements`, {
-    headers: { ...authHeaders() },
-  });
-
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to load movements");
-  return data;
+  return baseFetch(
+    `${API_BASE}/stock/movements`,
+    { headers: {} },
+    { useCookie: false, useAuth: true }
+  );
 }
 
 /**
@@ -198,11 +229,27 @@ export async function getMovements() {
  * ============================
  */
 export async function getDashboard() {
-  const res = await fetch(`${API_BASE}/dashboard`, {
-    headers: { ...authHeaders() },
-  });
+  return baseFetch(
+    `${API_BASE}/dashboard`,
+    { headers: {} },
+    { useCookie: false, useAuth: true }
+  );
+}
 
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to load dashboard");
-  return data;
+/**
+ * ============================
+ * AUDIT LOGS
+ * ============================
+ */
+export async function getAuditLogs(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && String(v).trim() !== "") {
+      qs.set(k, String(v));
+    }
+  }
+
+  const url = `${API_BASE}/audit${qs.toString() ? `?${qs.toString()}` : ""}`;
+
+  return baseFetch(url, { headers: {} }, { useCookie: false, useAuth: true });
 }

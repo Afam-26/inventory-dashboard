@@ -5,6 +5,7 @@ import { resetPassword } from "../services/api";
 export default function ResetPassword() {
   const [params] = useSearchParams();
   const token = params.get("token");
+  const email = params.get("email"); // ✅ required by backend
 
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -26,22 +27,24 @@ export default function ResetPassword() {
 
     setLoading(true);
     try {
-      await resetPassword(token, password);
+      // ✅ matches backend: { email, token, newPassword }
+      await resetPassword(email, token, password);
+
       setMsg("Password updated successfully. You may now log in.");
       setPassword("");
       setConfirm("");
     } catch (e2) {
-      setErr(e2.message);
+      setErr(e2?.message || "Reset failed");
     } finally {
       setLoading(false);
     }
   }
 
-  if (!token) {
+  if (!token || !email) {
     return (
       <div style={{ maxWidth: 420 }}>
         <h1>Invalid link</h1>
-        <p>Password reset token is missing or invalid.</p>
+        <p>Password reset token or email is missing/invalid.</p>
         <a href="/login">Back to login</a>
       </div>
     );
@@ -51,6 +54,10 @@ export default function ResetPassword() {
     <div style={{ maxWidth: 420 }}>
       <h1>Reset password</h1>
 
+      <p style={{ opacity: 0.8, marginTop: 0 }}>
+        Resetting password for <b>{email}</b>
+      </p>
+
       <form onSubmit={handleSubmit}>
         <input
           className="input"
@@ -58,6 +65,8 @@ export default function ResetPassword() {
           placeholder="New password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
+          autoComplete="new-password"
+          required
         />
 
         <input
@@ -66,7 +75,9 @@ export default function ResetPassword() {
           placeholder="Confirm password"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
+          autoComplete="new-password"
           style={{ marginTop: 10 }}
+          required
         />
 
         <button

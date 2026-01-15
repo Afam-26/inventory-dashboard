@@ -1,10 +1,9 @@
 import { useEffect, useState } from "react";
 import { getProducts, addProduct, getCategories } from "../services/api";
 
-
-
-export default function Products({user}) {
+export default function Products({ user }) {
   const isAdmin = user?.role === "admin";
+
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [error, setError] = useState("");
@@ -24,7 +23,14 @@ export default function Products({user}) {
     setLoading(true);
     setError("");
     try {
-      const [p, c] = await Promise.all([getProducts(), getCategories()]);
+      // ✅ Staff: load products only (read-only)
+      // ✅ Admin: load products + categories
+      const results = await Promise.all([
+        getProducts(),
+        isAdmin ? getCategories() : Promise.resolve([]),
+      ]);
+
+      const [p, c] = results;
       setProducts(p);
       setCategories(c);
     } catch (e) {
@@ -36,6 +42,7 @@ export default function Products({user}) {
 
   useEffect(() => {
     loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function updateField(key, value) {
@@ -45,11 +52,18 @@ export default function Products({user}) {
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
+
+    if (!isAdmin) {
+      setError("Read-only: staff cannot add products.");
+      return;
+    }
+
     try {
       await addProduct({
         ...form,
         category_id: form.category_id ? Number(form.category_id) : null,
       });
+
       setForm({
         name: "",
         sku: "",
@@ -59,6 +73,7 @@ export default function Products({user}) {
         selling_price: 0,
         reorder_level: 10,
       });
+
       await loadAll();
     } catch (e) {
       setError(e.message);
@@ -67,88 +82,116 @@ export default function Products({user}) {
 
   return (
     <div>
-      <h1>Products</h1>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <h1 style={{ margin: 0 }}>Products</h1>
+
+        {!isAdmin && (
+          <span
+            style={{
+              fontSize: 12,
+              padding: "4px 10px",
+              borderRadius: 999,
+              border: "1px solid rgba(0,0,0,0.15)",
+              background: "rgba(0,0,0,0.03)",
+            }}
+          >
+            Read-only (Staff)
+          </span>
+        )}
+      </div>
 
       {isAdmin && (
-  <form onSubmit={handleSubmit} style={{ display: "grid", gap: 10, maxWidth: 600, marginBottom: 20 }}
-  >
-    <div style={{ display: "flex", gap: 10 }}>
-      <input
-        className="input"
-        placeholder="Product name"
-        value={form.name}
-        onChange={(e) => updateField("name", e.target.value)}
-      />
+        <form
+          onSubmit={handleSubmit}
+          style={{
+            display: "grid",
+            gap: 10,
+            maxWidth: 600,
+            marginBottom: 20,
+            marginTop: 12,
+          }}
+        >
+          <div style={{ display: "flex", gap: 10 }}>
+            <input
+              className="input"
+              placeholder="Product name"
+              value={form.name}
+              onChange={(e) => updateField("name", e.target.value)}
+              required
+            />
 
-      <input
-        className="input"
-        placeholder="SKU"
-        value={form.sku}
-        onChange={(e) => updateField("sku", e.target.value)}
-      />
-    </div>
+            <input
+              className="input"
+              placeholder="SKU"
+              value={form.sku}
+              onChange={(e) => updateField("sku", e.target.value)}
+              required
+            />
+          </div>
 
-    <div style={{ display: "flex", gap: 10 }}>
-      <select
-        className="input"
-        value={form.category_id}
-        onChange={(e) => updateField("category_id", e.target.value)}
-      >
-        <option value="">Select category</option>
-        {categories.map((c) => (
-          <option key={c.id} value={c.id}>
-            {c.name}
-          </option>
-        ))}
-      </select>
+          <div style={{ display: "flex", gap: 10 }}>
+            <select
+              className="input"
+              value={form.category_id}
+              onChange={(e) => updateField("category_id", e.target.value)}
+            >
+              <option value="">Select category</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
 
-      <input
-        className="input"
-        type="number"
-        placeholder="Quantity"
-        value={form.quantity}
-        onChange={(e) => updateField("quantity", e.target.value)}
-      />
-    </div>
+            <input
+              className="input"
+              type="number"
+              placeholder="Quantity"
+              value={form.quantity}
+              onChange={(e) => updateField("quantity", e.target.value)}
+            />
+          </div>
 
-    <div style={{ display: "flex", gap: 10 }}>
-      <input
-        className="input"
-        type="number"
-        placeholder="Cost price"
-        value={form.cost_price}
-        onChange={(e) => updateField("cost_price", e.target.value)}
-      />
+          <div style={{ display: "flex", gap: 10 }}>
+            <input
+              className="input"
+              type="number"
+              placeholder="Cost price"
+              value={form.cost_price}
+              onChange={(e) => updateField("cost_price", e.target.value)}
+            />
 
-      <input
-        className="input"
-        type="number"
-        placeholder="Selling price"
-        value={form.selling_price}
-        onChange={(e) => updateField("selling_price", e.target.value)}
-      />
+            <input
+              className="input"
+              type="number"
+              placeholder="Selling price"
+              value={form.selling_price}
+              onChange={(e) => updateField("selling_price", e.target.value)}
+            />
 
-      <input
-        className="input"
-        type="number"
-        placeholder="Reorder level"
-        value={form.reorder_level}
-        onChange={(e) => updateField("reorder_level", e.target.value)}
-      />
-    </div>
+            <input
+              className="input"
+              type="number"
+              placeholder="Reorder level"
+              value={form.reorder_level}
+              onChange={(e) => updateField("reorder_level", e.target.value)}
+            />
+          </div>
 
-    <button className="btn" type="submit">
-      Add Product
-    </button>
-  </form>
-)}
-
+          <button className="btn" type="submit">
+            Add Product
+          </button>
+        </form>
+      )}
 
       {loading && <p>Loading...</p>}
-      {error && <p style={{ color: "red" }}>{error}</p>}   
+      {error && <p style={{ color: "red" }}>{error}</p>}
 
-
-      <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
+      <table
+        border="1"
+        cellPadding="10"
+        style={{ width: "100%", borderCollapse: "collapse" }}
+      >
         <thead style={{ background: "#f3f4f6" }}>
           <tr>
             <th>Name</th>
@@ -173,10 +216,14 @@ export default function Products({user}) {
             </tr>
           ))}
           {!loading && products.length === 0 && (
-            <tr><td colSpan="7" style={{ textAlign: "center" }}>No products yet</td></tr>
+            <tr>
+              <td colSpan="7" style={{ textAlign: "center" }}>
+                No products yet
+              </td>
+            </tr>
           )}
         </tbody>
-      </table>      
+      </table>
     </div>
   );
 }

@@ -18,7 +18,7 @@ export default function ForgotPassword() {
       setMsg("If this email exists, a reset link has been sent.");
       setEmail("");
     } catch (e2) {
-      setErr(e2.message);
+      setErr(e2?.message || "Request failed");
     } finally {
       setLoading(false);
     }
@@ -31,9 +31,12 @@ export default function ForgotPassword() {
       <form onSubmit={handleSubmit}>
         <input
           className="input"
+          type="email"
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
+          autoComplete="email"
+          required
         />
 
         <button

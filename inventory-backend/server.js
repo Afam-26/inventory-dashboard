@@ -14,6 +14,8 @@ import auditRoutes from "./routes/audit.js";
 import usersRoutes from "./routes/users.js";
 
 
+
+
 const app = express();
 
 /**
@@ -80,8 +82,6 @@ app.options(/.*/, cors(corsOptions));
  */
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
-app.use("/api/users", usersRoutes);
-
 
 /**
  * ✅ Rate limit (global /api)
@@ -110,6 +110,7 @@ app.use("/api/categories", categoriesRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/stock", stockRoutes);
 app.use("/api/audit", auditRoutes);
+app.use("/api/users", usersRoutes);
 
 /**
  * 404

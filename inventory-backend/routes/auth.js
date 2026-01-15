@@ -7,6 +7,7 @@ import crypto from "crypto";
 import { db } from "../config/db.js";
 import { sendEmail } from "../utils/mailer.js";
 import { passwordResetEmail } from "../utils/emailTemplates.js";
+import { logAudit } from "../utils/audit.js";
 
 const router = express.Router();
 
@@ -71,11 +72,21 @@ router.post("/login", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    if (!email?.trim() || !password) {
+    const cleanEmail = String(email || "").trim().toLowerCase();
+
+    if (!cleanEmail || !password) {
+      // ✅ audit missing fields (no user_id)
+      await logAudit(req, {
+        action: "LOGIN_FAILED",
+        entity_type: "user",
+        entity_id: null,
+        details: { email: cleanEmail || null, reason: "MISSING_FIELDS" },
+        user_id: null,
+        user_email: cleanEmail || null,
+      });
+
       return res.status(400).json({ message: "Email and password required" });
     }
-
-    const cleanEmail = email.trim().toLowerCase();
 
     const [rows] = await db.query(
       "SELECT id, full_name, email, password_hash, role FROM users WHERE email=? LIMIT 1",
@@ -83,10 +94,32 @@ router.post("/login", loginLimiter, async (req, res) => {
     );
 
     const user = rows[0];
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    if (!user) {
+      await logAudit(req, {
+        action: "LOGIN_FAILED",
+        entity_type: "user",
+        entity_id: null,
+        details: { email: cleanEmail, reason: "INVALID_CREDENTIALS" },
+        user_id: null,
+        user_email: cleanEmail,
+      });
+
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+    if (!ok) {
+      await logAudit(req, {
+        action: "LOGIN_FAILED",
+        entity_type: "user",
+        entity_id: user.id,
+        details: { email: user.email, reason: "INVALID_CREDENTIALS" },
+        user_id: user.id,
+        user_email: user.email,
+      });
+
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     // short-lived access token
     const accessToken = signAccessToken(user);
@@ -102,6 +135,16 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     // cookie for refresh
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
+
+    // ✅ audit successful login (IMPORTANT: pass user_id/user_email explicitly)
+    await logAudit(req, {
+      action: "LOGIN",
+      entity_type: "user",
+      entity_id: user.id,
+      details: { email: user.email, role: user.role, success: true },
+      user_id: user.id,
+      user_email: user.email,
+    });
 
     res.json({
       token: accessToken,
@@ -124,8 +167,16 @@ router.post("/login", loginLimiter, async (req, res) => {
  */
 router.post("/refresh", refreshLimiter, async (req, res) => {
   try {
-    const rt = req.cookies?.refresh_token; // requires cookie-parser in server.js
-    if (!rt) return res.status(401).json({ message: "Missing refresh token" });
+    const rt = req.cookies?.refresh_token;
+    if (!rt) {
+      await logAudit(req, {
+        action: "REFRESH_FAILED",
+        entity_type: "auth",
+        entity_id: null,
+        details: { reason: "MISSING_REFRESH_COOKIE" },
+      });
+      return res.status(401).json({ message: "Missing refresh token" });
+    }
 
     const [rows] = await db.query(
       `SELECT user_id, expires_at, revoked_at
@@ -136,11 +187,24 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
 
     const row = rows[0];
     if (!row || row.revoked_at) {
+      await logAudit(req, {
+        action: "REFRESH_FAILED",
+        entity_type: "auth",
+        entity_id: null,
+        details: { reason: "INVALID_OR_REVOKED_REFRESH_TOKEN" },
+      });
       return res.status(401).json({ message: "Invalid refresh token" });
     }
 
     const expiresAt = new Date(row.expires_at).getTime();
     if (Date.now() > expiresAt) {
+      await logAudit(req, {
+        action: "REFRESH_FAILED",
+        entity_type: "auth",
+        entity_id: null,
+        details: { reason: "REFRESH_TOKEN_EXPIRED", user_id: row.user_id },
+        user_id: row.user_id,
+      });
       return res.status(401).json({ message: "Refresh token expired" });
     }
 
@@ -150,9 +214,27 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
     );
 
     const user = users[0];
-    if (!user) return res.status(401).json({ message: "User not found" });
+    if (!user) {
+      await logAudit(req, {
+        action: "REFRESH_FAILED",
+        entity_type: "auth",
+        entity_id: null,
+        details: { reason: "USER_NOT_FOUND", user_id: row.user_id },
+        user_id: row.user_id,
+      });
+      return res.status(401).json({ message: "User not found" });
+    }
 
     const newAccess = signAccessToken(user);
+
+    await logAudit(req, {
+      action: "REFRESH",
+      entity_type: "auth",
+      entity_id: user.id,
+      details: { success: true },
+      user_id: user.id,
+      user_email: user.email,
+    });
 
     res.json({
       token: newAccess,
@@ -177,11 +259,35 @@ router.post("/logout", async (req, res) => {
   try {
     const rt = req.cookies?.refresh_token;
 
+    // best effort: find user_id before revoke (for audit)
+    let userId = null;
+    let userEmail = null;
+
     if (rt) {
+      const [[r]] = await db.query(
+        "SELECT user_id FROM refresh_tokens WHERE token=? LIMIT 1",
+        [rt]
+      );
+      userId = r?.user_id ?? null;
+
+      if (userId) {
+        const [[u]] = await db.query("SELECT email FROM users WHERE id=? LIMIT 1", [userId]);
+        userEmail = u?.email ?? null;
+      }
+
       await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE token=?", [rt]);
     }
 
     res.clearCookie("refresh_token", { ...refreshCookieOptions(), maxAge: 0 });
+
+    await logAudit(req, {
+      action: "LOGOUT",
+      entity_type: "auth",
+      entity_id: userId,
+      details: { success: true },
+      user_id: userId,
+      user_email: userEmail,
+    });
 
     res.json({ message: "Logged out" });
   } catch (err) {
@@ -249,9 +355,7 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
 
     res.json({
       message: "If the email exists, a reset link was sent.",
-      ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd
-        ? { dev_reset_link: resetLink }
-        : {}),
+      ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd ? { dev_reset_link: resetLink } : {}),
       ...(!isProd ? { emailStatus, emailError } : {}),
     });
   } catch (err) {
@@ -268,9 +372,7 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
     const { email, token, newPassword } = req.body;
 
     if (!email?.trim() || !token?.trim() || !newPassword) {
-      return res
-        .status(400)
-        .json({ message: "Email, token and new password are required" });
+      return res.status(400).json({ message: "Email, token and new password are required" });
     }
 
     if (String(newPassword).length < 8) {

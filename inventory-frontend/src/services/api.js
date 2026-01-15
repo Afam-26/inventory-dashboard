@@ -254,33 +254,62 @@ export async function getAuditLogs(params = {}) {
   return baseFetch(url, { headers: {} }, { useCookie: false, useAuth: true });
 }
 
+/**
+ * ============================
+ * USERS (Admin)
+ * ============================
+ */
 export async function getUsers() {
-  const res = await fetch(`${API_BASE}/users`, {
-    headers: { ...authHeaders() },
-  });
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to load users");
-  return data;
+  return baseFetch(`${API_BASE}/users`, { headers: {} }, { useAuth: true });
 }
 
-export async function updateUserRoleById(userId, role) {
-  const res = await fetch(`${API_BASE}/users/${userId}/role`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ role }),
-  });
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to update role");
-  return data;
+export async function createUser(payload) {
+  return baseFetch(
+    `${API_BASE}/users`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useAuth: true }
+  );
 }
 
-export async function updateUserRoleByEmail(email, role) {
-  const res = await fetch(`${API_BASE}/users/role-by-email`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({ email, role }),
-  });
-  const data = await safeJson(res);
-  if (!res.ok) throw new Error(data.message || "Failed to update role");
-  return data;
+export async function updateUserRoleById(id, role) {
+  return baseFetch(
+    `${API_BASE}/users/${id}/role`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role }),
+    },
+    { useAuth: true }
+  );
 }
+
+
+/**
+ * ============================
+ * PRODUCTS (Admin edit/delete)
+ * ============================
+ */
+export async function updateProduct(id, payload) {
+  return baseFetch(
+    `${API_BASE}/products/${id}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useAuth: true }
+  );
+}
+
+export async function deleteProduct(id) {
+  return baseFetch(
+    `${API_BASE}/products/${id}`,
+    { method: "DELETE" },
+    { useAuth: true }
+  );
+}
+

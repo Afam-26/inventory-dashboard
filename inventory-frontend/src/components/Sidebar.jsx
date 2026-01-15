@@ -10,9 +10,7 @@ export default function Sidebar({ user }) {
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <Link to="/" style={linkStyle}>Dashboard</Link>
-        <Link to="/audit" style={linkStyle}>
-          {isAdmin ? "Audit Logs" : "My Activity"}
-        </Link>
+       
 
 
         {/* ✅ Staff can view */}
@@ -27,6 +25,9 @@ export default function Sidebar({ user }) {
 
           </>
         )}
+         <Link to="/audit" style={linkStyle}>
+          {isAdmin ? "Audit Logs" : "My Activity"}
+        </Link>
       </nav>
     </div>
   );

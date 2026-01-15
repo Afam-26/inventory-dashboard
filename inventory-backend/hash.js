@@ -1,4 +1,7 @@
 import bcrypt from "bcryptjs";
 
-const hash = await bcrypt.hash("Staff#12345", 10);
+const password = "Macanthony26";
+const hash = await bcrypt.hash(password, 10);
+
 console.log(hash);
+

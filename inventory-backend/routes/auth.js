@@ -1,11 +1,12 @@
+// routes/auth.js
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { db } from "../config/db.js";
-import { logAudit } from "../utils/audit.js";
-
+import { sendEmail } from "../utils/mailer.js";
+import { passwordResetEmail } from "../utils/emailTemplates.js";
 
 const router = express.Router();
 
@@ -101,17 +102,6 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     // cookie for refresh
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
-        
-    await logAudit(req, {
-      action: "LOGIN",
-      entity_type: "user",
-      entity_id: user.id,
-      user_id: user.id,
-      user_email: user.email,
-      details: { email: user.email, role: user.role },
-    });
-
-
 
     res.json({
       token: accessToken,
@@ -202,6 +192,7 @@ router.post("/logout", async (req, res) => {
 
 /**
  * POST /api/auth/forgot-password
+ * Sends email via Resend (dev can optionally also return dev_reset_link)
  */
 router.post("/forgot-password", resetLimiter, async (req, res) => {
   try {
@@ -210,12 +201,23 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
 
     const normalized = email.trim().toLowerCase();
 
+    // ✅ declare once; safe for all branches
+    let emailStatus = "not_sent";
+    let emailError = null;
+
     const [rows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [
       normalized,
     ]);
 
     // prevent user enumeration
-    if (!rows.length) return res.json({ message: "If the email exists, a reset link was sent." });
+    if (!rows.length) {
+      return res.json({
+        message: "If the email exists, a reset link was sent.",
+        ...(!isProd
+          ? { dev_note: "Email not found in users table (no reset created)." }
+          : {}),
+      });
+    }
 
     const user = rows[0];
 
@@ -228,14 +230,29 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
       [user.id, tokenHash]
     );
 
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${rawToken}&email=${encodeURIComponent(
+    const front = process.env.FRONTEND_URL || (isProd ? "" : "http://localhost:5173");
+
+    const resetLink = `${front}/reset-password?token=${rawToken}&email=${encodeURIComponent(
       normalized
     )}`;
 
+    // ✅ Send email (do not fail request if email fails)
+    try {
+      const { subject, html, text } = passwordResetEmail({ resetLink, minutes: 30 });
+      await sendEmail({ to: normalized, subject, html, text });
+      emailStatus = "sent";
+    } catch (mailErr) {
+      emailStatus = "failed";
+      emailError = mailErr?.message || String(mailErr);
+      console.error("EMAIL SEND ERROR:", emailError);
+    }
+
     res.json({
       message: "If the email exists, a reset link was sent.",
-      // remove in production:
-      dev_reset_link: resetLink,
+      ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd
+        ? { dev_reset_link: resetLink }
+        : {}),
+      ...(!isProd ? { emailStatus, emailError } : {}),
     });
   } catch (err) {
     console.error("FORGOT PASSWORD ERROR:", err);
@@ -251,7 +268,9 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
     const { email, token, newPassword } = req.body;
 
     if (!email?.trim() || !token?.trim() || !newPassword) {
-      return res.status(400).json({ message: "Email, token and new password are required" });
+      return res
+        .status(400)
+        .json({ message: "Email, token and new password are required" });
     }
 
     if (String(newPassword).length < 8) {

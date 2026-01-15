@@ -23,6 +23,8 @@ export default function Sidebar({ user }) {
           <>
             <Link to="/categories" style={linkStyle}>Categories</Link>
             <Link to="/stock" style={linkStyle}>Stock In / Out</Link>
+            <Link to="/users" style={linkStyle}>Users</Link>
+
           </>
         )}
       </nav>

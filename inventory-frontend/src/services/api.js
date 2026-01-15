@@ -253,3 +253,34 @@ export async function getAuditLogs(params = {}) {
 
   return baseFetch(url, { headers: {} }, { useCookie: false, useAuth: true });
 }
+
+export async function getUsers() {
+  const res = await fetch(`${API_BASE}/users`, {
+    headers: { ...authHeaders() },
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.message || "Failed to load users");
+  return data;
+}
+
+export async function updateUserRoleById(userId, role) {
+  const res = await fetch(`${API_BASE}/users/${userId}/role`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ role }),
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.message || "Failed to update role");
+  return data;
+}
+
+export async function updateUserRoleByEmail(email, role) {
+  const res = await fetch(`${API_BASE}/users/role-by-email`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ email, role }),
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data.message || "Failed to update role");
+  return data;
+}

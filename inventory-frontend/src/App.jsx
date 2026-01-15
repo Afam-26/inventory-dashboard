@@ -14,6 +14,8 @@ import Products from "./pages/Products";
 import Categories from "./pages/Categories";
 import Stock from "./pages/Stock";
 import AuditLogs from "./pages/AuditLogs";
+import UsersAdmin from "./pages/UsersAdmin";
+
 
 import { getStoredUser, setToken, setStoredUser } from "./services/api";
 
@@ -89,6 +91,14 @@ export default function App() {
                       {/* ✅ Unauthorized page */}
                       <Route path="/unauthorized" element={<Unauthorized />} />
                       <Route path="/audit" element={<AuditLogs user={user} />} />
+                      <Route
+                        path="/users"
+                        element={
+                          <RequireAdmin user={user}>
+                            <UsersAdmin user={user} />
+                          </RequireAdmin>
+                        }
+                      />
 
                       {/* fallback */}
                       <Route path="*" element={<Navigate to="/" replace />} />

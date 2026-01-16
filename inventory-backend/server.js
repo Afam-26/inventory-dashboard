@@ -4,9 +4,7 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
-
 import { db } from "./config/db.js";
-
 import productsRoutes from "./routes/products.js";
 import categoriesRoutes from "./routes/categories.js";
 import dashboardRoutes from "./routes/dashboard.js";
@@ -137,7 +135,38 @@ function startAuditRetentionJob() {
   if (typeof timer.unref === "function") timer.unref();
 }
 
+
+function startAlertCooldownCleanupJob() {
+  const purgeDays = Number(process.env.ALERT_COOLDOWN_PURGE_DAYS || 30);
+
+  if (!purgeDays || purgeDays < 1) {
+    console.log("Alert cooldown cleanup disabled (ALERT_COOLDOWN_PURGE_DAYS not set or invalid).");
+    return;
+  }
+
+  async function purge() {
+    try {
+      const [result] = await db.query(
+        `DELETE FROM alert_cooldowns WHERE sent_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+        [purgeDays]
+      );
+      console.log(
+        `ALERT COOLDOWN CLEANUP: Purged ${result.affectedRows} rows older than ${purgeDays} days.`
+      );
+    } catch (e) {
+      console.error("ALERT COOLDOWN CLEANUP ERROR:", e?.message || e);
+    }
+  }
+
+  // run once on boot
+  purge();
+
+  // run every 24 hours
+  setInterval(purge, 24 * 60 * 60 * 1000);
+}
+
 startAuditRetentionJob();
+startAlertCooldownCleanupJob();
 
 /**
  * 404

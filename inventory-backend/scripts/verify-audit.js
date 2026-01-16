@@ -1,4 +1,4 @@
-import "dotenv/config"; // <-- add this line first
+import "dotenv/config"; //
 import { db } from "../config/db.js";
 import { verifyAuditChain } from "../utils/audit.js";
 

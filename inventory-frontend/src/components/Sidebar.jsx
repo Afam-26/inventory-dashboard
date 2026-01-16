@@ -25,6 +25,11 @@ export default function Sidebar({ user }) {
 
           </>
         )}
+        
+        {isAdmin && (
+          <Link to="/audit-dashboard" style={linkStyle}>Audit Dashboard</Link>
+        )}
+
          <Link to="/audit" style={linkStyle}>
           {isAdmin ? "Audit Logs" : "My Activity"}
         </Link>

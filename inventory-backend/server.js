@@ -5,6 +5,8 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 
+import { db } from "./config/db.js";
+
 import productsRoutes from "./routes/products.js";
 import categoriesRoutes from "./routes/categories.js";
 import dashboardRoutes from "./routes/dashboard.js";
@@ -12,9 +14,6 @@ import stockRoutes from "./routes/stock.js";
 import authRoutes from "./routes/auth.js";
 import auditRoutes from "./routes/audit.js";
 import usersRoutes from "./routes/users.js";
-
-
-
 
 const app = express();
 
@@ -71,14 +70,12 @@ app.use(cors(corsOptions));
 
 /**
  * ✅ Preflight (Express 5 safe)
- * app.options("*") / "/*" can crash in Express 5 due to path-to-regexp changes.
  * RegExp is safe.
  */
 app.options(/.*/, cors(corsOptions));
 
 /**
  * ✅ Body + cookies
- * cookieParser is required for refresh token cookie flows.
  */
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
@@ -111,6 +108,36 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/stock", stockRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/users", usersRoutes);
+
+/**
+ * ✅ Audit retention job (auto-purge)
+ */
+function startAuditRetentionJob() {
+  const days = Number(process.env.AUDIT_RETENTION_DAYS || 90);
+
+  if (!days || days < 1) {
+    console.log("Audit retention disabled (AUDIT_RETENTION_DAYS not set or invalid).");
+    return;
+  }
+
+  async function purge() {
+    try {
+      const [result] = await db.query(
+        `DELETE FROM audit_logs WHERE created_at < DATE_SUB(NOW(), INTERVAL ? DAY)`,
+        [days]
+      );
+      console.log(`AUDIT RETENTION: Purged ${result.affectedRows} rows older than ${days} days.`);
+    } catch (e) {
+      console.error("AUDIT RETENTION ERROR:", e?.message || e);
+    }
+  }
+
+  purge(); // run once on boot
+  const timer = setInterval(purge, 24 * 60 * 60 * 1000);
+  if (typeof timer.unref === "function") timer.unref();
+}
+
+startAuditRetentionJob();
 
 /**
  * 404

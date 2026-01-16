@@ -57,12 +57,14 @@ export function setStoredUser(user) {
 
 /**
  * ============================
- * Base Fetch Helpers
+ * Base Fetch Helper
  * ============================
- * - useCookie=true => credentials: "include"
- * - useAuth=true   => add Authorization header
  */
-async function baseFetch(url, options = {}, { useCookie = false, useAuth = false } = {}) {
+async function baseFetch(
+  url,
+  options = {},
+  { useAuth = false, useCookie = false } = {}
+) {
   const headers = {
     ...(options.headers || {}),
     ...(useAuth ? authHeaders() : {}),
@@ -83,10 +85,7 @@ async function baseFetch(url, options = {}, { useCookie = false, useAuth = false
  * ============================
  * AUTH
  * ============================
- * These are the ones that should include cookies.
  */
-
-/** POST /api/auth/login (sets refresh_token cookie) */
 export async function login(email, password) {
   return baseFetch(
     `${API_BASE}/auth/login`,
@@ -95,57 +94,44 @@ export async function login(email, password) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password }),
     },
-    { useCookie: true, useAuth: false }
-  ); // returns { token, user }
+    { useCookie: true }
+  ); // { token, user }
 }
 
-/** POST /api/auth/refresh (uses refresh_token cookie) */
 export async function refresh() {
-  return baseFetch(
-    `${API_BASE}/auth/refresh`,
-    { method: "POST" },
-    { useCookie: true, useAuth: false }
-  ); // returns { token, user }
+  return baseFetch(`${API_BASE}/auth/refresh`, { method: "POST" }, { useCookie: true });
 }
 
-/** POST /api/auth/logout (revokes refresh token + clears cookie) */
 export async function logoutApi() {
-  return baseFetch(
-    `${API_BASE}/auth/logout`,
-    { method: "POST" },
-    { useCookie: true, useAuth: false }
-  ); // returns { message }
+  return baseFetch(`${API_BASE}/auth/logout`, { method: "POST" }, { useCookie: true });
 }
 
-/**
- * Forgot password
- */
 export async function requestPasswordReset(email) {
-  return baseFetch(
-    `${API_BASE}/auth/forgot-password`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email }),
-    },
-    { useCookie: false, useAuth: false }
-  );
+  return baseFetch(`${API_BASE}/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
 }
 
 /**
- * Reset password
- * NOTE: Your backend expects: { email, token, newPassword }
+ * NOTE: backend expects { email, token, newPassword }
  */
 export async function resetPassword(email, token, newPassword) {
-  return baseFetch(
-    `${API_BASE}/auth/reset-password`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, token, newPassword }),
-    },
-    { useCookie: false, useAuth: false }
-  );
+  return baseFetch(`${API_BASE}/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, token, newPassword }),
+  });
+}
+
+/**
+ * ============================
+ * DASHBOARD
+ * ============================
+ */
+export async function getDashboard() {
+  return baseFetch(`${API_BASE}/dashboard`, {}, { useAuth: true });
 }
 
 /**
@@ -154,11 +140,7 @@ export async function resetPassword(email, token, newPassword) {
  * ============================
  */
 export async function getCategories() {
-  return baseFetch(
-    `${API_BASE}/categories`,
-    { headers: {} },
-    { useCookie: false, useAuth: true }
-  );
+  return baseFetch(`${API_BASE}/categories`, {}, { useAuth: true });
 }
 
 export async function addCategory(name) {
@@ -169,7 +151,7 @@ export async function addCategory(name) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     },
-    { useCookie: false, useAuth: true }
+    { useAuth: true }
   );
 }
 
@@ -179,11 +161,7 @@ export async function addCategory(name) {
  * ============================
  */
 export async function getProducts() {
-  return baseFetch(
-    `${API_BASE}/products`,
-    { headers: {} },
-    { useCookie: false, useAuth: true }
-  );
+  return baseFetch(`${API_BASE}/products`, {}, { useAuth: true });
 }
 
 export async function addProduct(payload) {
@@ -194,7 +172,27 @@ export async function addProduct(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     },
-    { useCookie: false, useAuth: true }
+    { useAuth: true }
+  );
+}
+
+export async function updateProduct(id, payload) {
+  return baseFetch(
+    `${API_BASE}/products/${id}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useAuth: true }
+  );
+}
+
+export async function deleteProduct(id) {
+  return baseFetch(
+    `${API_BASE}/products/${id}`,
+    { method: "DELETE" },
+    { useAuth: true }
   );
 }
 
@@ -211,47 +209,12 @@ export async function updateStock(payload) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     },
-    { useCookie: false, useAuth: true }
+    { useAuth: true }
   );
 }
 
 export async function getMovements() {
-  return baseFetch(
-    `${API_BASE}/stock/movements`,
-    { headers: {} },
-    { useCookie: false, useAuth: true }
-  );
-}
-
-/**
- * ============================
- * DASHBOARD
- * ============================
- */
-export async function getDashboard() {
-  return baseFetch(
-    `${API_BASE}/dashboard`,
-    { headers: {} },
-    { useCookie: false, useAuth: true }
-  );
-}
-
-/**
- * ============================
- * AUDIT LOGS
- * ============================
- */
-export async function getAuditLogs(params = {}) {
-  const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && String(v).trim() !== "") {
-      qs.set(k, String(v));
-    }
-  }
-
-  const url = `${API_BASE}/audit${qs.toString() ? `?${qs.toString()}` : ""}`;
-
-  return baseFetch(url, { headers: {} }, { useCookie: false, useAuth: true });
+  return baseFetch(`${API_BASE}/stock/movements`, {}, { useAuth: true });
 }
 
 /**
@@ -260,7 +223,7 @@ export async function getAuditLogs(params = {}) {
  * ============================
  */
 export async function getUsers() {
-  return baseFetch(`${API_BASE}/users`, { headers: {} }, { useAuth: true });
+  return baseFetch(`${API_BASE}/users`, {}, { useAuth: true });
 }
 
 export async function createUser(payload) {
@@ -287,29 +250,69 @@ export async function updateUserRoleById(id, role) {
   );
 }
 
-
 /**
  * ============================
- * PRODUCTS (Admin edit/delete)
+ * AUDIT LOGS
  * ============================
  */
-export async function updateProduct(id, payload) {
+export async function getAuditLogs(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && String(v).trim() !== "") {
+      qs.set(k, String(v));
+    }
+  }
+
   return baseFetch(
-    `${API_BASE}/products/${id}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
+    `${API_BASE}/audit${qs.toString() ? `?${qs}` : ""}`,
+    {},
     { useAuth: true }
   );
 }
 
-export async function deleteProduct(id) {
-  return baseFetch(
-    `${API_BASE}/products/${id}`,
-    { method: "DELETE" },
-    { useAuth: true }
+/** CSV export → Blob (admin-only endpoint) */
+export async function fetchAuditCsvBlob(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && String(v).trim() !== "") {
+      qs.set(k, String(v));
+    }
+  }
+
+  const res = await fetch(
+    `${API_BASE}/audit/export.csv${qs.toString() ? `?${qs}` : ""}`,
+    { headers: { ...authHeaders() } }
   );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "CSV export failed");
+  }
+
+  return await res.blob();
 }
 
+/** Convenience: triggers browser download */
+export async function downloadAuditCsv(params = {}) {
+  const blob = await fetchAuditCsvBlob(params);
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "audit_logs.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  URL.revokeObjectURL(url);
+}
+
+/** Charts */
+export async function getAuditStats(days = 30) {
+  return baseFetch(`${API_BASE}/audit/stats?days=${days}`, {}, { useAuth: true });
+}
+
+/** SOC report */
+export async function getAuditReport(days = 7) {
+  return baseFetch(`${API_BASE}/audit/report?days=${days}`, {}, { useAuth: true });
+}

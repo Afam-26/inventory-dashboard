@@ -15,6 +15,8 @@ import Categories from "./pages/Categories";
 import Stock from "./pages/Stock";
 import AuditLogs from "./pages/AuditLogs";
 import UsersAdmin from "./pages/UsersAdmin";
+import AuditDashboard from "./pages/AuditDashboard";
+
 
 
 import { getStoredUser, setToken, setStoredUser } from "./services/api";
@@ -78,6 +80,14 @@ export default function App() {
                           </RequireAdmin>
                         }
                       />
+                      <Route
+                        path="/audit-dashboard"
+                        element={
+                          <RequireAdmin user={user}>
+                            <AuditDashboard user={user} />
+                          </RequireAdmin>
+                        }
+                      />
 
                       <Route
                         path="/stock"
@@ -97,8 +107,7 @@ export default function App() {
                           <RequireAdmin user={user}>
                             <UsersAdmin user={user} />
                           </RequireAdmin>
-                        }
-                      />
+                        }/>                       
 
                       {/* fallback */}
                       <Route path="*" element={<Navigate to="/" replace />} />

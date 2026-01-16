@@ -1,214 +1,300 @@
 // utils/audit.js
-import { db } from "../config/db.js";
-import { sendSecurityAlert } from "./alerting.js";
+import crypto from "crypto";
+import { db as defaultDb } from "../config/db.js";
+import { sendEmail } from "./mailer.js";
+import { sendSlackAlert } from "./slack.js";
 
-function afterHours(now = new Date()) {
-  const start = Number(process.env.ALERT_AFTER_HOURS_START || 19);
-  const end = Number(process.env.ALERT_AFTER_HOURS_END || 7);
-  const h = now.getHours();
-  return start < end ? (h >= start && h < end) : (h >= start || h < end);
+/**
+ * Severity convention:
+ * 1 = info
+ * 2 = warn
+ * 3 = critical
+ */
+export const SEVERITY = Object.freeze({
+  INFO: 1,
+  WARN: 2,
+  CRITICAL: 3,
+});
+
+function requireEnv(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`${name} is not set`);
+  return v;
 }
 
-function isLargeStockOut(details) {
-  const threshold = Number(process.env.ALERT_STOCK_OUT_THRESHOLD || 50);
-  const qty = Number(details?.qty ?? details?.quantity ?? 0);
-
-  const type = String(details?.type || details?.direction || "").toLowerCase();
-  const isOut =
-    type === "out" ||
-    type === "stock_out" ||
-    String(details?.movement || "").toLowerCase() === "out";
-
-  return isOut && qty >= threshold;
-}
-
-async function failedLoginSpikeCheck(userEmail) {
-  const threshold = Number(process.env.ALERT_FAILED_LOGIN_THRESHOLD || 5);
-  const windowMin = Number(process.env.ALERT_FAILED_LOGIN_WINDOW_MINUTES || 15);
-  if (!userEmail) return { spiking: false, count: 0, threshold, windowMin };
-
-  const [[row]] = await db.query(
-    `
-    SELECT COUNT(*) AS c
-    FROM audit_logs
-    WHERE action='LOGIN_FAILED'
-      AND user_email = ?
-      AND created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)
-    `,
-    [userEmail, windowMin]
-  );
-
-  const count = Number(row?.c || 0);
-  return { spiking: count >= threshold, count, threshold, windowMin };
+function hmacSha256Hex(input) {
+  const secret = requireEnv("AUDIT_HASH_SECRET");
+  return crypto.createHmac("sha256", secret).update(input).digest("hex");
 }
 
 /**
- * logAudit(req, { action, entity_type, entity_id, details })
- * Best-effort: never crashes your API if auditing/alerting fails.
+ * Stable JSON stringify: sorts object keys recursively
+ * so MySQL JSON key reordering won't break verification.
  */
-export async function logAudit(
-  req,
-  { action, entity_type, entity_id = null, details = null, user_id = null, user_email = null }
-) {
+function stableStringify(value) {
+  if (value === null || value === undefined) return "null";
+
+  if (typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+
+  const keys = Object.keys(value).sort();
+  const entries = keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`);
+  return `{${entries.join(",")}}`;
+}
+
+function getRequestContext(req) {
+  const ip =
+    req?.headers?.["x-forwarded-for"]?.split(",")?.[0]?.trim() ||
+    req?.ip ||
+    req?.socket?.remoteAddress ||
+    null;
+
+  const ua =
+    (req?.get ? req.get("user-agent") : null) ||
+    req?.headers?.["user-agent"] ||
+    null;
+
+  return { ip, ua };
+}
+
+/**
+ * Canonical payload for hashing.
+ * IMPORTANT: Keep stable over time.
+ *
+ * Key point: we hash details_c14n (a stable string), not the raw JSON object.
+ */
+function canonicalAuditPayload(entry, createdAtIso) {
+  return stableStringify({
+    user_id: entry.user_id ?? null,
+    user_email: entry.user_email ?? null,
+    action: entry.action,
+    entity_type: entry.entity_type ?? null,
+    entity_id: entry.entity_id ?? null,
+    ip_address: entry.ip_address ?? null,
+    user_agent: entry.user_agent ?? null,
+    details_c14n: entry.details_c14n ?? "null",
+    created_at_iso: createdAtIso,
+  });
+}
+
+/**
+ * ✅ logAudit(req, entry)
+ * Matches your routes/auth.js usage.
+ */
+export async function logAudit(req, entry, options = {}) {
+  if (!entry?.action) throw new Error("logAudit: entry.action is required");
+  if (!entry?.entity_type) throw new Error("logAudit: entry.entity_type is required");
+
+  const db = options.db || defaultDb;
+  const { ip, ua } = getRequestContext(req);
+
+  const createdAtIso = new Date().toISOString();
+
+  const [lastRows] = await db.query(
+    "SELECT row_hash FROM audit_logs ORDER BY id DESC LIMIT 1"
+  );
+  const prevHash = lastRows?.[0]?.row_hash ?? null;
+
+  // Ensure details is an object or null (DB column is JSON)
+  const detailsObj =
+    entry.details && typeof entry.details === "object"
+      ? entry.details
+      : entry.details == null
+      ? null
+      : { value: entry.details };
+
+  const detailsC14n = stableStringify(detailsObj);
+
+  const canonical = canonicalAuditPayload(
+    {
+      user_id: entry.user_id ?? null,
+      user_email: entry.user_email ?? null,
+      action: entry.action,
+      entity_type: entry.entity_type ?? null,
+      entity_id: entry.entity_id ?? null,
+      ip_address: entry.ip_address ?? ip,
+      user_agent: entry.user_agent ?? ua,
+      details_c14n: detailsC14n,
+    },
+    createdAtIso
+  );
+
+  const rowHash = hmacSha256Hex(`${canonical}|prev=${prevHash || ""}`);
+
+  await db.query(
+    `
+      INSERT INTO audit_logs
+        (user_id, user_email, action, entity_type, entity_id, details, ip_address, user_agent, prev_hash, row_hash, created_at_iso)
+      VALUES
+        (?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, ?, ?)
+    `,
+    [
+      entry.user_id ?? null,
+      entry.user_email ?? null,
+      entry.action,
+      entry.entity_type,
+      entry.entity_id ?? null,
+      JSON.stringify(detailsObj),
+      entry.ip_address ?? ip,
+      entry.user_agent ?? ua,
+      prevHash,
+      rowHash,
+      createdAtIso,
+    ]
+  );
+
+  return { prevHash, rowHash, createdAtIso };
+}
+
+export async function getAdminAlertTargets(db, severity) {
   try {
-    const resolvedUserId = user_id ?? req.user?.id ?? null;
-    const resolvedUserEmail =
-      (user_email ?? req.user?.email ?? null)?.toLowerCase?.() ?? null;
+    const [rows] = await db.query(
+      `
+      SELECT
+        u.id AS admin_user_id,
+        u.email,
+        COALESCE(p.email_enabled, 1) AS email_enabled,
+        COALESCE(p.slack_enabled, 1) AS slack_enabled,
+        COALESCE(p.security_only, 1) AS security_only,
+        COALESCE(p.min_severity, 2) AS min_severity
+      FROM users u
+      LEFT JOIN admin_alert_prefs p ON p.admin_user_id = u.id
+      WHERE u.role = 'admin'
+      `
+    );
+    return rows.filter((r) => Number(severity) >= Number(r.min_severity));
+  } catch {
+    const emailTo = process.env.ALERT_EMAIL_TO;
+    return emailTo
+      ? [
+          {
+            admin_user_id: null,
+            email: emailTo,
+            email_enabled: 1,
+            slack_enabled: 1,
+            security_only: 1,
+            min_severity: 2,
+          },
+        ]
+      : [];
+  }
+}
 
-    const ipAddress =
-      (req.headers["x-forwarded-for"]?.toString().split(",")[0] || "").trim() ||
-      req.socket?.remoteAddress ||
-      null;
+export async function sendSecurityAlert(db, alert) {
+  const severity = alert.severity ?? SEVERITY.WARN;
 
-    const userAgent = req.headers["user-agent"] || null;
+  const targets = await getAdminAlertTargets(db, severity);
 
-    const safeDetails =
-      details == null
-        ? null
-        : typeof details === "object"
-        ? details
-        : { value: details };
+  const emailRecipients = targets
+    .filter((t) => Number(t.email_enabled) === 1)
+    .map((t) => t.email)
+    .filter(Boolean);
 
-    // 1) Write audit row
-    const [result] = await db.query(
-      `INSERT INTO audit_logs
-        (user_id, user_email, action, entity_type, entity_id, details, ip_address, user_agent)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        resolvedUserId,
-        resolvedUserEmail,
-        action,
-        entity_type,
-        entity_id,
-        safeDetails ? JSON.stringify(safeDetails) : null,
-        ipAddress,
-        userAgent,
-      ]
+  const shouldSlack = targets.some((t) => Number(t.slack_enabled) === 1);
+
+  if (emailRecipients.length > 0 && (alert.html || alert.text)) {
+    await sendEmail({
+      to: emailRecipients.join(","),
+      subject: alert.subject ?? "Security Alert",
+      html: alert.html,
+      text: alert.text,
+    });
+  }
+
+  if (shouldSlack && (alert.text || alert.subject || alert.blocks)) {
+    await sendSlackAlert({
+      text: alert.text ?? alert.subject ?? "Security Alert",
+      blocks: alert.blocks,
+    });
+  }
+}
+
+/**
+ * Verify tamper-evident audit chain.
+ * ✅ Uses created_at_iso and stable JSON canonicalization.
+ * ✅ Skips legacy rows without hashes.
+ */
+export async function verifyAuditChain(db, { limit = 20000 } = {}) {
+  const [rows] = await db.query(
+    `
+      SELECT
+        id, user_id, user_email, action, entity_type, entity_id,
+        details, ip_address, user_agent,
+        prev_hash, row_hash, created_at_iso
+      FROM audit_logs
+      ORDER BY id ASC
+      LIMIT ?
+    `,
+    [Number(limit)]
+  );
+
+  const startIndex = rows.findIndex((r) => r.row_hash && r.created_at_iso);
+  if (startIndex === -1) {
+    return {
+      ok: false,
+      checked: rows.length,
+      reason: "No hashed audit rows found (row_hash/created_at_iso are NULL).",
+    };
+  }
+
+  let expectedPrev = rows[startIndex].prev_hash ?? null;
+
+  for (let i = startIndex; i < rows.length; i++) {
+    const r = rows[i];
+
+    if (!r.row_hash || !r.created_at_iso) {
+      return {
+        ok: false,
+        brokenAtId: r.id,
+        reason: "Encountered un-hashed row inside hashed chain.",
+      };
+    }
+
+    let detailsObj = null;
+    if (r.details != null) {
+      try {
+        detailsObj = typeof r.details === "string" ? JSON.parse(r.details) : r.details;
+      } catch {
+        detailsObj = r.details;
+      }
+    }
+
+    const detailsC14n = stableStringify(detailsObj);
+
+    const canonical = canonicalAuditPayload(
+      {
+        user_id: r.user_id,
+        user_email: r.user_email,
+        action: r.action,
+        entity_type: r.entity_type,
+        entity_id: r.entity_id,
+        ip_address: r.ip_address,
+        user_agent: r.user_agent,
+        details_c14n: detailsC14n,
+      },
+      r.created_at_iso
     );
 
-    // 2) Alert rules (best-effort)
-    try {
-      const role = String(req.user?.role || "").toLowerCase();
-      const isAdminActor = role === "admin";
-
-      // A) Privilege changes
-      if (action === "USER_ROLE_UPDATE" || action === "USER_CREATE") {
-        await sendSecurityAlert({
-          key: `privchange:${action}:${resolvedUserEmail || "-"}:${entity_id ?? "-"}`,
-          subject: `User privilege change: ${action}`,
-          lines: [
-            `Actor: ${resolvedUserEmail || "-"} (id=${resolvedUserId ?? "-"}) role=${role || "-"}`,
-            `Target: ${entity_type}#${entity_id ?? "-"}`,
-            `IP: ${ipAddress || "-"}`,
-          ],
-          meta: {
-            audit_id: result.insertId,
-            action,
-            entity_type,
-            entity_id,
-            user_email: resolvedUserEmail,
-            ip: ipAddress,
-            details: safeDetails,
-          },
-        });
-      }
-
-      // B) Destructive operations
-      if (String(action).includes("DELETE")) {
-        await sendSecurityAlert({
-          key: `delete:${action}:${entity_type}:${entity_id ?? "-"}:${resolvedUserEmail || "-"}`,
-          subject: `Destructive action: ${action}`,
-          lines: [
-            `Actor: ${resolvedUserEmail || "-"} (id=${resolvedUserId ?? "-"}) role=${role || "-"}`,
-            `Entity: ${entity_type}#${entity_id ?? "-"}`,
-            `IP: ${ipAddress || "-"}`,
-          ],
-          meta: {
-            audit_id: result.insertId,
-            action,
-            entity_type,
-            entity_id,
-            user_email: resolvedUserEmail,
-            ip: ipAddress,
-            details: safeDetails,
-          },
-        });
-      }
-
-      // C) Brute-force: repeated failed logins
-      if (action === "LOGIN_FAILED") {
-        const { spiking, count, threshold, windowMin } = await failedLoginSpikeCheck(
-          resolvedUserEmail
-        );
-        if (spiking) {
-          await sendSecurityAlert({
-            // cooldown key dedupes repeated notifications for same user+ip
-            key: `bruteforce:${resolvedUserEmail || "-"}:${ipAddress || "-"}`,
-            subject: `Possible brute-force: repeated LOGIN_FAILED`,
-            lines: [
-              `User: ${resolvedUserEmail || "-"}`,
-              `IP: ${ipAddress || "-"}`,
-              `Count: ${count} in last ${windowMin} min (threshold ${threshold})`,
-            ],
-            meta: {
-              audit_id: result.insertId,
-              action,
-              user_email: resolvedUserEmail,
-              ip: ipAddress,
-              user_agent: userAgent,
-              details: safeDetails,
-            },
-          });
-        }
-      }
-
-      // D) After-hours admin logins
-      if (action === "LOGIN" && isAdminActor && afterHours(new Date())) {
-        await sendSecurityAlert({
-          key: `afterhours_admin_login:${resolvedUserEmail || "-"}:${ipAddress || "-"}`,
-          subject: `After-hours admin login`,
-          lines: [
-            `Admin: ${resolvedUserEmail || "-"} (id=${resolvedUserId ?? "-"})`,
-            `IP: ${ipAddress || "-"}`,
-            `UA: ${userAgent || "-"}`,
-          ],
-          meta: {
-            audit_id: result.insertId,
-            action,
-            user_email: resolvedUserEmail,
-            ip: ipAddress,
-            details: safeDetails,
-          },
-        });
-      }
-
-      // E) Large stock-outs (if your details include qty/type)
-      if (action === "STOCK_OUT" || action === "STOCK_UPDATE") {
-        if (isLargeStockOut(safeDetails || {})) {
-          await sendSecurityAlert({
-            key: `large_stock_out:${entity_type}:${entity_id ?? "-"}:${resolvedUserEmail || "-"}`,
-            subject: `Large stock-out detected`,
-            lines: [
-              `Actor: ${resolvedUserEmail || "-"} (id=${resolvedUserId ?? "-"}) role=${role || "-"}`,
-              `Entity: ${entity_type}#${entity_id ?? "-"}`,
-              `IP: ${ipAddress || "-"}`,
-            ],
-            meta: {
-              audit_id: result.insertId,
-              action,
-              entity_type,
-              entity_id,
-              user_email: resolvedUserEmail,
-              ip: ipAddress,
-              details: safeDetails,
-            },
-          });
-        }
-      }
-    } catch (alertErr) {
-      console.error("AUDIT ALERT ERROR:", alertErr?.message || alertErr);
+    if ((r.prev_hash ?? null) !== (expectedPrev ?? null)) {
+      return {
+        ok: false,
+        brokenAtId: r.id,
+        reason: `prev_hash mismatch (expected ${expectedPrev}, got ${r.prev_hash})`,
+      };
     }
-  } catch (err) {
-    console.error("AUDIT LOG ERROR:", err?.message || err);
+
+    const expectedRowHash = hmacSha256Hex(`${canonical}|prev=${expectedPrev || ""}`);
+    if (r.row_hash !== expectedRowHash) {
+      return { ok: false, brokenAtId: r.id, reason: "row_hash mismatch" };
+    }
+
+    expectedPrev = r.row_hash;
   }
+
+  return { ok: true, checked: rows.length - startIndex, startId: rows[startIndex].id };
 }

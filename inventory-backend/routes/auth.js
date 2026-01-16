@@ -7,7 +7,7 @@ import crypto from "crypto";
 import { db } from "../config/db.js";
 import { sendEmail } from "../utils/mailer.js";
 import { passwordResetEmail } from "../utils/emailTemplates.js";
-import { logAudit } from "../utils/audit.js";
+import { logAudit, sendSecurityAlert, SEVERITY } from "../utils/audit.js";
 
 const router = express.Router();
 
@@ -83,6 +83,7 @@ router.post("/login", loginLimiter, async (req, res) => {
         details: { email: cleanEmail || null, reason: "MISSING_FIELDS" },
         user_id: null,
         user_email: cleanEmail || null,
+        severity: SEVERITY.WARN,
       });
 
       return res.status(400).json({ message: "Email and password required" });
@@ -102,6 +103,15 @@ router.post("/login", loginLimiter, async (req, res) => {
         details: { email: cleanEmail, reason: "INVALID_CREDENTIALS" },
         user_id: null,
         user_email: cleanEmail,
+        severity: SEVERITY.WARN,
+      });
+
+      // Optional: alert on unknown email attempts (often noisy; keep WARN)
+      await sendSecurityAlert(db, {
+        severity: SEVERITY.WARN,
+        subject: "Login failed (unknown email)",
+        text: `Login failed for unknown email ${cleanEmail} from IP ${req.ip}`,
+        html: `<p><b>Login failed (unknown email)</b></p><p>Email: ${cleanEmail}</p><p>IP: ${req.ip}</p>`,
       });
 
       return res.status(401).json({ message: "Invalid credentials" });
@@ -116,6 +126,15 @@ router.post("/login", loginLimiter, async (req, res) => {
         details: { email: user.email, reason: "INVALID_CREDENTIALS" },
         user_id: user.id,
         user_email: user.email,
+        severity: SEVERITY.WARN,
+      });
+
+      // Optional: alert on bad password (you can later gate this behind thresholds)
+      await sendSecurityAlert(db, {
+        severity: SEVERITY.WARN,
+        subject: "Login failed (bad password)",
+        text: `Login failed for ${user.email} from IP ${req.ip}`,
+        html: `<p><b>Login failed (bad password)</b></p><p>User: ${user.email}</p><p>IP: ${req.ip}</p>`,
       });
 
       return res.status(401).json({ message: "Invalid credentials" });
@@ -144,6 +163,7 @@ router.post("/login", loginLimiter, async (req, res) => {
       details: { email: user.email, role: user.role, success: true },
       user_id: user.id,
       user_email: user.email,
+      severity: SEVERITY.INFO,
     });
 
     res.json({
@@ -174,7 +194,9 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
         entity_type: "auth",
         entity_id: null,
         details: { reason: "MISSING_REFRESH_COOKIE" },
+        severity: SEVERITY.WARN,
       });
+
       return res.status(401).json({ message: "Missing refresh token" });
     }
 
@@ -192,7 +214,17 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
         entity_type: "auth",
         entity_id: null,
         details: { reason: "INVALID_OR_REVOKED_REFRESH_TOKEN" },
+        severity: SEVERITY.CRITICAL,
       });
+
+      // ✅ Critical security alert (possible session hijack / replay)
+      await sendSecurityAlert(db, {
+        severity: SEVERITY.CRITICAL,
+        subject: "Refresh token rejected (possible session hijack)",
+        text: `Refresh rejected from IP ${req.ip} (revoked/invalid token).`,
+        html: `<p><b>Refresh token rejected</b></p><p>Reason: revoked/invalid</p><p>IP: ${req.ip}</p>`,
+      });
+
       return res.status(401).json({ message: "Invalid refresh token" });
     }
 
@@ -204,7 +236,9 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
         entity_id: null,
         details: { reason: "REFRESH_TOKEN_EXPIRED", user_id: row.user_id },
         user_id: row.user_id,
+        severity: SEVERITY.WARN,
       });
+
       return res.status(401).json({ message: "Refresh token expired" });
     }
 
@@ -221,7 +255,9 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
         entity_id: null,
         details: { reason: "USER_NOT_FOUND", user_id: row.user_id },
         user_id: row.user_id,
+        severity: SEVERITY.WARN,
       });
+
       return res.status(401).json({ message: "User not found" });
     }
 
@@ -234,6 +270,7 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
       details: { success: true },
       user_id: user.id,
       user_email: user.email,
+      severity: SEVERITY.INFO,
     });
 
     res.json({
@@ -271,11 +308,16 @@ router.post("/logout", async (req, res) => {
       userId = r?.user_id ?? null;
 
       if (userId) {
-        const [[u]] = await db.query("SELECT email FROM users WHERE id=? LIMIT 1", [userId]);
+        const [[u]] = await db.query(
+          "SELECT email FROM users WHERE id=? LIMIT 1",
+          [userId]
+        );
         userEmail = u?.email ?? null;
       }
 
-      await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE token=?", [rt]);
+      await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE token=?", [
+        rt,
+      ]);
     }
 
     res.clearCookie("refresh_token", { ...refreshCookieOptions(), maxAge: 0 });
@@ -287,6 +329,7 @@ router.post("/logout", async (req, res) => {
       details: { success: true },
       user_id: userId,
       user_email: userEmail,
+      severity: SEVERITY.INFO,
     });
 
     res.json({ message: "Logged out" });
@@ -317,6 +360,17 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
 
     // prevent user enumeration
     if (!rows.length) {
+      // ✅ optional audit (does not reveal user existence to client)
+      await logAudit(req, {
+        action: "PASSWORD_RESET_REQUEST",
+        entity_type: "user",
+        entity_id: null,
+        details: { email: normalized, outcome: "EMAIL_NOT_FOUND" },
+        user_id: null,
+        user_email: normalized,
+        severity: SEVERITY.INFO,
+      });
+
       return res.json({
         message: "If the email exists, a reset link was sent.",
         ...(!isProd
@@ -342,6 +396,17 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
       normalized
     )}`;
 
+    // ✅ audit reset requested (does not imply email delivery succeeded)
+    await logAudit(req, {
+      action: "PASSWORD_RESET_REQUEST",
+      entity_type: "user",
+      entity_id: user.id,
+      details: { email: normalized, created: true },
+      user_id: user.id,
+      user_email: normalized,
+      severity: SEVERITY.INFO,
+    });
+
     // ✅ Send email (do not fail request if email fails)
     try {
       const { subject, html, text } = passwordResetEmail({ resetLink, minutes: 30 });
@@ -351,11 +416,34 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
       emailStatus = "failed";
       emailError = mailErr?.message || String(mailErr);
       console.error("EMAIL SEND ERROR:", emailError);
+
+      // ✅ audit email failure
+      await logAudit(req, {
+        action: "PASSWORD_RESET_EMAIL_FAILED",
+        entity_type: "user",
+        entity_id: user.id,
+        details: { email: normalized, error: emailError },
+        user_id: user.id,
+        user_email: normalized,
+        severity: SEVERITY.WARN,
+      });
+
+      // Optional: alert admins if password reset emails fail in prod
+      if (isProd) {
+        await sendSecurityAlert(db, {
+          severity: SEVERITY.WARN,
+          subject: "Password reset email failed",
+          text: `Reset email failed for ${normalized} (IP ${req.ip}). Error: ${emailError}`,
+          html: `<p><b>Password reset email failed</b></p><p>User: ${normalized}</p><p>IP: ${req.ip}</p><p>Error: ${emailError}</p>`,
+        });
+      }
     }
 
     res.json({
       message: "If the email exists, a reset link was sent.",
-      ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd ? { dev_reset_link: resetLink } : {}),
+      ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd
+        ? { dev_reset_link: resetLink }
+        : {}),
       ...(!isProd ? { emailStatus, emailError } : {}),
     });
   } catch (err) {
@@ -372,17 +460,23 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
     const { email, token, newPassword } = req.body;
 
     if (!email?.trim() || !token?.trim() || !newPassword) {
-      return res.status(400).json({ message: "Email, token and new password are required" });
+      return res
+        .status(400)
+        .json({ message: "Email, token and new password are required" });
     }
 
     if (String(newPassword).length < 8) {
-      return res.status(400).json({ message: "Password must be at least 8 characters" });
+      return res
+        .status(400)
+        .json({ message: "Password must be at least 8 characters" });
     }
 
     const normalized = email.trim().toLowerCase();
     const tokenHash = crypto.createHash("sha256").update(token.trim()).digest("hex");
 
-    const [urows] = await db.query("SELECT id FROM users WHERE email=? LIMIT 1", [normalized]);
+    const [urows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [
+      normalized,
+    ]);
     if (!urows.length) return res.status(400).json({ message: "Invalid token" });
 
     const userId = urows[0].id;
@@ -405,15 +499,39 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
     if (Date.now() > expiresAt) return res.status(400).json({ message: "Token expired" });
 
     const password_hash = await bcrypt.hash(newPassword, 10);
-    await db.query("UPDATE users SET password_hash=? WHERE id=?", [password_hash, userId]);
+    await db.query("UPDATE users SET password_hash=? WHERE id=?", [
+      password_hash,
+      userId,
+    ]);
 
-    await db.query("UPDATE password_resets SET used_at=NOW() WHERE id=?", [resetRow.id]);
+    await db.query("UPDATE password_resets SET used_at=NOW() WHERE id=?", [
+      resetRow.id,
+    ]);
 
     // revoke all refresh tokens (recommended)
     await db.query(
       "UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL",
       [userId]
     );
+
+    // ✅ audit reset completed (warn so it’s visible)
+    await logAudit(req, {
+      action: "PASSWORD_RESET_COMPLETED",
+      entity_type: "user",
+      entity_id: userId,
+      details: { email: normalized, success: true },
+      user_id: userId,
+      user_email: normalized,
+      severity: SEVERITY.WARN,
+    });
+
+    // Optional: alert admins on successful reset (security signal)
+    await sendSecurityAlert(db, {
+      severity: SEVERITY.WARN,
+      subject: "Password reset completed",
+      text: `Password reset completed for ${normalized} from IP ${req.ip}`,
+      html: `<p><b>Password reset completed</b></p><p>User: ${normalized}</p><p>IP: ${req.ip}</p>`,
+    });
 
     res.json({ message: "Password reset successful. Please login." });
   } catch (err) {

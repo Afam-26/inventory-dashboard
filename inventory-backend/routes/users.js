@@ -2,7 +2,7 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import { db } from "../config/db.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireRole, requireAdmin } from "../middleware/auth.js";
 import { logAudit } from "../utils/audit.js";
 
 const router = express.Router();
@@ -59,10 +59,13 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
       [full_name, email, password_hash, role]
     );
 
+    // ✅ audit with actor info
     await logAudit(req, {
       action: "USER_CREATE",
       entity_type: "user",
       entity_id: result.insertId,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
       details: {
         created_user_id: result.insertId,
         created_email: email,
@@ -86,57 +89,53 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
  * Admin-only: update role
  * Body: { role }
  */
-router.patch("/:id/role", requireAuth, requireRole("admin"), async (req, res) => {
+router.patch("/:id/role", requireAuth, requireAdmin, async (req, res) => {
   try {
     const targetId = Number(req.params.id);
-    const role = String(req.body?.role || "").trim().toLowerCase();
+    const roleRaw = req.body?.role;
 
-    if (!targetId) return res.status(400).json({ message: "Invalid user id" });
-    if (!ALLOWED_ROLES.has(role)) {
+    const newRole = String(roleRaw || "").trim().toLowerCase();
+    if (!targetId || !newRole) {
+      return res.status(400).json({ message: "User id and role are required" });
+    }
+    if (!ALLOWED_ROLES.has(newRole)) {
       return res.status(400).json({ message: "Invalid role. Use admin or staff." });
     }
 
-    // prevent self-demotion
-    if (targetId === req.user?.id && role !== "admin") {
-      return res.status(400).json({ message: "You cannot remove your own admin role." });
-    }
-
-    const [[existing]] = await db.query(
+    // fetch target user + old role (for audit details)
+    const [[target]] = await db.query(
       "SELECT id, email, role FROM users WHERE id=? LIMIT 1",
       [targetId]
     );
-    if (!existing) return res.status(404).json({ message: "User not found" });
+    if (!target) return res.status(404).json({ message: "User not found" });
 
-    const oldRole = existing.role;
+    const oldRole = String(target.role || "").toLowerCase();
 
-    if (oldRole === role) {
-      return res.json({
-        message: "Role unchanged",
-        user: { id: existing.id, email: existing.email, role: oldRole },
-      });
+    if (oldRole === newRole) {
+      return res.json({ message: "No change", userId: targetId, role: newRole });
     }
 
-    await db.query("UPDATE users SET role=? WHERE id=?", [role, targetId]);
+    await db.query("UPDATE users SET role=? WHERE id=?", [newRole, targetId]);
 
+    // ✅ audit (this is what report/dashboard expects)
     await logAudit(req, {
       action: "USER_ROLE_UPDATE",
       entity_type: "user",
       entity_id: targetId,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
       details: {
         target_user_id: targetId,
-        target_email: existing.email,
+        target_user_email: target.email,
         old_role: oldRole,
-        new_role: role,
+        new_role: newRole,
       },
     });
 
-    res.json({
-      message: "Role updated",
-      user: { id: existing.id, email: existing.email, role },
-    });
+    return res.json({ message: "Role updated", userId: targetId, role: newRole });
   } catch (err) {
-    console.error("USER ROLE PATCH ERROR:", err);
-    res.status(500).json({ message: "Database error" });
+    console.error("ROLE UPDATE ERROR:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 

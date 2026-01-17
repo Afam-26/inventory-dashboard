@@ -316,3 +316,12 @@ export async function getAuditStats(days = 30) {
 export async function getAuditReport(days = 7) {
   return baseFetch(`${API_BASE}/audit/report?days=${days}`, {}, { useAuth: true });
 }
+
+export async function getAuditVerify({ limit = 20000 } = {}) {
+  return baseFetch(
+    `${API_BASE}/admin/audit/verify?limit=${limit}`,
+    {},
+    { useAuth: true }
+  );
+}
+

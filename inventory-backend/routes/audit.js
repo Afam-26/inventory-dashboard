@@ -2,7 +2,8 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
 import { db } from "../config/db.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireAdmin } from "../middleware/auth.js";
+import { verifyAuditChain } from "../utils/audit.js";
 
 const router = express.Router();
 
@@ -41,8 +42,6 @@ function buildAuditWhere(req) {
   }
 
   // user_email filter:
-  // - admin: can filter anyone
-  // - staff: can only filter themselves; if different => empty result
   if (user_email) {
     if (isAdmin) {
       where.push("user_email = ?");
@@ -78,7 +77,6 @@ function buildAuditWhere(req) {
 
 function csvEscape(v) {
   if (v === null || v === undefined) return "";
-  // if object/json => stringify
   const s = typeof v === "string" ? v : JSON.stringify(v);
   const needs = /[,"\n\r]/.test(s);
   const escaped = s.replace(/"/g, '""');
@@ -89,9 +87,6 @@ function csvEscape(v) {
  * GET /api/audit
  * Admin: all logs
  * Staff: ONLY their own logs
- *
- * Query params:
- *  - q, action, entity_type, user_email, page, limit
  */
 router.get("/", requireAuth, auditLimiter, async (req, res) => {
   try {
@@ -141,14 +136,23 @@ router.get("/", requireAuth, auditLimiter, async (req, res) => {
 });
 
 /**
+ * ✅ Verify tamper-evident chain (Admin-only)
+ * GET /api/admin/audit/verify?limit=20000
+ */
+router.get("/verify", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit || 20000);
+    const result = await verifyAuditChain(db, { limit });
+    res.json(result);
+  } catch (err) {
+    console.error("AUDIT VERIFY ERROR:", err);
+    res.status(500).json({ message: "Audit verification failed" });
+  }
+});
+
+/**
  * ✅ CSV Export (Admin-only)
  * GET /api/audit/export.csv
- *
- * Supports same filters as /api/audit:
- * q, action, entity_type, user_email
- *
- * Optional:
- *  - limit (default 5000, max 50000)
  */
 router.get("/export.csv", requireAuth, auditLimiter, async (req, res) => {
   try {
@@ -156,7 +160,6 @@ router.get("/export.csv", requireAuth, auditLimiter, async (req, res) => {
     if (!isAdmin) return res.status(403).json({ message: "Admins only" });
 
     const { whereSql, params } = buildAuditWhere(req);
-
     const limit = Math.min(50000, Math.max(1, Number(req.query.limit || 5000)));
 
     const [rows] = await db.query(

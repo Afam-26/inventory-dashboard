@@ -107,6 +107,10 @@ app.use("/api/stock", stockRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/users", usersRoutes);
 
+
+// ✅ mount same router for admin paths (for dashboard verify button)
+app.use("/api/admin/audit", auditRoutes);
+
 /**
  * ✅ Audit retention job (auto-purge)
  */

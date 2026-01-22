@@ -52,9 +52,28 @@ export default function App() {
                     alignItems: "center",
                   }}
                 >
+                  {/* <p style={{ margin: 0 }}>
+                    Logged in as{" "}
+                    <span
+                      style={{
+                        padding: "4px 10px",
+                        borderRadius: 999,
+                        background: user.role === "admin" ? "#111827" : "#2563eb",
+                        color: "#fff",
+                        fontWeight: 600,
+                        fontSize: 12,
+                      }}
+                    >
+                      {user.role === "admin" ? "Admin" : user.role === "staff" ? "Staff" : "User"}
+                    </span>
+                  </p> */}
+
                   <p style={{ margin: 0 }}>
-                    Logged in as <b>{user.email}</b> ({user.role})
+                    Logged in as <b>{user.role === "admin" ? "Admin" : "Staff"}</b>
                   </p>
+
+
+
                   <button className="btn" onClick={logout}>
                     Logout
                   </button>

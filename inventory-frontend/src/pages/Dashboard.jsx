@@ -1,8 +1,14 @@
 import { useEffect, useState } from "react";
 import { getDashboard } from "../services/api";
 
-export default function Dashboard() {
-  const [data, setData] = useState({ totalProducts: 0, lowStockCount: 0, inventoryValue: 0 });
+export default function Dashboard({ user }) {
+  const isAdmin = user?.role === "admin";
+
+  const [data, setData] = useState({
+    totalProducts: 0,
+    lowStockCount: 0,
+    inventoryValue: null,
+  });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -39,12 +45,20 @@ export default function Dashboard() {
           <p style={{ fontSize: 24 }}>{data.lowStockCount}</p>
         </div>
 
-        <div className="card">
-          <h3>Inventory Value</h3>
-          <p style={{ fontSize: 24 }}>
-            ${Number(data.inventoryValue).toFixed(2)}
-          </p>
-        </div>
+        {/* ✅ Admin-only card */}
+        {isAdmin ? (
+          <div className="card">
+            <h3>Inventory Value</h3>
+            <p style={{ fontSize: 24 }}>
+              ${Number(data.inventoryValue || 0).toFixed(2)}
+            </p>
+          </div>
+        ) : (
+          <div className="card">
+            <h3>Inventory Value</h3>
+            <p style={{ fontSize: 14, color: "#6b7280" }}>Admins only</p>
+          </div>
+        )}
       </div>
     </div>
   );

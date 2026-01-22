@@ -4,13 +4,16 @@ import { db } from "../config/db.js";
 import { logAudit } from "../utils/audit.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 
-
 const router = express.Router();
 
-// ✅ any logged in user can view products
+// ✅ any logged in user can view products (+ optional search)
 router.get("/", requireAuth, async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const search = String(req.query.search || "").trim();
+    const like = `%${search}%`;
+
+    const [rows] = await db.query(
+      `
       SELECT 
         p.id,
         p.name,
@@ -24,8 +27,11 @@ router.get("/", requireAuth, async (req, res) => {
         p.created_at
       FROM products p
       LEFT JOIN categories c ON c.id = p.category_id
+      WHERE (? = '' OR p.name LIKE ? OR p.sku LIKE ? OR c.name LIKE ?)
       ORDER BY p.id DESC
-    `);
+      `,
+      [search, like, like, like]
+    );
 
     res.json(rows);
   } catch (err) {

@@ -155,13 +155,20 @@ export async function addCategory(name) {
   );
 }
 
+// ✅ NEW: delete category (admin-only backend)
+export async function deleteCategory(id) {
+  return baseFetch(`${API_BASE}/categories/${id}`, { method: "DELETE" }, { useAuth: true });
+}
+
 /**
  * ============================
  * PRODUCTS
  * ============================
  */
-export async function getProducts() {
-  return baseFetch(`${API_BASE}/products`, {}, { useAuth: true });
+export async function getProducts(search = "") {
+  const q = String(search || "").trim();
+  const url = q ? `${API_BASE}/products?search=${encodeURIComponent(q)}` : `${API_BASE}/products`;
+  return baseFetch(url, {}, { useAuth: true });
 }
 
 export async function addProduct(payload) {
@@ -189,12 +196,9 @@ export async function updateProduct(id, payload) {
 }
 
 export async function deleteProduct(id) {
-  return baseFetch(
-    `${API_BASE}/products/${id}`,
-    { method: "DELETE" },
-    { useAuth: true }
-  );
+  return baseFetch(`${API_BASE}/products/${id}`, { method: "DELETE" }, { useAuth: true });
 }
+
 
 /**
  * ============================

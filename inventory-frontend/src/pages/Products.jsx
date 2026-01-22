@@ -16,18 +16,21 @@ export default function Products({ user }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  const [savingId, setSavingId] = useState(null); // product id being saved/deleted
-  const [rowErrors, setRowErrors] = useState({}); // { [productId]: "msg" }
+  const [savingId, setSavingId] = useState(null);
+  const [rowErrors, setRowErrors] = useState({});
+
+  // ✅ NEW: Search
+  const [search, setSearch] = useState("");
 
   // edit state
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
 
   // delete confirm modal state
-  const [confirmDelete, setConfirmDelete] = useState(null); // product object
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
-  // undo delete (store last deleted product payload for quick restore)
-  const [undo, setUndo] = useState(null); // { payload, expiresAt }
+  // undo delete
+  const [undo, setUndo] = useState(null);
 
   // create form (admin only)
   const [form, setForm] = useState({
@@ -40,11 +43,11 @@ export default function Products({ user }) {
     reorder_level: 10,
   });
 
-  async function loadAll() {
+  async function loadAll(searchQuery = "") {
     setLoading(true);
     setError("");
     try {
-      const [p, c] = await Promise.all([getProducts(), getCategories()]);
+      const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
       setProducts(Array.isArray(p) ? p : []);
       setCategories(Array.isArray(c) ? c : []);
     } catch (e) {
@@ -55,9 +58,18 @@ export default function Products({ user }) {
   }
 
   useEffect(() => {
-    loadAll();
+    loadAll("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ✅ debounce search
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      loadAll(search);
+    }, 250);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -83,7 +95,7 @@ export default function Products({ user }) {
         reorder_level: 10,
       });
 
-      await loadAll();
+      await loadAll(search);
     } catch (e2) {
       setError(e2.message);
     }
@@ -128,8 +140,7 @@ export default function Products({ user }) {
 
       await updateProduct(id, payload);
 
-      // refresh list
-      await loadAll();
+      await loadAll(search);
       cancelEdit();
     } catch (e) {
       setRowErrors((prev) => ({ ...prev, [id]: e.message || "Update failed" }));
@@ -151,7 +162,6 @@ export default function Products({ user }) {
     setSavingId(p.id);
     setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
 
-    // store undo payload (best effort)
     const undoPayload = {
       name: p.name,
       sku: p.sku,
@@ -165,10 +175,8 @@ export default function Products({ user }) {
     try {
       await deleteProduct(p.id);
 
-      // optimistic remove
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
 
-      // enable undo for 10 seconds
       const expiresAt = Date.now() + 10_000;
       setUndo({ payload: undoPayload, expiresAt });
 
@@ -192,7 +200,7 @@ export default function Products({ user }) {
     try {
       await addProduct(undo.payload);
       setUndo(null);
-      await loadAll();
+      await loadAll(search);
     } catch (e) {
       setError(e.message || "Undo failed");
     }
@@ -242,11 +250,22 @@ export default function Products({ user }) {
           )}
         </div>
 
-        {undo && Date.now() < undo.expiresAt && (
-          <button className="btn" onClick={undoDelete}>
-            Undo delete
-          </button>
-        )}
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {/* ✅ Search box */}
+          <input
+            className="input"
+            placeholder="Search (name, SKU, category)"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ minWidth: 280 }}
+          />
+
+          {undo && Date.now() < undo.expiresAt && (
+            <button className="btn" onClick={undoDelete}>
+              Undo delete
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Admin create form */}
@@ -331,9 +350,7 @@ export default function Products({ user }) {
         <div style={overlayStyle} onMouseDown={() => setConfirmDelete(null)}>
           <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
             <h2 style={{ margin: "0 0 8px" }}>Delete product?</h2>
-            <p style={{ marginTop: 0, color: "#374151" }}>
-              This will permanently delete:
-            </p>
+            <p style={{ marginTop: 0, color: "#374151" }}>This will permanently delete:</p>
 
             <div
               style={{

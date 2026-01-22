@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getCategories, addCategory } from "../services/api";
+import { getCategories, addCategory, deleteCategory } from "../services/api";
 
 export default function Categories({ user }) {
   const isAdmin = user?.role === "admin";
@@ -28,9 +28,24 @@ export default function Categories({ user }) {
     try {
       await addCategory(name);
       setName("");
-      await loadCategories(); // ✅ await
+      await loadCategories();
     } catch (err) {
       setError(err.message);
+    }
+  }
+
+  async function handleDelete(cat) {
+    if (!isAdmin) return;
+
+    const ok = window.confirm(`Delete category "${cat.name}"?`);
+    if (!ok) return;
+
+    setError("");
+    try {
+      await deleteCategory(cat.id);
+      await loadCategories();
+    } catch (err) {
+      setError(err.message || "Failed to delete category");
     }
   }
 
@@ -59,9 +74,20 @@ export default function Categories({ user }) {
       {loading && <p>Loading...</p>}
       {error && <p style={{ color: "red" }}>{error}</p>}
 
-      <ul>
+      <ul style={{ paddingLeft: 18 }}>
         {categories.map((c) => (
-          <li key={c.id}>{c.name}</li>
+          <li
+            key={c.id}
+            style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}
+          >
+            <span>{c.name}</span>
+
+            {isAdmin && (
+              <button className="btn" onClick={() => handleDelete(c)} style={{ marginLeft: "auto" }}>
+                Delete
+              </button>
+            )}
+          </li>
         ))}
       </ul>
     </div>

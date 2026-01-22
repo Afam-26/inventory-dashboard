@@ -56,8 +56,9 @@ function normalizeKey(s) {
 }
 
 /**
- * Returns true if we should send this alert now (cooldown not active).
- * Also records the send time on success path (we record just before/after sending).
+ * Cooldown gate for alerts.
+ * - timezone-safe (uses unix timestamps from MySQL)
+ * - duplicate-safe (uses UPSERT)
  */
 async function acquireCooldown(alertKeyRaw) {
   const alertKey = normalizeKey(alertKeyRaw);
@@ -65,28 +66,37 @@ async function acquireCooldown(alertKeyRaw) {
 
   // If DB is unavailable, don’t block alerts.
   try {
+    // Read last sent time as unix timestamp (UTC-safe across envs)
     const [[row]] = await db.query(
       `
-      SELECT sent_at
+      SELECT UNIX_TIMESTAMP(sent_at) AS sent_ts
       FROM alert_cooldowns
       WHERE alert_key = ?
-      ORDER BY sent_at DESC
       LIMIT 1
       `,
       [alertKey]
     );
 
-    if (row?.sent_at) {
-      const last = new Date(row.sent_at).getTime();
-      const now = Date.now();
-      const diffMin = (now - last) / (60 * 1000);
+    if (row?.sent_ts) {
+      const lastMs = Number(row.sent_ts) * 1000;
+      const nowMs = Date.now();
+      const diffMin = (nowMs - lastMs) / (60 * 1000);
+
       if (diffMin < minutes) {
         return { ok: false, skipped: true, reason: `cooldown_active_${minutes}m` };
       }
     }
 
-    // Record that we are sending (best effort)
-    await db.query(`INSERT INTO alert_cooldowns (alert_key) VALUES (?)`, [alertKey]);
+    // Upsert: insert if new, otherwise refresh sent_at
+    await db.query(
+      `
+      INSERT INTO alert_cooldowns (alert_key, sent_at)
+      VALUES (?, NOW())
+      ON DUPLICATE KEY UPDATE sent_at = NOW()
+      `,
+      [alertKey]
+    );
+
     return { ok: true, skipped: false };
   } catch (e) {
     console.error("ALERT COOLDOWN ERROR:", e?.message || e);
@@ -100,15 +110,16 @@ async function acquireCooldown(alertKeyRaw) {
  */
 export async function sendSecurityAlert({ key, subject, lines = [], meta = {} }) {
   try {
-    // Cooldown check
     const cooldownKey =
       key ||
-      `${subject}:${meta?.action || ""}:${meta?.entity_type || ""}:${meta?.entity_id || ""}:${meta?.user_email || ""}:${meta?.ip || ""}`;
+      `${subject}:${meta?.action || ""}:${meta?.entity_type || ""}:${meta?.entity_id || ""}:${
+        meta?.user_email || ""
+      }:${meta?.ip || ""}`;
 
     const cd = await acquireCooldown(cooldownKey);
     if (cd.skipped) {
       if (process.env.NODE_ENV !== "production") {
-        console.log("SECURITY ALERT SKIPPED (cooldown):", cooldownKey);
+        console.log("SECURITY ALERT SKIPPED (cooldown):", cooldownKey, cd.reason);
       }
       return { ok: true, skipped: true, reason: cd.reason };
     }

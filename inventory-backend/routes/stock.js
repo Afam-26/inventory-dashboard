@@ -5,6 +5,97 @@ import { requireAuth, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
+function csvEscape(v) {
+  const s = String(v ?? "");
+  if (/[",\n\r]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
+  return s;
+}
+
+// ✅ Export stock movements CSV (admin + staff)
+router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req, res) => {
+  try {
+    const from = String(req.query.from || "").trim(); // expected YYYY-MM-DD
+    const to = String(req.query.to || "").trim();     // expected YYYY-MM-DD
+    const type = String(req.query.type || "").trim().toUpperCase(); // IN/OUT
+    const search = String(req.query.search || "").trim();
+    const like = `%${search}%`;
+
+    const where = [];
+    const params = [];
+
+    // type filter (only if provided)
+    if (type) {
+      where.push("sm.type = ?");
+      params.push(type);
+    }
+
+    // date filters (only if provided)
+    if (from) {
+      where.push("DATE(sm.created_at) >= ?");
+      params.push(from);
+    }
+    if (to) {
+      where.push("DATE(sm.created_at) <= ?");
+      params.push(to);
+    }
+
+    // search filter (only if provided)
+    if (search) {
+      where.push("(p.name LIKE ? OR p.sku LIKE ? OR sm.reason LIKE ?)");
+      params.push(like, like, like);
+    }
+
+    const sql = `
+      SELECT
+        sm.id,
+        sm.type,
+        p.name AS product_name,
+        p.sku,
+        sm.quantity,
+        sm.reason,
+        sm.created_at
+      FROM stock_movements sm
+      LEFT JOIN products p ON p.id = sm.product_id
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY sm.id DESC
+    `;
+
+    const [rows] = await db.query(sql, params);
+
+    const csvEscape = (v) => {
+      const s = String(v ?? "");
+      if (/[",\n\r]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
+      return s;
+    };
+
+    const header = ["id", "type", "product_name", "sku", "quantity", "reason", "created_at"];
+    const lines = [header.join(",")];
+
+    for (const r of rows) {
+      lines.push(
+        [
+          csvEscape(r.id),
+          csvEscape(r.type),
+          csvEscape(r.product_name || ""),
+          csvEscape(r.sku || ""),
+          csvEscape(r.quantity ?? 0),
+          csvEscape(r.reason || ""),
+          csvEscape(r.created_at || ""),
+        ].join(",")
+      );
+    }
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="stock_movements.csv"`);
+    res.send(lines.join("\n"));
+  } catch (err) {
+    console.error("STOCK CSV EXPORT ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+
+
 // ✅ movements (any logged in user)
 router.get("/movements", requireAuth, async (req, res) => {
   try {

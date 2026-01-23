@@ -280,6 +280,44 @@ export async function getMovements() {
   return baseFetch(`${API_BASE}/stock/movements`, {}, { useAuth: true });
 }
 
+/** STOCK CSV export → Blob */
+export async function fetchStockCsvBlob(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && String(v).trim() !== "") {
+      qs.set(k, String(v));
+    }
+  }
+
+  const res = await fetch(
+    `${API_BASE}/stock/export.csv${qs.toString() ? `?${qs}` : ""}`,
+    { headers: { ...authHeaders() } }
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "Stock CSV export failed");
+  }
+
+  return await res.blob();
+}
+
+/** Convenience: triggers browser download */
+export async function downloadStockCsv(params = {}) {
+  const blob = await fetchStockCsvBlob(params);
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "stock_movements.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  URL.revokeObjectURL(url);
+}
+
+
 /**
  * ============================
  * USERS (Admin)

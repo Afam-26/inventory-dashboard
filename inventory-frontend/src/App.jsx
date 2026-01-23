@@ -52,7 +52,7 @@ export default function App() {
                     alignItems: "center",
                   }}
                 >
-                  {/* <p style={{ margin: 0 }}>
+                  <p style={{ margin: 0 }}>
                     Logged in as{" "}
                     <span
                       style={{
@@ -66,11 +66,11 @@ export default function App() {
                     >
                       {user.role === "admin" ? "Admin" : user.role === "staff" ? "Staff" : "User"}
                     </span>
-                  </p> */}
-
-                  <p style={{ margin: 0 }}>
-                    Logged in as <b>{user.role === "admin" ? "Admin" : "Staff"}</b>
                   </p>
+
+                  {/* <p style={{ margin: 0 }}>
+                    Logged in as <b>{user.role === "admin" ? "Admin" : "Staff"}</b>
+                  </p> */}
 
 
 

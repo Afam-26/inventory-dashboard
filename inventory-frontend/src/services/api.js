@@ -165,11 +165,56 @@ export async function deleteCategory(id) {
  * PRODUCTS
  * ============================
  */
+// ✅ Updated: getProducts now supports search
 export async function getProducts(search = "") {
   const q = String(search || "").trim();
-  const url = q ? `${API_BASE}/products?search=${encodeURIComponent(q)}` : `${API_BASE}/products`;
+  const url = q
+    ? `${API_BASE}/products?search=${encodeURIComponent(q)}`
+    : `${API_BASE}/products`;
   return baseFetch(url, {}, { useAuth: true });
 }
+
+// ✅ Export CSV as Blob
+export async function fetchProductsCsvBlob() {
+  const res = await fetch(`${API_BASE}/products/export.csv`, {
+    headers: { ...authHeaders() },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || "CSV export failed");
+  }
+  return await res.blob();
+}
+
+// ✅ Download CSV in browser
+export async function downloadProductsCsv() {
+  const blob = await fetchProductsCsvBlob();
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "products.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  URL.revokeObjectURL(url);
+}
+
+// ✅ Import CSV text (admin only)
+export async function importProductsCsvText(csvText) {
+  return baseFetch(
+    `${API_BASE}/products/import`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csvText }),
+    },
+    { useAuth: true }
+  );
+}
+
 
 export async function addProduct(payload) {
   return baseFetch(
@@ -198,6 +243,20 @@ export async function updateProduct(id, payload) {
 export async function deleteProduct(id) {
   return baseFetch(`${API_BASE}/products/${id}`, { method: "DELETE" }, { useAuth: true });
 }
+
+// ✅ Batch import rows (admin only)
+export async function importProductsRows(rows, { createMissingCategories = true } = {}) {
+  return baseFetch(
+    `${API_BASE}/products/import-rows`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows, createMissingCategories }),
+    },
+    { useAuth: true }
+  );
+}
+
 
 
 /**

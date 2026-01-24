@@ -583,4 +583,41 @@ router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
   }
 });
 
+// ✅ Get product by SKU (admin + staff)
+router.get("/by-sku/:sku", requireAuth, requireRole("admin", "staff"), async (req, res) => {
+  try {
+    const sku = String(req.params.sku || "").trim();
+    if (!sku) return res.status(400).json({ message: "SKU is required" });
+
+    const [[p]] = await db.query(
+      `
+      SELECT 
+        p.id,
+        p.name,
+        p.sku,
+        p.category_id,
+        c.name AS category,
+        p.quantity,
+        p.cost_price,
+        p.selling_price,
+        p.reorder_level,
+        p.created_at
+      FROM products p
+      LEFT JOIN categories c ON c.id = p.category_id
+      WHERE p.sku = ?
+      LIMIT 1
+      `,
+      [sku]
+    );
+
+    if (!p) return res.status(404).json({ message: "Product not found" });
+    res.json(p);
+  } catch (err) {
+    console.error("PRODUCT BY SKU ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+
+
 export default router;

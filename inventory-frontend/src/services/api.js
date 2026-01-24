@@ -257,6 +257,10 @@ export async function importProductsRows(rows, { createMissingCategories = true 
   );
 }
 
+export async function getProductBySku(sku) {
+  return baseFetch(`${API_BASE}/products/by-sku/${encodeURIComponent(String(sku || "").trim())}`, {}, { useAuth: true });
+}
+
 
 
 /**
@@ -276,14 +280,32 @@ export async function updateStock(payload) {
   );
 }
 
-export async function getMovements() {
-  return baseFetch(`${API_BASE}/stock/movements`, {}, { useAuth: true });
+/**
+ * ✅ Updated: getMovements now supports filters + limit
+ * params (all optional):
+ *  - search
+ *  - type: "IN" | "OUT" | ""
+ *  - from: "YYYY-MM-DD"
+ *  - to: "YYYY-MM-DD"
+ *  - limit: number (default on backend is 200)
+ */
+export async function getMovements(params = {}) {
+  const qs = new URLSearchParams();
+
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v !== undefined && v !== null && String(v).trim() !== "") {
+      qs.set(k, String(v));
+    }
+  }
+
+  const url = `${API_BASE}/stock/movements${qs.toString() ? `?${qs}` : ""}`;
+  return baseFetch(url, {}, { useAuth: true });
 }
 
 /** STOCK CSV export → Blob */
 export async function fetchStockCsvBlob(params = {}) {
   const qs = new URLSearchParams();
-  for (const [k, v] of Object.entries(params)) {
+  for (const [k, v] of Object.entries(params || {})) {
     if (v !== undefined && v !== null && String(v).trim() !== "") {
       qs.set(k, String(v));
     }
@@ -316,6 +338,7 @@ export async function downloadStockCsv(params = {}) {
 
   URL.revokeObjectURL(url);
 }
+
 
 
 /**

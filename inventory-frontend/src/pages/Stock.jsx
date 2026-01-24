@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import { getProducts, updateStock, getMovements, downloadStockCsv } from "../services/api";
+// src/pages/Stock.jsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  getProducts,
+  updateStock,
+  getMovements,
+  downloadStockCsv,
+  getProductBySku,
+} from "../services/api";
 
 export default function Stock({ user }) {
   const isAdmin = user?.role === "admin";
@@ -13,6 +20,11 @@ export default function Stock({ user }) {
   const [submitting, setSubmitting] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  // Barcode scanner modal
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [lastScan, setLastScan] = useState("");
+
   // Stock update form
   const [form, setForm] = useState({
     product_id: "",
@@ -21,15 +33,15 @@ export default function Stock({ user }) {
     reason: "",
   });
 
-  // ✅ Filters UI (for table + export)
+  // ✅ Filters UI (for table + export + server query)
   const [filters, setFilters] = useState({
     search: "",
     type: "", // "", "IN", "OUT"
     from: "", // YYYY-MM-DD
-    to: "",   // YYYY-MM-DD
+    to: "", // YYYY-MM-DD
   });
 
-  // Debounced search so typing doesn't feel laggy
+  // Debounce typing for server fetch
   const [debouncedSearch, setDebouncedSearch] = useState(filters.search);
 
   useEffect(() => {
@@ -39,6 +51,9 @@ export default function Stock({ user }) {
 
   const busy = loading || submitting || exporting;
 
+  // Track latest request to prevent race-condition overwrites
+  const movementsReqId = useRef(0);
+
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
@@ -47,39 +62,175 @@ export default function Stock({ user }) {
     setFilters((prev) => ({ ...prev, [key]: value }));
   }
 
-  async function loadAll() {
-    setLoading(true);
-    setError("");
+  function clearFilters() {
+    setFilters({ search: "", type: "", from: "", to: "" });
+  }
 
+  // ---------------------------
+  // Scanner helpers (Quagga)
+  // ---------------------------
+  function stopScanner() {
     try {
-      const [p, m] = await Promise.all([getProducts(), getMovements()]);
-      setProducts(Array.isArray(p) ? p : []);
-      setMovements(Array.isArray(m) ? m : []);
+      const Q = window.Quagga;
+      if (Q) {
+        Q.offDetected();
+        Q.stop();
+      }
+    } catch {
+      // Scanner may already be stopped – safe to ignore
+    }
+  }
+
+  async function handleDetectedSku(skuRaw) {
+    const sku = String(skuRaw || "").trim();
+    if (!sku) return;
+
+    // prevent repeated rapid triggers
+    if (sku === lastScan) return;
+    setLastScan(sku);
+
+    setScanError("");
+    try {
+      const found = await getProductBySku(sku);
+
+      setForm((prev) => ({
+        ...prev,
+        product_id: String(found.id),
+      }));
+
+      setScannerOpen(false);
+      stopScanner();
     } catch (e) {
-      setError(e.message || "Failed to load");
-    } finally {
-      setLoading(false);
+      setScanError(e.message || "Not found");
     }
   }
 
   useEffect(() => {
-    loadAll();
+    if (!scannerOpen) return;
+
+    setScanError("");
+    setLastScan("");
+
+    const Q = window.Quagga;
+    if (!Q) {
+      setScanError("Scanner library not loaded (Quagga). Check index.html script tag.");
+      return;
+    }
+
+    Q.init(
+      {
+        inputStream: {
+          type: "LiveStream",
+          target: document.querySelector("#barcode-scanner"),
+          constraints: { facingMode: "environment" },
+        },
+        decoder: {
+          readers: [
+            "ean_reader",
+            "ean_8_reader",
+            "upc_reader",
+            "upc_e_reader",
+            "code_128_reader",
+            "code_39_reader",
+          ],
+        },
+        locate: true,
+      },
+      (err) => {
+        if (err) {
+          setScanError(err.message || "Failed to start camera");
+          return;
+        }
+
+        Q.start();
+
+        Q.onDetected((data) => {
+          const code = data?.codeResult?.code;
+          if (code) handleDetectedSku(code);
+        });
+      }
+    );
+
+    return () => stopScanner();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scannerOpen]);
+
+  // ---------------------------
+  // Load products once
+  // ---------------------------
+  async function loadProductsOnly() {
+    try {
+      const p = await getProducts("");
+      setProducts(Array.isArray(p) ? p : []);
+    } catch (e) {
+      setError(e.message || "Failed to load products");
+    }
+  }
+
+  // ---------------------------
+  // Load movements (server-side filters)
+  // ---------------------------
+  async function loadMovementsServer(params) {
+    const myReq = ++movementsReqId.current;
+
+    try {
+      const m = await getMovements(params);
+      // ignore if an even newer request finished later
+      if (myReq !== movementsReqId.current) return;
+
+      setMovements(Array.isArray(m) ? m : []);
+    } catch (e) {
+      if (myReq !== movementsReqId.current) return;
+      setError(e.message || "Failed to load movements");
+      setMovements([]);
+    }
+  }
+
+  // Initial load
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      setError("");
+      try {
+        await Promise.all([
+          loadProductsOnly(),
+          loadMovementsServer({ limit: 200 }),
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // When filters change, re-fetch movements from server (debounced search)
+  useEffect(() => {
+    // Don’t block typing; just fetch in background while keeping UI responsive
+    // We still show busy state only for export/submit, not for filter fetch.
+    setError("");
+
+    loadMovementsServer({
+      search: debouncedSearch,
+      type: filters.type,
+      from: filters.from,
+      to: filters.to,
+      limit: 500, // more rows for better filtering UX
+    });
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, filters.type, filters.from, filters.to]);
 
   const canSubmit = useMemo(() => {
     const pid = Number(form.product_id);
     const qty = Number(form.quantity);
-    return isAdmin && pid > 0 && qty > 0 && !busy;
+    return isAdmin && pid > 0 && Number.isFinite(qty) && qty > 0 && !busy;
   }, [form.product_id, form.quantity, isAdmin, busy]);
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
 
-    if (!isAdmin) {
-      setError("Admins only");
-      return;
-    }
+    if (!isAdmin) return setError("Admins only");
 
     const pid = Number(form.product_id);
     const qty = Number(form.quantity);
@@ -96,14 +247,19 @@ export default function Stock({ user }) {
         reason: String(form.reason || "").trim(),
       });
 
-      setForm({
-        product_id: "",
-        type: "IN",
-        quantity: 1,
-        reason: "",
-      });
+      setForm({ product_id: "", type: "IN", quantity: 1, reason: "" });
 
-      await loadAll();
+      // refresh products (for updated stock counts) + movements with current filters
+      await Promise.all([
+        loadProductsOnly(),
+        loadMovementsServer({
+          search: debouncedSearch,
+          type: filters.type,
+          from: filters.from,
+          to: filters.to,
+          limit: 500,
+        }),
+      ]);
     } catch (e2) {
       setError(e2.message || "Update stock failed");
     } finally {
@@ -111,18 +267,16 @@ export default function Stock({ user }) {
     }
   }
 
-  // ✅ Export uses filter params
   async function handleExportStockCsv() {
     setError("");
     setExporting(true);
     try {
-      const params = {
+      await downloadStockCsv({
         search: String(filters.search || "").trim(),
         type: String(filters.type || "").trim(),
         from: String(filters.from || "").trim(),
         to: String(filters.to || "").trim(),
-      };
-      await downloadStockCsv(params);
+      });
     } catch (e) {
       setError(e.message || "Export failed");
     } finally {
@@ -130,45 +284,8 @@ export default function Stock({ user }) {
     }
   }
 
-  function clearFilters() {
-    setFilters({ search: "", type: "", from: "", to: "" });
-  }
-
-  // ✅ Client-side filtered movements (so UI updates instantly)
-  const filteredMovements = useMemo(() => {
-    const s = String(debouncedSearch || "").trim().toLowerCase();
-    const type = String(filters.type || "").trim().toUpperCase();
-    const from = String(filters.from || "").trim();
-    const to = String(filters.to || "").trim();
-
-    const fromMs = from ? new Date(`${from}T00:00:00`).getTime() : null;
-    const toMs = to ? new Date(`${to}T23:59:59`).getTime() : null;
-
-    return (movements || []).filter((m) => {
-      // type
-      if (type && String(m.type || "").toUpperCase() !== type) return false;
-
-      // date range
-      const ts = m.created_at ? new Date(m.created_at).getTime() : null;
-      if (fromMs != null && ts != null && ts < fromMs) return false;
-      if (toMs != null && ts != null && ts > toMs) return false;
-
-      // search
-      if (s) {
-        const hay = [
-          m.product_name,
-          m.sku, // if your API includes it (safe if undefined)
-          m.reason,
-          m.type,
-        ]
-          .map((x) => String(x || "").toLowerCase())
-          .join(" ");
-        if (!hay.includes(s)) return false;
-      }
-
-      return true;
-    });
-  }, [movements, debouncedSearch, filters.type, filters.from, filters.to]);
+  // Server already filtered results; keep as-is
+  const filteredMovements = useMemo(() => movements || [], [movements]);
 
   return (
     <div>
@@ -201,7 +318,7 @@ export default function Stock({ user }) {
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <input
             className="input"
-            placeholder="Search (product, reason, type)"
+            placeholder="Search (product, SKU, reason)"
             value={filters.search}
             onChange={(e) => updateFilter("search", e.target.value)}
             disabled={busy}
@@ -244,9 +361,7 @@ export default function Stock({ user }) {
           </button>
         </div>
 
-        <div style={{ fontSize: 12, color: "#6b7280" }}>
-          Export uses these filters too.
-        </div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>Export uses these filters too.</div>
       </div>
 
       {/* ADMIN FORM */}
@@ -259,7 +374,7 @@ export default function Stock({ user }) {
             maxWidth: 600,
             marginTop: 14,
             marginBottom: 20,
-            opacity: busy ? 0.85 : 1,
+            opacity: busy ? 0.9 : 1,
           }}
         >
           <select
@@ -298,6 +413,13 @@ export default function Stock({ user }) {
             />
           </div>
 
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button className="btn" type="button" onClick={() => setScannerOpen(true)} disabled={busy}>
+              Scan barcode
+            </button>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>(Tip: works best on phone camera)</div>
+          </div>
+
           <input
             className="input"
             value={form.reason}
@@ -315,6 +437,77 @@ export default function Stock({ user }) {
       {/* STATUS */}
       {loading && <p>Loading...</p>}
       {error && <p style={{ color: "red" }}>{error}</p>}
+
+      {/* Scanner Modal */}
+      {scannerOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,.55)",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+          onMouseDown={() => {
+            setScannerOpen(false);
+            stopScanner();
+          }}
+        >
+          <div
+            style={{
+              width: 520,
+              maxWidth: "100%",
+              background: "#fff",
+              borderRadius: 14,
+              padding: 12,
+              border: "1px solid rgba(17,24,39,.10)",
+              boxShadow: "0 20px 60px rgba(0,0,0,.25)",
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <div>
+                <div style={{ fontWeight: 900 }}>Scan Barcode</div>
+                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                  Point camera at barcode. Detected SKU will auto-select product.
+                </div>
+              </div>
+
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  setScannerOpen(false);
+                  stopScanner();
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            {scanError && <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{scanError}</div>}
+
+            <div
+              id="barcode-scanner"
+              style={{
+                marginTop: 12,
+                width: "100%",
+                height: 320,
+                borderRadius: 12,
+                overflow: "hidden",
+                background: "#111827",
+              }}
+            />
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+              Last scan: <b>{lastScan || "-"}</b>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MOVEMENTS TABLE */}
       <h2 style={{ marginTop: 10 }}>Recent Movements</h2>

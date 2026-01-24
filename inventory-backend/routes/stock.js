@@ -1,3 +1,4 @@
+// routes/stock.js
 import express from "express";
 import { db } from "../config/db.js";
 import { logAudit } from "../utils/audit.js";
@@ -11,39 +12,52 @@ function csvEscape(v) {
   return s;
 }
 
-// ✅ Export stock movements CSV (admin + staff)
+function buildMovementFilters(req) {
+  const from = String(req.query.from || "").trim(); // YYYY-MM-DD
+  const to = String(req.query.to || "").trim(); // YYYY-MM-DD
+  const type = String(req.query.type || "").trim().toUpperCase(); // IN/OUT
+  const search = String(req.query.search || "").trim();
+
+  const where = [];
+  const params = [];
+
+  // type filter (only if valid)
+  if (type === "IN" || type === "OUT") {
+    where.push("sm.type = ?");
+    params.push(type);
+  }
+
+  // date filters (only if provided)
+  if (from) {
+    where.push("DATE(sm.created_at) >= ?");
+    params.push(from);
+  }
+  if (to) {
+    where.push("DATE(sm.created_at) <= ?");
+    params.push(to);
+  }
+
+  // search filter (only if provided)
+  if (search) {
+    const like = `%${search}%`;
+    where.push("(p.name LIKE ? OR p.sku LIKE ? OR sm.reason LIKE ?)");
+    params.push(like, like, like);
+  }
+
+  return { where, params, from, to, type, search };
+}
+
+/**
+ * ✅ Export stock movements CSV (admin + staff)
+ * Query params (optional):
+ *  - search
+ *  - type: IN | OUT
+ *  - from: YYYY-MM-DD
+ *  - to: YYYY-MM-DD
+ */
 router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req, res) => {
   try {
-    const from = String(req.query.from || "").trim(); // expected YYYY-MM-DD
-    const to = String(req.query.to || "").trim();     // expected YYYY-MM-DD
-    const type = String(req.query.type || "").trim().toUpperCase(); // IN/OUT
-    const search = String(req.query.search || "").trim();
-    const like = `%${search}%`;
-
-    const where = [];
-    const params = [];
-
-    // type filter (only if provided)
-    if (type) {
-      where.push("sm.type = ?");
-      params.push(type);
-    }
-
-    // date filters (only if provided)
-    if (from) {
-      where.push("DATE(sm.created_at) >= ?");
-      params.push(from);
-    }
-    if (to) {
-      where.push("DATE(sm.created_at) <= ?");
-      params.push(to);
-    }
-
-    // search filter (only if provided)
-    if (search) {
-      where.push("(p.name LIKE ? OR p.sku LIKE ? OR sm.reason LIKE ?)");
-      params.push(like, like, like);
-    }
+    const { where, params } = buildMovementFilters(req);
 
     const sql = `
       SELECT
@@ -61,12 +75,6 @@ router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req
     `;
 
     const [rows] = await db.query(sql, params);
-
-    const csvEscape = (v) => {
-      const s = String(v ?? "");
-      if (/[",\n\r]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
-      return s;
-    };
 
     const header = ["id", "type", "product_name", "sku", "quantity", "reason", "created_at"];
     const lines = [header.join(",")];
@@ -94,18 +102,38 @@ router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req
   }
 });
 
-
-
-// ✅ movements (any logged in user)
+/**
+ * ✅ movements (any logged in user)
+ * Supports same filters as export:
+ *  - search, type, from, to
+ * Plus:
+ *  - limit (default 200, max 2000)
+ */
 router.get("/movements", requireAuth, async (req, res) => {
   try {
-    const [rows] = await db.query(
-      `SELECT sm.id, sm.product_id, p.name AS product_name, sm.type, sm.quantity, sm.reason, sm.created_at
-       FROM stock_movements sm
-       JOIN products p ON p.id = sm.product_id
-       ORDER BY sm.id DESC
-       LIMIT 50`
-    );
+    const { where, params } = buildMovementFilters(req);
+
+    const rawLimit = Number(req.query.limit);
+    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 2000) : 200;
+
+    const sql = `
+      SELECT
+        sm.id,
+        sm.product_id,
+        p.name AS product_name,
+        p.sku,
+        sm.type,
+        sm.quantity,
+        sm.reason,
+        sm.created_at
+      FROM stock_movements sm
+      JOIN products p ON p.id = sm.product_id
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY sm.id DESC
+      LIMIT ?
+    `;
+
+    const [rows] = await db.query(sql, [...params, limit]);
     res.json(rows);
   } catch (err) {
     console.error("MOVEMENTS GET ERROR:", err);
@@ -123,7 +151,7 @@ router.post("/update", requireAuth, requireRole("admin"), async (req, res) => {
     const pid = Number(product_id);
     const qty = Number(quantity);
 
-    if (!pid || !["IN", "OUT"].includes(type) || !qty || qty <= 0) {
+    if (!pid || !["IN", "OUT"].includes(type) || !Number.isFinite(qty) || qty <= 0) {
       return res.status(400).json({ message: "Invalid input" });
     }
 
@@ -151,18 +179,17 @@ router.post("/update", requireAuth, requireRole("admin"), async (req, res) => {
 
     await connection.query(
       "INSERT INTO stock_movements (product_id, type, quantity, reason) VALUES (?,?,?,?)",
-      [pid, type, qty, reason]
+      [pid, type, qty, String(reason || "").trim()]
     );
 
     await connection.commit();
 
-   await logAudit(req, {
+    await logAudit(req, {
       action: type === "IN" ? "STOCK_IN" : "STOCK_OUT",
       entity_type: "product",
       entity_id: pid,
-      details: { product_name: product.name, qty, reason, oldQty, newQty },
+      details: { product_name: product.name, qty, reason: String(reason || "").trim(), oldQty, newQty },
     });
-
 
     res.json({ message: "Stock updated", newQty });
   } catch (err) {

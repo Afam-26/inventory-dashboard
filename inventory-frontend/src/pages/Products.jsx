@@ -1,3 +1,4 @@
+// src/pages/Products.jsx
 import { useEffect, useMemo, useState } from "react";
 import {
   getProducts,
@@ -102,7 +103,7 @@ function guessMapping(headers) {
 
   return {
     name: find("name", "product name", "product"),
-    sku: find("sku", "product sku", "code"),
+    sku: find("sku", "product sku", "code", "barcode"),
     category: find("category", "category name"),
     quantity: find("quantity", "qty", "stock"),
     cost_price: find("cost_price", "cost price", "cost"),
@@ -120,10 +121,10 @@ export default function Products({ user }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // ✅ disable per-row buttons while saving/deleting
+  // disable per-row buttons while saving/deleting
   const [savingId, setSavingId] = useState(null);
 
-  // ✅ per-row error messages
+  // per-row error messages
   const [rowErrors, setRowErrors] = useState({}); // { [productId]: string }
 
   // Search
@@ -151,6 +152,101 @@ export default function Products({ user }) {
   });
 
   /* ============================
+     Barcode scanner (IDENTICAL pattern to Stock.jsx)
+     - Uses Quagga loaded globally (window.Quagga)
+     - On detect, fills the SKU field in the create form and closes scanner
+  ============================ */
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const [lastScan, setLastScan] = useState("");
+
+  function stopScanner() {
+    try {
+      const Q = window.Quagga;
+      if (Q) {
+        Q.offDetected();
+        Q.stop();
+      }
+    } catch {
+      // Scanner may already be stopped; safe to ignore
+    }
+  }
+
+  async function handleDetectedSku(skuRaw) {
+    const sku = String(skuRaw || "").trim();
+    if (!sku) return;
+
+    // prevent repeated rapid triggers
+    if (sku === lastScan) return;
+    setLastScan(sku);
+
+    setScanError("");
+
+    // Fill SKU on create form, and optionally focus the user to it
+    setForm((prev) => ({
+      ...prev,
+      sku,
+    }));
+
+    // close scanner
+    setScannerOpen(false);
+    stopScanner();
+  }
+
+  useEffect(() => {
+    if (!scannerOpen) return;
+
+    setScanError("");
+    setLastScan("");
+
+    const Q = window.Quagga;
+    if (!Q) {
+      setScanError("Scanner library not loaded (Quagga). Check index.html script tag.");
+      return;
+    }
+
+    Q.init(
+      {
+        inputStream: {
+          type: "LiveStream",
+          target: document.querySelector("#barcode-scanner-products"),
+          constraints: {
+            facingMode: "environment",
+          },
+        },
+        decoder: {
+          readers: [
+            "ean_reader",
+            "ean_8_reader",
+            "upc_reader",
+            "upc_e_reader",
+            "code_128_reader",
+            "code_39_reader",
+          ],
+        },
+        locate: true,
+      },
+      (err) => {
+        if (err) {
+          setScanError(err.message || "Failed to start camera");
+          return;
+        }
+        Q.start();
+
+        Q.onDetected((data) => {
+          const code = data?.codeResult?.code;
+          if (code) handleDetectedSku(code);
+        });
+      }
+    );
+
+    return () => {
+      stopScanner();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scannerOpen]);
+
+  /* ============================
      CSV import state
   ============================ */
   const [csvFileName, setCsvFileName] = useState("");
@@ -175,25 +271,6 @@ export default function Products({ user }) {
   const [importErrors, setImportErrors] = useState([]); // { line, sku, message }
   const previewCount = 20;
 
-  // ✅ helper: reset import UI (auto-clear)
-  function resetImportUI({ keepMsg = false } = {}) {
-    setCsvFileName("");
-    setCsvHeaders([]);
-    setCsvRows([]);
-    setMapping({
-      name: -1,
-      sku: -1,
-      category: -1,
-      quantity: -1,
-      cost_price: -1,
-      selling_price: -1,
-      reorder_level: -1,
-    });
-    setImportErrors([]);
-    setImportProgress({ done: 0, total: 0 });
-    if (!keepMsg) setImportMsg("");
-  }
-
   async function loadAll(searchQuery = "") {
     setLoading(true);
     setError("");
@@ -201,8 +278,8 @@ export default function Products({ user }) {
       const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
       setProducts(Array.isArray(p) ? p : []);
       setCategories(Array.isArray(c) ? c : []);
-    } catch (e) {
-      setError(e.message || "Failed to load");
+    } catch (e2) {
+      setError(e2.message || "Failed to load");
     } finally {
       setLoading(false);
     }
@@ -228,6 +305,7 @@ export default function Products({ user }) {
   async function handleCreate(e) {
     e.preventDefault();
     setError("");
+
     try {
       await addProduct({
         ...form,
@@ -291,8 +369,8 @@ export default function Products({ user }) {
       await updateProduct(id, payload);
       await loadAll(search);
       cancelEdit();
-    } catch (e) {
-      setRowErrors((prev) => ({ ...prev, [id]: e.message || "Update failed" }));
+    } catch (e2) {
+      setRowErrors((prev) => ({ ...prev, [id]: e2.message || "Update failed" }));
     } finally {
       setSavingId(null);
     }
@@ -335,8 +413,8 @@ export default function Products({ user }) {
           return Date.now() > u.expiresAt ? null : u;
         });
       }, 10_200);
-    } catch (e) {
-      setRowErrors((prev) => ({ ...prev, [p.id]: e.message || "Delete failed" }));
+    } catch (e2) {
+      setRowErrors((prev) => ({ ...prev, [p.id]: e2.message || "Delete failed" }));
     } finally {
       setSavingId(null);
     }
@@ -350,8 +428,8 @@ export default function Products({ user }) {
       await addProduct(undo.payload);
       setUndo(null);
       await loadAll(search);
-    } catch (e) {
-      setError(e.message || "Undo failed");
+    } catch (e2) {
+      setError(e2.message || "Undo failed");
     }
   }
 
@@ -359,8 +437,8 @@ export default function Products({ user }) {
     setError("");
     try {
       await downloadProductsCsv();
-    } catch (e) {
-      setError(e.message || "Export failed");
+    } catch (e2) {
+      setError(e2.message || "Export failed");
     }
   }
 
@@ -398,9 +476,20 @@ export default function Products({ user }) {
         selling_price: g.selling_price,
         reorder_level: g.reorder_level,
       });
-    } catch (e) {
-      setError(e.message || "Failed to read CSV");
-      resetImportUI();
+    } catch (e2) {
+      setError(e2.message || "Failed to read CSV");
+      setCsvFileName("");
+      setCsvHeaders([]);
+      setCsvRows([]);
+      setMapping({
+        name: -1,
+        sku: -1,
+        category: -1,
+        quantity: -1,
+        cost_price: -1,
+        selling_price: -1,
+        reorder_level: -1,
+      });
     }
   }
 
@@ -417,24 +506,6 @@ export default function Products({ user }) {
     };
   }
 
-  // ✅ mapping duplicates check
-  const mappingDupes = useMemo(() => {
-    const keys = Object.keys(mapping);
-    const used = new Map(); // idx -> [keys]
-    for (const k of keys) {
-      const idx = Number(mapping[k]);
-      if (idx < 0) continue;
-      const arr = used.get(idx) || [];
-      arr.push(k);
-      used.set(idx, arr);
-    }
-    const dupes = [];
-    for (const [idx, ks] of used.entries()) {
-      if (ks.length > 1) dupes.push({ idx, keys: ks });
-    }
-    return dupes;
-  }, [mapping]);
-
   const validation = useMemo(() => {
     if (!csvRows.length) return { ok: false, issues: [], counts: { total: 0, bad: 0 } };
 
@@ -446,14 +517,6 @@ export default function Products({ user }) {
       return {
         ok: false,
         issues: [{ line: 1, sku: "", message: "Mapping required: name and sku must be selected." }],
-        counts: { total, bad: total },
-      };
-    }
-
-    if (mappingDupes.length) {
-      return {
-        ok: false,
-        issues: [{ line: 1, sku: "", message: "Duplicate mapping: same CSV column mapped multiple times." }],
         counts: { total, bad: total },
       };
     }
@@ -505,7 +568,7 @@ export default function Products({ user }) {
 
     return { ok: issues.length === 0, issues, counts: { total, bad } };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [csvRows, mapping, mappingDupes]);
+  }, [csvRows, mapping]);
 
   const previewRows = useMemo(() => {
     return csvRows.slice(0, previewCount).map((r, i) => ({
@@ -532,6 +595,24 @@ export default function Products({ user }) {
     };
   }
 
+  function clearImportUi() {
+    setCsvFileName("");
+    setCsvHeaders([]);
+    setCsvRows([]);
+    setMapping({
+      name: -1,
+      sku: -1,
+      category: -1,
+      quantity: -1,
+      cost_price: -1,
+      selling_price: -1,
+      reorder_level: -1,
+    });
+    setImportErrors([]);
+    setImportProgress({ done: 0, total: 0 });
+    setCreateMissingCategories(true);
+  }
+
   async function startImport() {
     if (!isAdmin) return;
     if (!csvRows.length) return;
@@ -540,8 +621,8 @@ export default function Products({ user }) {
     setImportMsg("");
     setImportErrors([]);
 
-    if (!validation.ok) {
-      setError("Fix validation issues before importing (see Validation section).");
+    if (mapping.name < 0 || mapping.sku < 0) {
+      setError("Please map required fields: name and sku.");
       return;
     }
 
@@ -568,10 +649,10 @@ export default function Products({ user }) {
         skipped += Number(result.skipped || 0);
 
         if (Array.isArray(result.errors)) {
-          for (const e of result.errors) {
-            const idx = Number(e.index ?? -1);
+          for (const e2 of result.errors) {
+            const idx = Number(e2.index ?? -1);
             const line = idx >= 0 ? start + idx + 2 : "";
-            allErrs.push({ line, sku: e.sku || "", message: e.message || "Error" });
+            allErrs.push({ line, sku: e2.sku || "", message: e2.message || "Error" });
           }
         }
 
@@ -587,17 +668,13 @@ export default function Products({ user }) {
 
       await loadAll(search);
 
-      // ✅ Auto-clear import panel a few seconds after completion
+      // ✅ auto-clear import UI a few seconds after completion (no refresh needed)
       window.setTimeout(() => {
-        resetImportUI({ keepMsg: false });
-      }, 6000);
-    } catch (e) {
-      setError(e.message || "Import failed");
-
-      // optional: auto-clear error message after a bit
-      window.setTimeout(() => {
-        setError("");
-      }, 6000);
+        setImportMsg("");
+        clearImportUi();
+      }, 3500);
+    } catch (e2) {
+      setError(e2.message || "Import failed");
     } finally {
       setImporting(false);
     }
@@ -622,9 +699,6 @@ export default function Products({ user }) {
 
     downloadTextFile("products_import_errors.csv", lines.join("\n"), "text/csv;charset=utf-8");
   }
-
-  const progressPct =
-    importProgress.total > 0 ? Math.round((importProgress.done / importProgress.total) * 100) : 0;
 
   const overlayStyle = {
     position: "fixed",
@@ -687,7 +761,10 @@ export default function Products({ user }) {
           {isAdmin && (
             <label
               className="btn"
-              style={{ cursor: anyBusy ? "not-allowed" : "pointer", opacity: anyBusy ? 0.7 : 1 }}
+              style={{
+                cursor: anyBusy ? "not-allowed" : "pointer",
+                opacity: anyBusy ? 0.7 : 1,
+              }}
             >
               Choose CSV
               <input
@@ -745,7 +822,7 @@ export default function Products({ user }) {
                 Auto-create missing categories
               </label>
 
-              <button className="btn" onClick={startImport} disabled={anyBusy || !csvRows.length || !validation.ok}>
+              <button className="btn" onClick={startImport} disabled={anyBusy || !csvRows.length}>
                 {importing ? "Importing..." : "Start Import"}
               </button>
 
@@ -760,31 +837,35 @@ export default function Products({ user }) {
             </div>
           </div>
 
-          {(importing || importProgress.total > 0) && (
+          {/* Progress bar */}
+          {importing && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, color: "#374151", marginBottom: 6 }}>
-                Progress: {importProgress.done} / {importProgress.total} ({progressPct}%)
+                Importing {importProgress.done} / {importProgress.total}
               </div>
               <div style={{ height: 10, background: "#e5e7eb", borderRadius: 999, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${progressPct}%`, background: "#111827" }} />
+                <div
+                  style={{
+                    height: "100%",
+                    width:
+                      importProgress.total > 0
+                        ? `${Math.round((importProgress.done / importProgress.total) * 100)}%`
+                        : "0%",
+                    background: "#111827",
+                  }}
+                />
               </div>
             </div>
           )}
 
+          {/* Column mapping */}
           {csvHeaders.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Column Mapping</div>
-
-              {mappingDupes.length > 0 && (
-                <div style={{ marginBottom: 10, fontSize: 12, color: "#991b1b" }}>
-                  Duplicate mapping detected: you mapped the same column to multiple fields. Fix this to proceed.
-                </div>
-              )}
-
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
                 {[
                   ["name", "Name (required)"],
-                  ["sku", "SKU (required)"],
+                  ["sku", "SKU / Barcode (required)"],
                   ["category", "Category"],
                   ["quantity", "Quantity"],
                   ["cost_price", "Cost Price"],
@@ -812,15 +893,18 @@ export default function Products({ user }) {
 
               <div style={{ marginTop: 10, fontSize: 12 }}>
                 <b>Validation:</b>{" "}
-                {!validation.ok ? (
+                {mapping.name < 0 || mapping.sku < 0 ? (
+                  <span style={{ color: "#991b1b" }}>Map required fields (name, sku) to proceed.</span>
+                ) : validation.issues.length ? (
                   <span style={{ color: "#b45309" }}>
-                    {validation.issues.length} issue(s) found — fix them to import.
+                    {validation.issues.length} issue(s) found (import still allowed, bad rows may be skipped).
                   </span>
                 ) : (
                   <span style={{ color: "#065f46" }}>No issues found.</span>
                 )}
               </div>
 
+              {/* Preview */}
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Preview (first {previewCount} rows)</div>
                 <div style={{ overflowX: "auto" }}>
@@ -833,7 +917,7 @@ export default function Products({ user }) {
                       <tr>
                         <th>Line</th>
                         <th>Name</th>
-                        <th>SKU</th>
+                        <th>SKU / Barcode</th>
                         <th>Category</th>
                         <th>Qty</th>
                         <th>Cost</th>
@@ -916,7 +1000,7 @@ export default function Products({ user }) {
             />
             <input
               className="input"
-              placeholder="SKU"
+              placeholder="SKU / Barcode"
               value={form.sku}
               onChange={(e) => updateField("sku", e.target.value)}
               disabled={anyBusy}
@@ -975,20 +1059,146 @@ export default function Products({ user }) {
             />
           </div>
 
-          <button className="btn" type="submit" disabled={anyBusy}>
-            Add Product
-          </button>
+          {/* ✅ Small Add Product button + Scan barcode button next to it */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button
+              className="btn"
+              type="submit"
+              disabled={anyBusy}
+              style={{ padding: "10px 20px", fontSize: 12, width: "fit-content" }}
+            >
+              Add Product
+            </button>
+
+            <button
+              className="btn"
+              type="button"
+              disabled={anyBusy}
+              onClick={() => setScannerOpen(true)}
+              style={{ padding: "10px 20px", fontSize: 12, width: "fit-content" }}
+            >
+              Scan barcode
+            </button>
+
+            <div style={{ fontSize: 12, color: "#6b7280" }}>(Tip: works best on phone camera)</div>
+          </div>
         </form>
       )}
 
-      {loading && <p>Loading...</p>}
+      {/* Barcode scanner modal */}
+      {scannerOpen && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,.55)",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+          onMouseDown={() => {
+            setScannerOpen(false);
+            stopScanner();
+          }}
+        >
+          <div
+            style={{
+              width: 520,
+              maxWidth: "100%",
+              background: "#fff",
+              borderRadius: 14,
+              padding: 12,
+              border: "1px solid rgba(17,24,39,.10)",
+              boxShadow: "0 20px 60px rgba(0,0,0,.25)",
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+              <div>
+                <div style={{ fontWeight: 900 }}>Scan Barcode</div>
+                <div style={{ fontSize: 12, color: "#6b7280" }}>
+                  Point camera at barcode. Detected code will auto-fill the SKU field.
+                </div>
+              </div>
 
-      {/* Products table */}
+              <button
+                className="btn"
+                type="button"
+                onClick={() => {
+                  setScannerOpen(false);
+                  stopScanner();
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            {scanError && <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{scanError}</div>}
+
+            <div
+              id="barcode-scanner-products"
+              style={{
+                marginTop: 12,
+                width: "100%",
+                height: 320,
+                borderRadius: 12,
+                overflow: "hidden",
+                background: "#111827",
+              }}
+            />
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+              Last scan: <b>{lastScan || "-"}</b>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirm modal */}
+      {confirmDelete && (
+        <div style={overlayStyle} onMouseDown={() => (savingId ? null : setConfirmDelete(null))}>
+          <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
+            <h2 style={{ margin: "0 0 8px" }}>Delete product?</h2>
+            <p style={{ marginTop: 0, color: "#374151" }}>This will permanently delete:</p>
+
+            <div
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                padding: 12,
+                background: "#f9fafb",
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ fontWeight: 800 }}>{confirmDelete.name}</div>
+              <div style={{ color: "#6b7280" }}>SKU: {confirmDelete.sku}</div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button className="btn" onClick={() => setConfirmDelete(null)} disabled={savingId != null}>
+                Cancel
+              </button>
+              <button className="btn" onClick={confirmDeleteNow} disabled={savingId != null}>
+                {savingId === confirmDelete.id ? "Deleting..." : "Confirm delete"}
+              </button>
+            </div>
+
+            {rowErrors[confirmDelete.id] ? (
+              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>
+                {rowErrors[confirmDelete.id]}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse", marginTop: 14 }}>
         <thead style={{ background: "#f3f4f6" }}>
           <tr>
             <th>Name</th>
-            <th>SKU</th>
+            <th>SKU / Barcode</th>
             <th>Category</th>
             <th>Stock</th>
             <th>Cost</th>
@@ -1098,44 +1308,6 @@ export default function Products({ user }) {
           )}
         </tbody>
       </table>
-
-      {/* Delete confirm modal */}
-      {confirmDelete && (
-        <div style={overlayStyle} onMouseDown={() => (savingId ? null : setConfirmDelete(null))}>
-          <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
-            <h2 style={{ margin: "0 0 8px" }}>Delete product?</h2>
-            <p style={{ marginTop: 0, color: "#374151" }}>This will permanently delete:</p>
-
-            <div
-              style={{
-                border: "1px solid #e5e7eb",
-                borderRadius: 12,
-                padding: 12,
-                background: "#f9fafb",
-                marginBottom: 12,
-              }}
-            >
-              <div style={{ fontWeight: 800 }}>{confirmDelete.name}</div>
-              <div style={{ color: "#6b7280" }}>SKU: {confirmDelete.sku}</div>
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button className="btn" onClick={() => setConfirmDelete(null)} disabled={savingId != null}>
-                Cancel
-              </button>
-              <button className="btn" onClick={confirmDeleteNow} disabled={savingId != null}>
-                {savingId === confirmDelete.id ? "Deleting..." : "Confirm delete"}
-              </button>
-            </div>
-
-            {rowErrors[confirmDelete.id] ? (
-              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>
-                {rowErrors[confirmDelete.id]}
-              </div>
-            ) : null}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

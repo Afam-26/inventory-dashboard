@@ -64,15 +64,9 @@ export default function App() {
                         fontSize: 12,
                       }}
                     >
-                      {user.role === "admin" ? "Admin" : user.role === "staff" ? "Staff" : "User"}
+                  {user.role === "admin" ? "Admin" : user.role === "staff" ? "Staff" : "User"}
                     </span>
-                  </p>
-
-                  {/* <p style={{ margin: 0 }}>
-                    Logged in as <b>{user.role === "admin" ? "Admin" : "Staff"}</b>
-                  </p> */}
-
-
+                  </p>            
 
                   <button className="btn" onClick={logout}>
                     Logout

@@ -2,140 +2,194 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import { db } from "../config/db.js";
-import { requireAuth, requireRole, requireAdmin } from "../middleware/auth.js";
 import { logAudit } from "../utils/audit.js";
+import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
-const ALLOWED_ROLES = new Set(["admin", "staff"]);
+
+// Tenant admins/owners only
+router.use(requireAuth, requireTenant, requireRole("owner", "admin"));
 
 /**
  * GET /api/users
- * Admin-only: list users
+ * List tenant members (tenant-scoped)
  */
-router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
+router.get("/", async (req, res) => {
+  const tenantId = req.tenantId;
+
   try {
     const [rows] = await db.query(
-      `SELECT id, full_name, email, role, created_at
-       FROM users
-       ORDER BY id DESC
-       LIMIT 500`
+      `
+      SELECT 
+        u.id,
+        u.full_name,
+        u.email,
+        tm.role,
+        tm.created_at
+      FROM tenant_members tm
+      JOIN users u ON u.id = tm.user_id
+      WHERE tm.tenant_id = ?
+      ORDER BY u.id DESC
+      `,
+      [tenantId]
     );
-    res.json(rows);
+
+    res.json({ users: rows });
   } catch (err) {
-    console.error("USERS GET ERROR:", err);
+    console.error("USERS LIST ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
 });
 
 /**
  * POST /api/users
- * Admin-only: create user (staff/admin)
- * Body: { full_name, email, password, role }
+ * Add user to tenant:
+ * Body: { full_name, email, password, role } OR { email, role } if user already exists
  */
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
+router.post("/", async (req, res) => {
+  const tenantId = req.tenantId;
+
+  const full_name = String(req.body?.full_name || "").trim();
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  const role = String(req.body?.role || "staff").trim().toLowerCase();
+
+  if (!email) return res.status(400).json({ message: "email required" });
+  if (!["owner", "admin", "staff"].includes(role)) {
+    return res.status(400).json({ message: "role must be owner, admin, or staff" });
+  }
+
+  const conn = await db.getConnection();
   try {
-    const full_name = String(req.body?.full_name || "").trim();
-    const email = String(req.body?.email || "").trim().toLowerCase();
-    const password = String(req.body?.password || "");
-    const role = String(req.body?.role || "staff").trim().toLowerCase();
+    await conn.beginTransaction();
 
-    if (!full_name) return res.status(400).json({ message: "Full name is required" });
-    if (!email) return res.status(400).json({ message: "Email is required" });
-    if (!password || password.length < 8) {
-      return res.status(400).json({ message: "Password must be at least 8 characters" });
-    }
-    if (!ALLOWED_ROLES.has(role)) {
-      return res.status(400).json({ message: "Invalid role. Use admin or staff." });
-    }
-
-    const [[exists]] = await db.query("SELECT id FROM users WHERE email=? LIMIT 1", [email]);
-    if (exists) return res.status(409).json({ message: "Email already exists" });
-
-    const password_hash = await bcrypt.hash(password, 10);
-
-    const [result] = await db.query(
-      `INSERT INTO users (full_name, email, password_hash, role)
-       VALUES (?, ?, ?, ?)`,
-      [full_name, email, password_hash, role]
+    // Find user
+    const [urows] = await conn.query(
+      "SELECT id FROM users WHERE email=? LIMIT 1",
+      [email]
     );
 
-    // ✅ audit with actor info
+    let userId = urows[0]?.id;
+
+    // Create user if not exists
+    if (!userId) {
+      if (!password || password.length < 8) {
+        await conn.rollback();
+        return res.status(400).json({ message: "password required (min 8 chars) for new user" });
+      }
+
+      const hash = await bcrypt.hash(password, 10);
+
+      const [r] = await conn.query(
+        "INSERT INTO users (full_name, email, password_hash, role) VALUES (?, ?, ?, 'user')",
+        [full_name || null, email, hash]
+      );
+      userId = r.insertId;
+
+      await logAudit(req, {
+        action: "USER_CREATE",
+        entity_type: "user",
+        entity_id: userId,
+        details: { email, full_name: full_name || null },
+      }, { db: conn });
+
+    }
+
+    // Add membership (or update role if exists)
+    const [mr] = await conn.query(
+      `
+      INSERT INTO tenant_members (tenant_id, user_id, role, created_at)
+      VALUES (?, ?, ?, NOW())
+      ON DUPLICATE KEY UPDATE role=VALUES(role)
+      `,
+      [tenantId, userId, role]
+    );
+
     await logAudit(req, {
-      action: "USER_CREATE",
-      entity_type: "user",
-      entity_id: result.insertId,
-      user_id: req.user?.id ?? null,
-      user_email: req.user?.email ?? null,
-      details: {
-        created_user_id: result.insertId,
-        created_email: email,
-        created_role: role,
-        created_full_name: full_name,
-      },
+      action: "TENANT_MEMBER_UPSERT",
+      entity_type: "tenant_member",
+      entity_id: userId,
+      details: { tenantId, userId, role, affectedRows: mr.affectedRows },
     });
 
-    res.json({
-      message: "User created",
-      user: { id: result.insertId, full_name, email, role },
-    });
+    await conn.commit();
+    res.status(201).json({ ok: true, userId, role });
   } catch (err) {
-    console.error("USERS POST ERROR:", err);
+    try { await conn.rollback(); } catch {}
+    console.error("USER UPSERT ERROR:", err);
     res.status(500).json({ message: "Database error" });
+  } finally {
+    conn.release();
   }
 });
 
 /**
  * PATCH /api/users/:id/role
- * Admin-only: update role
  * Body: { role }
  */
-router.patch("/:id/role", requireAuth, requireAdmin, async (req, res) => {
+router.patch("/:id/role", async (req, res) => {
+  const tenantId = req.tenantId;
+  const userId = Number(req.params.id);
+  const role = String(req.body?.role || "").trim().toLowerCase();
+
+  if (!userId) return res.status(400).json({ message: "Invalid user id" });
+  if (!["owner", "admin", "staff"].includes(role)) {
+    return res.status(400).json({ message: "role must be owner, admin, or staff" });
+  }
+
   try {
-    const targetId = Number(req.params.id);
-    const roleRaw = req.body?.role;
-
-    const newRole = String(roleRaw || "").trim().toLowerCase();
-    if (!targetId || !newRole) {
-      return res.status(400).json({ message: "User id and role are required" });
-    }
-    if (!ALLOWED_ROLES.has(newRole)) {
-      return res.status(400).json({ message: "Invalid role. Use admin or staff." });
-    }
-
-    // fetch target user + old role (for audit details)
-    const [[target]] = await db.query(
-      "SELECT id, email, role FROM users WHERE id=? LIMIT 1",
-      [targetId]
+    const [r] = await db.query(
+      `UPDATE tenant_members
+       SET role=?
+       WHERE tenant_id=? AND user_id=?`,
+      [role, tenantId, userId]
     );
-    if (!target) return res.status(404).json({ message: "User not found" });
 
-    const oldRole = String(target.role || "").toLowerCase();
+    if (r.affectedRows === 0) return res.status(404).json({ message: "Member not found" });
 
-    if (oldRole === newRole) {
-      return res.json({ message: "No change", userId: targetId, role: newRole });
-    }
-
-    await db.query("UPDATE users SET role=? WHERE id=?", [newRole, targetId]);
-
-    // ✅ audit (this is what report/dashboard expects)
     await logAudit(req, {
-      action: "USER_ROLE_UPDATE",
-      entity_type: "user",
-      entity_id: targetId,
-      user_id: req.user?.id ?? null,
-      user_email: req.user?.email ?? null,
-      details: {
-        target_user_id: targetId,
-        target_user_email: target.email,
-        old_role: oldRole,
-        new_role: newRole,
-      },
+      action: "TENANT_MEMBER_ROLE_UPDATE",
+      entity_type: "tenant_member",
+      entity_id: userId,
+      details: { tenantId, userId, role },
     });
 
-    return res.json({ message: "Role updated", userId: targetId, role: newRole });
+    res.json({ ok: true });
   } catch (err) {
-    console.error("ROLE UPDATE ERROR:", err);
-    return res.status(500).json({ message: "Server error" });
+    console.error("USER ROLE UPDATE ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+/**
+ * DELETE /api/users/:id
+ * Remove user from tenant (does not delete user globally)
+ */
+router.delete("/:id", async (req, res) => {
+  const tenantId = req.tenantId;
+  const userId = Number(req.params.id);
+
+  if (!userId) return res.status(400).json({ message: "Invalid user id" });
+
+  try {
+    const [r] = await db.query(
+      `DELETE FROM tenant_members WHERE tenant_id=? AND user_id=?`,
+      [tenantId, userId]
+    );
+
+    if (r.affectedRows === 0) return res.status(404).json({ message: "Member not found" });
+
+    await logAudit(req, {
+      action: "TENANT_MEMBER_REMOVE",
+      entity_type: "tenant_member",
+      entity_id: userId,
+      details: { tenantId, userId },
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("USER REMOVE ERROR:", err);
+    res.status(500).json({ message: "Database error" });
   }
 });
 

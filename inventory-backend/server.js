@@ -12,6 +12,8 @@ import stockRoutes from "./routes/stock.js";
 import authRoutes from "./routes/auth.js";
 import auditRoutes from "./routes/audit.js";
 import usersRoutes from "./routes/users.js";
+import tenantsRouter from "./routes/tenants.js";
+
 
 const app = express();
 
@@ -106,6 +108,8 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/stock", stockRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/users", usersRoutes);
+app.use("/api/tenants", tenantsRouter);
+
 
 
 // ✅ mount same router for admin paths (for dashboard verify button)

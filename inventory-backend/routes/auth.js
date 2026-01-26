@@ -18,7 +18,12 @@ const isProd = process.env.NODE_ENV === "production";
  */
 function signAccessToken(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, role: user.role },
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role, // ✅ MUST come from DB row
+      tenantId: user.tenantId ?? null,
+    },
     process.env.JWT_SECRET,
     { expiresIn: "15m" }
   );
@@ -36,6 +41,28 @@ function refreshCookieOptions() {
     path: "/",
     maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
   };
+}
+
+/**
+ * ✅ Non-blocking wrapper: security alerts must NEVER break auth flows
+ */
+async function safeSecurityAlert(payload) {
+  try {
+    await sendSecurityAlert(db, payload);
+  } catch (e) {
+    console.error("SECURITY ALERT FAILED (ignored):", e?.message || e);
+  }
+}
+
+/**
+ * ✅ Non-blocking wrapper: audit must NEVER break auth flows
+ */
+async function safeAudit(req, entry) {
+  try {
+    await logAudit(req, entry);
+  } catch (e) {
+    console.error("AUDIT FAILED (ignored):", e?.message || e);
+  }
 }
 
 /**
@@ -76,7 +103,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     if (!cleanEmail || !password) {
       // ✅ audit missing fields (no user_id)
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "LOGIN_FAILED",
         entity_type: "user",
         entity_id: null,
@@ -96,7 +123,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     const user = rows[0];
     if (!user) {
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "LOGIN_FAILED",
         entity_type: "user",
         entity_id: null,
@@ -106,8 +133,8 @@ router.post("/login", loginLimiter, async (req, res) => {
         severity: SEVERITY.WARN,
       });
 
-      // Optional: alert on unknown email attempts (often noisy; keep WARN)
-      await sendSecurityAlert(db, {
+      // Non-blocking alert
+      await safeSecurityAlert({
         severity: SEVERITY.WARN,
         subject: "Login failed (unknown email)",
         text: `Login failed for unknown email ${cleanEmail} from IP ${req.ip}`,
@@ -119,7 +146,7 @@ router.post("/login", loginLimiter, async (req, res) => {
 
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) {
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "LOGIN_FAILED",
         entity_type: "user",
         entity_id: user.id,
@@ -129,8 +156,8 @@ router.post("/login", loginLimiter, async (req, res) => {
         severity: SEVERITY.WARN,
       });
 
-      // Optional: alert on bad password (you can later gate this behind thresholds)
-      await sendSecurityAlert(db, {
+      // Non-blocking alert
+      await safeSecurityAlert({
         severity: SEVERITY.WARN,
         subject: "Login failed (bad password)",
         text: `Login failed for ${user.email} from IP ${req.ip}`,
@@ -140,8 +167,8 @@ router.post("/login", loginLimiter, async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // short-lived access token
-    const accessToken = signAccessToken(user);
+    // short-lived access token (no tenant selected yet)
+    const accessToken = signAccessToken({ ...user, tenantId: null });
 
     // long-lived refresh token stored in DB
     const refreshToken = makeRefreshToken();
@@ -155,8 +182,8 @@ router.post("/login", loginLimiter, async (req, res) => {
     // cookie for refresh
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
 
-    // ✅ audit successful login (IMPORTANT: pass user_id/user_email explicitly)
-    await logAudit(req, {
+    // ✅ audit successful login
+    await safeAudit(req, {
       action: "LOGIN",
       entity_type: "user",
       entity_id: user.id,
@@ -189,7 +216,7 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
   try {
     const rt = req.cookies?.refresh_token;
     if (!rt) {
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "REFRESH_FAILED",
         entity_type: "auth",
         entity_id: null,
@@ -209,7 +236,7 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
 
     const row = rows[0];
     if (!row || row.revoked_at) {
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "REFRESH_FAILED",
         entity_type: "auth",
         entity_id: null,
@@ -217,8 +244,8 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
         severity: SEVERITY.CRITICAL,
       });
 
-      // ✅ Critical security alert (possible session hijack / replay)
-      await sendSecurityAlert(db, {
+      // ✅ Critical alert (non-blocking)
+      await safeSecurityAlert({
         severity: SEVERITY.CRITICAL,
         subject: "Refresh token rejected (possible session hijack)",
         text: `Refresh rejected from IP ${req.ip} (revoked/invalid token).`,
@@ -230,7 +257,7 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
 
     const expiresAt = new Date(row.expires_at).getTime();
     if (Date.now() > expiresAt) {
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "REFRESH_FAILED",
         entity_type: "auth",
         entity_id: null,
@@ -249,7 +276,7 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
 
     const user = users[0];
     if (!user) {
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "REFRESH_FAILED",
         entity_type: "auth",
         entity_id: null,
@@ -261,9 +288,9 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
       return res.status(401).json({ message: "User not found" });
     }
 
-    const newAccess = signAccessToken(user);
+    const newAccess = signAccessToken({ ...user, tenantId: null });
 
-    await logAudit(req, {
+    await safeAudit(req, {
       action: "REFRESH",
       entity_type: "auth",
       entity_id: user.id,
@@ -301,28 +328,20 @@ router.post("/logout", async (req, res) => {
     let userEmail = null;
 
     if (rt) {
-      const [[r]] = await db.query(
-        "SELECT user_id FROM refresh_tokens WHERE token=? LIMIT 1",
-        [rt]
-      );
+      const [[r]] = await db.query("SELECT user_id FROM refresh_tokens WHERE token=? LIMIT 1", [rt]);
       userId = r?.user_id ?? null;
 
       if (userId) {
-        const [[u]] = await db.query(
-          "SELECT email FROM users WHERE id=? LIMIT 1",
-          [userId]
-        );
+        const [[u]] = await db.query("SELECT email FROM users WHERE id=? LIMIT 1", [userId]);
         userEmail = u?.email ?? null;
       }
 
-      await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE token=?", [
-        rt,
-      ]);
+      await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE token=?", [rt]);
     }
 
     res.clearCookie("refresh_token", { ...refreshCookieOptions(), maxAge: 0 });
 
-    await logAudit(req, {
+    await safeAudit(req, {
       action: "LOGOUT",
       entity_type: "auth",
       entity_id: userId,
@@ -341,7 +360,6 @@ router.post("/logout", async (req, res) => {
 
 /**
  * POST /api/auth/forgot-password
- * Sends email via Resend (dev can optionally also return dev_reset_link)
  */
 router.post("/forgot-password", resetLimiter, async (req, res) => {
   try {
@@ -354,14 +372,11 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
     let emailStatus = "not_sent";
     let emailError = null;
 
-    const [rows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [
-      normalized,
-    ]);
+    const [rows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [normalized]);
 
     // prevent user enumeration
     if (!rows.length) {
-      // ✅ optional audit (does not reveal user existence to client)
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "PASSWORD_RESET_REQUEST",
         entity_type: "user",
         entity_id: null,
@@ -373,9 +388,7 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
 
       return res.json({
         message: "If the email exists, a reset link was sent.",
-        ...(!isProd
-          ? { dev_note: "Email not found in users table (no reset created)." }
-          : {}),
+        ...(!isProd ? { dev_note: "Email not found in users table (no reset created)." } : {}),
       });
     }
 
@@ -391,13 +404,9 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
     );
 
     const front = process.env.FRONTEND_URL || (isProd ? "" : "http://localhost:5173");
+    const resetLink = `${front}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalized)}`;
 
-    const resetLink = `${front}/reset-password?token=${rawToken}&email=${encodeURIComponent(
-      normalized
-    )}`;
-
-    // ✅ audit reset requested (does not imply email delivery succeeded)
-    await logAudit(req, {
+    await safeAudit(req, {
       action: "PASSWORD_RESET_REQUEST",
       entity_type: "user",
       entity_id: user.id,
@@ -417,8 +426,7 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
       emailError = mailErr?.message || String(mailErr);
       console.error("EMAIL SEND ERROR:", emailError);
 
-      // ✅ audit email failure
-      await logAudit(req, {
+      await safeAudit(req, {
         action: "PASSWORD_RESET_EMAIL_FAILED",
         entity_type: "user",
         entity_id: user.id,
@@ -428,9 +436,8 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
         severity: SEVERITY.WARN,
       });
 
-      // Optional: alert admins if password reset emails fail in prod
       if (isProd) {
-        await sendSecurityAlert(db, {
+        await safeSecurityAlert({
           severity: SEVERITY.WARN,
           subject: "Password reset email failed",
           text: `Reset email failed for ${normalized} (IP ${req.ip}). Error: ${emailError}`,
@@ -441,9 +448,7 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
 
     res.json({
       message: "If the email exists, a reset link was sent.",
-      ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd
-        ? { dev_reset_link: resetLink }
-        : {}),
+      ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd ? { dev_reset_link: resetLink } : {}),
       ...(!isProd ? { emailStatus, emailError } : {}),
     });
   } catch (err) {
@@ -460,23 +465,17 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
     const { email, token, newPassword } = req.body;
 
     if (!email?.trim() || !token?.trim() || !newPassword) {
-      return res
-        .status(400)
-        .json({ message: "Email, token and new password are required" });
+      return res.status(400).json({ message: "Email, token and new password are required" });
     }
 
     if (String(newPassword).length < 8) {
-      return res
-        .status(400)
-        .json({ message: "Password must be at least 8 characters" });
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
     }
 
     const normalized = email.trim().toLowerCase();
     const tokenHash = crypto.createHash("sha256").update(token.trim()).digest("hex");
 
-    const [urows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [
-      normalized,
-    ]);
+    const [urows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [normalized]);
     if (!urows.length) return res.status(400).json({ message: "Invalid token" });
 
     const userId = urows[0].id;
@@ -499,23 +498,14 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
     if (Date.now() > expiresAt) return res.status(400).json({ message: "Token expired" });
 
     const password_hash = await bcrypt.hash(newPassword, 10);
-    await db.query("UPDATE users SET password_hash=? WHERE id=?", [
-      password_hash,
-      userId,
-    ]);
+    await db.query("UPDATE users SET password_hash=? WHERE id=?", [password_hash, userId]);
 
-    await db.query("UPDATE password_resets SET used_at=NOW() WHERE id=?", [
-      resetRow.id,
-    ]);
+    await db.query("UPDATE password_resets SET used_at=NOW() WHERE id=?", [resetRow.id]);
 
     // revoke all refresh tokens (recommended)
-    await db.query(
-      "UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL",
-      [userId]
-    );
+    await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL", [userId]);
 
-    // ✅ audit reset completed (warn so it’s visible)
-    await logAudit(req, {
+    await safeAudit(req, {
       action: "PASSWORD_RESET_COMPLETED",
       entity_type: "user",
       entity_id: userId,
@@ -525,8 +515,8 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
       severity: SEVERITY.WARN,
     });
 
-    // Optional: alert admins on successful reset (security signal)
-    await sendSecurityAlert(db, {
+    // Non-blocking alert
+    await safeSecurityAlert({
       severity: SEVERITY.WARN,
       subject: "Password reset completed",
       text: `Password reset completed for ${normalized} from IP ${req.ip}`,

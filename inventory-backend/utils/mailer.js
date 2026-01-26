@@ -6,6 +6,29 @@ function getEnv(name) {
   return v && String(v).trim() ? String(v).trim() : "";
 }
 
+function normalizeToArray(to) {
+  // Already array -> flatten, trim
+  if (Array.isArray(to)) {
+    return to
+      .flat()
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
+  }
+
+  // String -> split by comma if present
+  const s = String(to || "").trim();
+  if (!s) return [];
+
+  if (s.includes(",")) {
+    return s
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
+  return [s];
+}
+
 /**
  * sendEmail({ to, subject, html, text })
  * - Does not crash app startup if RESEND_API_KEY is missing.
@@ -20,9 +43,12 @@ export async function sendEmail({ to, subject, html, text }) {
 
   const resend = new Resend(apiKey);
 
+  const toArr = normalizeToArray(to);
+  if (!toArr.length) throw new Error("Invalid `to`: no recipients provided");
+
   const { error } = await resend.emails.send({
     from,
-    to: Array.isArray(to) ? to : [to],
+    to: toArr, // ✅ ALWAYS array (Resend format)
     subject,
     ...(html ? { html } : {}),
     ...(text ? { text } : {}),

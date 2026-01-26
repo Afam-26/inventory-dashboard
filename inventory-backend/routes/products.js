@@ -2,26 +2,28 @@
 import express from "express";
 import { db } from "../config/db.js";
 import { logAudit } from "../utils/audit.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
+// All product routes require tenant scope
+router.use(requireAuth, requireTenant);
+
+/** =========================
+ * CSV helpers
+ * ========================= */
 function csvEscape(v) {
   const s = String(v ?? "");
-  // If contains comma, quote, or newline, wrap in quotes and escape quotes
   if (/[",\n\r]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
   return s;
 }
 
-// Basic CSV parser that supports quoted fields and commas inside quotes.
-// Returns array of rows, each row is array of strings.
 function parseCsv(text) {
   const rows = [];
   let row = [];
   let field = "";
   let inQuotes = false;
 
-  // normalize line endings
   const s = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
   for (let i = 0; i < s.length; i++) {
@@ -29,7 +31,6 @@ function parseCsv(text) {
 
     if (inQuotes) {
       if (ch === '"') {
-        // escaped quote
         if (s[i + 1] === '"') {
           field += '"';
           i++;
@@ -56,7 +57,6 @@ function parseCsv(text) {
     if (ch === "\n") {
       row.push(field);
       field = "";
-      // avoid pushing trailing empty row if file ends with newline
       if (row.some((x) => String(x).trim() !== "")) rows.push(row);
       row = [];
       continue;
@@ -65,25 +65,27 @@ function parseCsv(text) {
     field += ch;
   }
 
-  // last field/row
   row.push(field);
   if (row.some((x) => String(x).trim() !== "")) rows.push(row);
 
   return rows;
 }
 
-// ✅ any logged in user can view products (+ optional search)
-router.get("/", requireAuth, async (req, res) => {
-  try {
-    const search = String(req.query.search || "").trim();
-    const like = `%${search}%`;
+/** =========================
+ * GET /api/products
+ * Tenant-scoped list
+ * ========================= */
+router.get("/", async (req, res) => {
+  const tenantId = req.tenantId;
 
+  try {
     const [rows] = await db.query(
       `
-      SELECT 
+      SELECT
         p.id,
         p.name,
         p.sku,
+        p.barcode,
         p.category_id,
         c.name AS category,
         p.quantity,
@@ -92,47 +94,278 @@ router.get("/", requireAuth, async (req, res) => {
         p.reorder_level,
         p.created_at
       FROM products p
-      LEFT JOIN categories c ON c.id = p.category_id
-      WHERE (? = '' OR p.name LIKE ? OR p.sku LIKE ? OR c.name LIKE ?)
+      LEFT JOIN categories c
+        ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+      WHERE p.tenant_id = ?
       ORDER BY p.id DESC
       `,
-      [search, like, like, like]
+      [tenantId]
     );
 
-    res.json(rows);
+    res.json({ products: rows });
   } catch (err) {
-    console.error("PRODUCTS GET ERROR:", err);
+    console.error("PRODUCTS LIST ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
 });
 
-// ✅ CSV export (admin + staff)
-router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req, res) => {
+/** =========================
+ * POST /api/products
+ * owner/admin only
+ * Body: { name, sku, barcode, category_id, quantity, cost_price, selling_price, reorder_level }
+ * ========================= */
+router.post("/", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = req.tenantId;
+
+  const name = String(req.body?.name ?? "").trim();
+  const sku = String(req.body?.sku ?? "").trim() || null;
+  const barcode = String(req.body?.barcode ?? "").trim() || null;
+
+  const category_id = req.body?.category_id ? Number(req.body.category_id) : null;
+
+  const quantity = Number(req.body?.quantity);
+  const cost_price = Number(req.body?.cost_price);
+  const selling_price = Number(req.body?.selling_price);
+  const reorder_level =
+    req.body?.reorder_level === undefined || req.body?.reorder_level === null || req.body?.reorder_level === ""
+      ? 10
+      : Number(req.body.reorder_level);
+
+  if (!name) return res.status(400).json({ message: "Name required" });
+
+  try {
+    // If category_id is provided, ensure it belongs to tenant
+    if (category_id) {
+      const [[cat]] = await db.query(
+        `SELECT id FROM categories WHERE id=? AND tenant_id=? LIMIT 1`,
+        [category_id, tenantId]
+      );
+      if (!cat) return res.status(400).json({ message: "Invalid category_id" });
+    }
+
+    const [r] = await db.query(
+      `
+      INSERT INTO products
+        (tenant_id, name, sku, barcode, category_id, quantity, cost_price, selling_price, reorder_level)
+      VALUES
+        (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        tenantId,
+        name,
+        sku,
+        barcode,
+        category_id,
+        Number.isFinite(quantity) ? quantity : 0,
+        Number.isFinite(cost_price) ? cost_price : 0,
+        Number.isFinite(selling_price) ? selling_price : 0,
+        Number.isFinite(reorder_level) ? reorder_level : 10,
+      ]
+    );
+
+    await logAudit(req, {
+      action: "PRODUCT_CREATE",
+      entity_type: "product",
+      entity_id: r.insertId,
+      details: { name, sku, barcode, category_id },
+    });
+
+
+    res.status(201).json({ id: r.insertId });
+  } catch (err) {
+    console.error("PRODUCT CREATE ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+/** =========================
+ * PUT /api/products/:id
+ * owner/admin only
+ * ========================= */
+router.put("/:id", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const id = Number(req.params.id);
+
+  const name = req.body?.name != null ? String(req.body.name).trim() : null;
+  const sku = req.body?.sku != null ? String(req.body.sku).trim() : null;
+  const barcode = req.body?.barcode != null ? String(req.body.barcode).trim() : null;
+
+  const category_id = req.body?.category_id != null ? Number(req.body.category_id) : null;
+
+  const quantity = req.body?.quantity != null ? Number(req.body.quantity) : null;
+  const cost_price = req.body?.cost_price != null ? Number(req.body.cost_price) : null;
+  const selling_price = req.body?.selling_price != null ? Number(req.body.selling_price) : null;
+  const reorder_level = req.body?.reorder_level != null ? Number(req.body.reorder_level) : null;
+
+  try {
+    // If category_id is provided, ensure it belongs to tenant
+    if (category_id) {
+      const [[cat]] = await db.query(
+        `SELECT id FROM categories WHERE id=? AND tenant_id=? LIMIT 1`,
+        [category_id, tenantId]
+      );
+      if (!cat) return res.status(400).json({ message: "Invalid category_id" });
+    }
+
+    const [r] = await db.query(
+      `
+      UPDATE products
+      SET
+        name = COALESCE(?, name),
+        sku = COALESCE(?, sku),
+        barcode = COALESCE(?, barcode),
+        category_id = COALESCE(?, category_id),
+        quantity = COALESCE(?, quantity),
+        cost_price = COALESCE(?, cost_price),
+        selling_price = COALESCE(?, selling_price),
+        reorder_level = COALESCE(?, reorder_level)
+      WHERE id = ? AND tenant_id = ?
+      `,
+      [
+        name,
+        sku,
+        barcode,
+        category_id,
+        Number.isFinite(quantity) ? quantity : null,
+        Number.isFinite(cost_price) ? cost_price : null,
+        Number.isFinite(selling_price) ? selling_price : null,
+        Number.isFinite(reorder_level) ? reorder_level : null,
+        id,
+        tenantId,
+      ]
+    );
+
+    if (r.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+
+    await logAudit(req, {
+      action: "PRODUCT_UPDATE",
+      entity_type: "product",
+      entity_id: id,
+      details: { id, changes: req.body },
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      tenant_id: tenantId,
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("PRODUCT UPDATE ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+/** =========================
+ * DELETE /api/products/:id
+ * owner only
+ * ========================= */
+router.delete("/:id", requireRole("owner"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const id = Number(req.params.id);
+
+  try {
+    const [r] = await db.query(
+      `DELETE FROM products WHERE id = ? AND tenant_id = ?`,
+      [id, tenantId]
+    );
+
+    if (r.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+
+    await logAudit(req, {
+      action: "PRODUCT_DELETE",
+      entity_type: "product",
+      entity_id: id,
+      details: { id },
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      tenant_id: tenantId,
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("PRODUCT DELETE ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+/** =========================
+ * GET /api/products/by-sku/:sku
+ * admin + staff
+ * Tenant-scoped (IMPORTANT)
+ * ========================= */
+router.get("/by-sku/:sku", requireRole("owner", "admin", "staff"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const sku = String(req.params.sku || "").trim();
+  if (!sku) return res.status(400).json({ message: "SKU is required" });
+
+  try {
+    const [[p]] = await db.query(
+      `
+      SELECT
+        p.id,
+        p.name,
+        p.sku,
+        p.barcode,
+        p.category_id,
+        c.name AS category,
+        p.quantity,
+        p.cost_price,
+        p.selling_price,
+        p.reorder_level,
+        p.created_at
+      FROM products p
+      LEFT JOIN categories c
+        ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+      WHERE p.tenant_id = ? AND p.sku = ?
+      LIMIT 1
+      `,
+      [tenantId, sku]
+    );
+
+    if (!p) return res.status(404).json({ message: "Product not found" });
+    res.json(p);
+  } catch (err) {
+    console.error("PRODUCT BY SKU ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+/** =========================
+ * CSV export (admin + staff) - tenant scoped
+ * GET /api/products/export.csv
+ * ========================= */
+router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, res) => {
+  const tenantId = req.tenantId;
+
   try {
     const [rows] = await db.query(
       `
-      SELECT 
+      SELECT
         p.name,
         p.sku,
+        p.barcode,
         c.name AS category,
         p.quantity,
         p.cost_price,
         p.selling_price,
         p.reorder_level
       FROM products p
-      LEFT JOIN categories c ON c.id = p.category_id
+      LEFT JOIN categories c
+        ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+      WHERE p.tenant_id = ?
       ORDER BY p.id DESC
-      `
+      `,
+      [tenantId]
     );
 
-    const header = ["name", "sku", "category", "quantity", "cost_price", "selling_price", "reorder_level"];
+    const header = ["name", "sku", "barcode", "category", "quantity", "cost_price", "selling_price", "reorder_level"];
     const lines = [header.join(",")];
 
     for (const r of rows) {
       lines.push(
         [
           csvEscape(r.name),
-          csvEscape(r.sku),
+          csvEscape(r.sku || ""),
+          csvEscape(r.barcode || ""),
           csvEscape(r.category || ""),
           csvEscape(r.quantity ?? 0),
           csvEscape(r.cost_price ?? 0),
@@ -142,19 +375,23 @@ router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req
       );
     }
 
-    const csv = lines.join("\n");
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="products.csv"`);
-    res.send(csv);
+    res.send(lines.join("\n"));
   } catch (err) {
     console.error("PRODUCTS CSV EXPORT ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
 });
 
-// ✅ CSV import (admin only)
-// Body: { csvText: "name,sku,category,quantity,cost_price,selling_price,reorder_level\n..." }
-router.post("/import", requireAuth, requireRole("admin"), async (req, res) => {
+/** =========================
+ * CSV import (admin only) - tenant scoped + upsert by (tenant_id, sku)
+ * POST /api/products/import
+ * Body: { csvText }
+ * ========================= */
+router.post("/import", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = req.tenantId;
+
   try {
     const csvText = String(req.body?.csvText || "");
     if (!csvText.trim()) return res.status(400).json({ message: "csvText is required" });
@@ -172,19 +409,20 @@ router.post("/import", requireAuth, requireRole("admin"), async (req, res) => {
 
     const iName = idx("name");
     const iSku = idx("sku");
-    const iCategory = idx("category"); // optional (category name)
-    const iQuantity = idx("quantity"); // optional
-    const iCost = idx("cost_price"); // optional
-    const iSell = idx("selling_price"); // optional
-    const iReorder = idx("reorder_level"); // optional
+    const iBarcode = idx("barcode");
+    const iCategory = idx("category");
+    const iQuantity = idx("quantity");
+    const iCost = idx("cost_price");
+    const iSell = idx("selling_price");
+    const iReorder = idx("reorder_level");
 
     let inserted = 0;
     let updated = 0;
     let skipped = 0;
     const errors = [];
 
-    // Cache category lookups to reduce DB calls
-    const catCache = new Map(); // nameLower -> id|null
+    // Cache categories per tenant
+    const catCache = new Map();
 
     async function getOrCreateCategoryId(catNameRaw) {
       const catName = String(catNameRaw || "").trim();
@@ -193,14 +431,19 @@ router.post("/import", requireAuth, requireRole("admin"), async (req, res) => {
       const key = catName.toLowerCase();
       if (catCache.has(key)) return catCache.get(key);
 
-      const [[found]] = await db.query("SELECT id FROM categories WHERE LOWER(name)=LOWER(?) LIMIT 1", [catName]);
+      const [[found]] = await db.query(
+        "SELECT id FROM categories WHERE tenant_id=? AND LOWER(name)=LOWER(?) LIMIT 1",
+        [tenantId, catName]
+      );
       if (found?.id) {
         catCache.set(key, found.id);
         return found.id;
       }
 
-      // create new category (admin allowed)
-      const [r] = await db.query("INSERT INTO categories (name) VALUES (?)", [catName]);
+      const [r] = await db.query(
+        "INSERT INTO categories (tenant_id, name) VALUES (?, ?)",
+        [tenantId, catName]
+      );
       const newId = r.insertId;
 
       await logAudit(req, {
@@ -208,13 +451,15 @@ router.post("/import", requireAuth, requireRole("admin"), async (req, res) => {
         entity_type: "category",
         entity_id: newId,
         details: { name: catName, via: "CSV_IMPORT" },
+        user_id: req.user?.id ?? null,
+        user_email: req.user?.email ?? null,
+        tenant_id: tenantId,
       });
 
       catCache.set(key, newId);
       return newId;
     }
 
-    // Process each row
     for (let line = 1; line < rows.length; line++) {
       const r = rows[line];
 
@@ -227,35 +472,32 @@ router.post("/import", requireAuth, requireRole("admin"), async (req, res) => {
         continue;
       }
 
+      const barcode = iBarcode !== -1 ? String(r[iBarcode] ?? "").trim() : "";
       const categoryName = iCategory !== -1 ? String(r[iCategory] ?? "").trim() : "";
       const category_id = categoryName ? await getOrCreateCategoryId(categoryName) : null;
 
       const quantity = iQuantity !== -1 ? Number(r[iQuantity]) || 0 : 0;
       const cost_price = iCost !== -1 ? Number(r[iCost]) || 0 : 0;
       const selling_price = iSell !== -1 ? Number(r[iSell]) || 0 : 0;
-      const reorder_level = iReorder !== -1 ? Number(r[iReorder]) || 0 : 10;
+      const reorder_level = iReorder !== -1 ? Number(r[iReorder]) || 10 : 10;
 
-      // Upsert by SKU
-      // (Assumes you either have UNIQUE index on sku OR you want to treat sku as unique logically)
-      // If sku isn't unique in DB yet, you should add UNIQUE(sku) for best results.
       const [result] = await db.query(
         `
         INSERT INTO products
-          (name, sku, category_id, quantity, cost_price, selling_price, reorder_level)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+          (tenant_id, name, sku, barcode, category_id, quantity, cost_price, selling_price, reorder_level)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON DUPLICATE KEY UPDATE
           name=VALUES(name),
+          barcode=VALUES(barcode),
           category_id=VALUES(category_id),
           quantity=VALUES(quantity),
           cost_price=VALUES(cost_price),
           selling_price=VALUES(selling_price),
           reorder_level=VALUES(reorder_level)
         `,
-        [name, sku, category_id, quantity, cost_price, selling_price, reorder_level]
+        [tenantId, name, sku, barcode || null, category_id, quantity, cost_price, selling_price, reorder_level]
       );
 
-      // MySQL affectedRows behavior:
-      // 1 = insert, 2 = update, 0 = no-op
       if (result.affectedRows === 1) inserted++;
       else if (result.affectedRows === 2) updated++;
       else skipped++;
@@ -266,358 +508,16 @@ router.post("/import", requireAuth, requireRole("admin"), async (req, res) => {
       entity_type: "product",
       entity_id: null,
       details: { inserted, updated, skipped, errorsCount: errors.length },
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      tenant_id: tenantId,
     });
 
-    res.json({
-      message: "CSV import completed",
-      inserted,
-      updated,
-      skipped,
-      errors,
-    });
+    res.json({ message: "CSV import completed", inserted, updated, skipped, errors });
   } catch (err) {
-    // Duplicate errors if sku isn't unique won't hit ON DUPLICATE KEY. If you see issues, add UNIQUE(sku).
     console.error("PRODUCTS CSV IMPORT ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
 });
-
-// ✅ Batch import rows (admin only)
-// Body: { rows: [{name, sku, category, quantity, cost_price, selling_price, reorder_level}], createMissingCategories?: true }
-router.post("/import-rows", requireAuth, requireRole("admin"), async (req, res) => {
-  try {
-    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
-    const createMissingCategories = req.body?.createMissingCategories !== false;
-
-    if (!rows.length) return res.status(400).json({ message: "rows is required" });
-
-    // Cache category name -> id
-    const catCache = new Map();
-
-    async function getCategoryIdByName(catNameRaw) {
-      const catName = String(catNameRaw || "").trim();
-      if (!catName) return null;
-
-      const key = catName.toLowerCase();
-      if (catCache.has(key)) return catCache.get(key);
-
-      const [[found]] = await db.query(
-        "SELECT id FROM categories WHERE LOWER(name)=LOWER(?) LIMIT 1",
-        [catName]
-      );
-
-      if (found?.id) {
-        catCache.set(key, found.id);
-        return found.id;
-      }
-
-      if (!createMissingCategories) {
-        catCache.set(key, null);
-        return null;
-      }
-
-      const [r] = await db.query("INSERT INTO categories (name) VALUES (?)", [catName]);
-      const newId = r.insertId;
-
-      await logAudit(req, {
-        action: "CATEGORY_CREATE",
-        entity_type: "category",
-        entity_id: newId,
-        details: { name: catName, via: "CSV_IMPORT" },
-      });
-
-      catCache.set(key, newId);
-      return newId;
-    }
-
-    let inserted = 0;
-    let updated = 0;
-    let skipped = 0;
-    const errors = []; // { index, sku, message }
-
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i] || {};
-      const name = String(r.name ?? "").trim();
-      const sku = String(r.sku ?? "").trim();
-      const category = String(r.category ?? "").trim();
-
-      if (!name || !sku) {
-        skipped++;
-        errors.push({ index: i, sku, message: "Missing name or sku" });
-        continue;
-      }
-
-      const category_id = category ? await getCategoryIdByName(category) : null;
-
-      const quantity = Number(r.quantity) || 0;
-      const cost_price = Number(r.cost_price) || 0;
-      const selling_price = Number(r.selling_price) || 0;
-      const reorder_level =
-        r.reorder_level === undefined || r.reorder_level === null || r.reorder_level === ""
-          ? 10
-          : Number(r.reorder_level) || 0;
-
-      try {
-        const [result] = await db.query(
-          `
-          INSERT INTO products
-            (name, sku, category_id, quantity, cost_price, selling_price, reorder_level)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON DUPLICATE KEY UPDATE
-            name=VALUES(name),
-            category_id=VALUES(category_id),
-            quantity=VALUES(quantity),
-            cost_price=VALUES(cost_price),
-            selling_price=VALUES(selling_price),
-            reorder_level=VALUES(reorder_level)
-          `,
-          [name, sku, category_id, quantity, cost_price, selling_price, reorder_level]
-        );
-
-        if (result.affectedRows === 1) inserted++;
-        else if (result.affectedRows === 2) updated++;
-        else skipped++;
-      } catch (e) {
-        skipped++;
-        errors.push({ index: i, sku, message: e?.message || "DB error" });
-      }
-    }
-
-    await logAudit(req, {
-      action: "PRODUCTS_CSV_IMPORT",
-      entity_type: "product",
-      entity_id: null,
-      details: { inserted, updated, skipped, batchSize: rows.length, errorsCount: errors.length },
-    });
-
-    res.json({ message: "Batch import completed", inserted, updated, skipped, errors });
-  } catch (err) {
-    console.error("PRODUCTS IMPORT-ROWS ERROR:", err);
-    res.status(500).json({ message: "Database error" });
-  }
-});
-
-
-// ✅ admin only can create product
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
-  try {
-    const {
-      name,
-      sku,
-      category_id = null,
-      quantity = 0,
-      cost_price = 0,
-      selling_price = 0,
-      reorder_level = 10,
-    } = req.body;
-
-    const cleanName = String(name || "").trim();
-    const cleanSku = String(sku || "").trim();
-
-    if (!cleanName) return res.status(400).json({ message: "Name is required" });
-    if (!cleanSku) return res.status(400).json({ message: "SKU is required" });
-
-    // ✅ prevent duplicate SKU
-    const [[skuExists]] = await db.query("SELECT id FROM products WHERE sku=? LIMIT 1", [cleanSku]);
-    if (skuExists) return res.status(409).json({ message: "SKU already exists" });
-
-    const cid = category_id ? Number(category_id) : null;
-
-    const [result] = await db.query(
-      `INSERT INTO products
-        (name, sku, category_id, quantity, cost_price, selling_price, reorder_level)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        cleanName,
-        cleanSku,
-        cid,
-        Number(quantity) || 0,
-        Number(cost_price) || 0,
-        Number(selling_price) || 0,
-        Number(reorder_level) || 0,
-      ]
-    );
-
-    await logAudit(req, {
-      action: "PRODUCT_CREATE",
-      entity_type: "product",
-      entity_id: result.insertId,
-      details: {
-        name: cleanName,
-        sku: cleanSku,
-        category_id: cid,
-        quantity: Number(quantity) || 0,
-        cost_price: Number(cost_price) || 0,
-        selling_price: Number(selling_price) || 0,
-        reorder_level: Number(reorder_level) || 0,
-      },
-    });
-
-    // return created row
-    const [[created]] = await db.query(
-      `SELECT p.id, p.name, p.sku, p.category_id, c.name AS category,
-              p.quantity, p.cost_price, p.selling_price, p.reorder_level, p.created_at
-       FROM products p
-       LEFT JOIN categories c ON c.id = p.category_id
-       WHERE p.id=? LIMIT 1`,
-      [result.insertId]
-    );
-
-    res.json({ message: "Product created", id: result.insertId, product: created });
-  } catch (err) {
-    console.error("PRODUCTS POST ERROR:", err);
-    res.status(500).json({ message: "Database error" });
-  }
-});
-
-// ✅ admin only: edit product
-router.patch("/:id", requireAuth, requireRole("admin"), async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ message: "Invalid product id" });
-
-    // fetch current
-    const [[current]] = await db.query("SELECT * FROM products WHERE id=? LIMIT 1", [id]);
-    if (!current) return res.status(404).json({ message: "Product not found" });
-
-    const name = req.body?.name != null ? String(req.body.name).trim() : current.name;
-    const sku = req.body?.sku != null ? String(req.body.sku).trim() : current.sku;
-
-    const category_id =
-      req.body?.category_id !== undefined
-        ? req.body.category_id === null || req.body.category_id === ""
-          ? null
-          : Number(req.body.category_id)
-        : current.category_id;
-
-    const cost_price =
-      req.body?.cost_price !== undefined ? Number(req.body.cost_price) || 0 : current.cost_price;
-
-    const selling_price =
-      req.body?.selling_price !== undefined
-        ? Number(req.body.selling_price) || 0
-        : current.selling_price;
-
-    const reorder_level =
-      req.body?.reorder_level !== undefined
-        ? Number(req.body.reorder_level) || 0
-        : current.reorder_level;
-
-    if (!name) return res.status(400).json({ message: "Name is required" });
-    if (!sku) return res.status(400).json({ message: "SKU is required" });
-
-    // ✅ prevent duplicate SKU (but allow if it's the same product)
-    if (sku !== current.sku) {
-      const [[skuExists]] = await db.query(
-        "SELECT id FROM products WHERE sku=? AND id<>? LIMIT 1",
-        [sku, id]
-      );
-      if (skuExists) return res.status(409).json({ message: "SKU already exists" });
-    }
-
-    await db.query(
-      `UPDATE products
-       SET name=?, sku=?, category_id=?, cost_price=?, selling_price=?, reorder_level=?
-       WHERE id=?`,
-      [name, sku, category_id, cost_price, selling_price, reorder_level, id]
-    );
-
-    await logAudit(req, {
-      action: "PRODUCT_UPDATE",
-      entity_type: "product",
-      entity_id: id,
-      details: {
-        old: {
-          name: current.name,
-          sku: current.sku,
-          category_id: current.category_id,
-          cost_price: current.cost_price,
-          selling_price: current.selling_price,
-          reorder_level: current.reorder_level,
-        },
-        new: { name, sku, category_id, cost_price, selling_price, reorder_level },
-      },
-    });
-
-    const [[updated]] = await db.query(
-      `SELECT p.id, p.name, p.sku, p.category_id, c.name AS category,
-              p.quantity, p.cost_price, p.selling_price, p.reorder_level, p.created_at
-       FROM products p
-       LEFT JOIN categories c ON c.id = p.category_id
-       WHERE p.id=? LIMIT 1`,
-      [id]
-    );
-
-    res.json({ message: "Product updated", product: updated });
-  } catch (err) {
-    console.error("PRODUCT PATCH ERROR:", err);
-    res.status(500).json({ message: "Database error" });
-  }
-});
-
-// ✅ admin only: delete product
-router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
-  try {
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ message: "Invalid product id" });
-
-    const [[current]] = await db.query(
-      "SELECT id, name, sku, category_id FROM products WHERE id=? LIMIT 1",
-      [id]
-    );
-    if (!current) return res.status(404).json({ message: "Product not found" });
-
-    await db.query("DELETE FROM products WHERE id=?", [id]);
-
-    await logAudit(req, {
-      action: "PRODUCT_DELETE",
-      entity_type: "product",
-      entity_id: id,
-      details: { deleted: current },
-    });
-
-    res.json({ message: "Product deleted", deleted: current });
-  } catch (err) {
-    console.error("PRODUCT DELETE ERROR:", err);
-    res.status(500).json({ message: "Database error" });
-  }
-});
-
-// ✅ Get product by SKU (admin + staff)
-router.get("/by-sku/:sku", requireAuth, requireRole("admin", "staff"), async (req, res) => {
-  try {
-    const sku = String(req.params.sku || "").trim();
-    if (!sku) return res.status(400).json({ message: "SKU is required" });
-
-    const [[p]] = await db.query(
-      `
-      SELECT 
-        p.id,
-        p.name,
-        p.sku,
-        p.category_id,
-        c.name AS category,
-        p.quantity,
-        p.cost_price,
-        p.selling_price,
-        p.reorder_level,
-        p.created_at
-      FROM products p
-      LEFT JOIN categories c ON c.id = p.category_id
-      WHERE p.sku = ?
-      LIMIT 1
-      `,
-      [sku]
-    );
-
-    if (!p) return res.status(404).json({ message: "Product not found" });
-    res.json(p);
-  } catch (err) {
-    console.error("PRODUCT BY SKU ERROR:", err);
-    res.status(500).json({ message: "Database error" });
-  }
-});
-
-
 
 export default router;

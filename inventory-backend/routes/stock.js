@@ -2,9 +2,12 @@
 import express from "express";
 import { db } from "../config/db.js";
 import { logAudit } from "../utils/audit.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
+
+// all stock routes require tenant-scoped token
+router.use(requireAuth, requireTenant);
 
 function csvEscape(v) {
   const s = String(v ?? "");
@@ -21,13 +24,11 @@ function buildMovementFilters(req) {
   const where = [];
   const params = [];
 
-  // type filter (only if valid)
   if (type === "IN" || type === "OUT") {
     where.push("sm.type = ?");
     params.push(type);
   }
 
-  // date filters (only if provided)
   if (from) {
     where.push("DATE(sm.created_at) >= ?");
     params.push(from);
@@ -37,27 +38,63 @@ function buildMovementFilters(req) {
     params.push(to);
   }
 
-  // search filter (only if provided)
   if (search) {
     const like = `%${search}%`;
     where.push("(p.name LIKE ? OR p.sku LIKE ? OR sm.reason LIKE ?)");
     params.push(like, like, like);
   }
 
-  return { where, params, from, to, type, search };
+  return { where, params };
 }
 
 /**
- * ✅ Export stock movements CSV (admin + staff)
+ * GET /api/stock
+ * Tenant-scoped list of products with quantity
+ */
+router.get("/", async (req, res) => {
+  const tenantId = req.tenantId;
+
+  try {
+    const [rows] = await db.query(
+      `
+      SELECT id, name, sku, category_id, barcode, quantity,
+             cost_price, selling_price, reorder_level, created_at
+      FROM products
+      WHERE tenant_id = ?
+      ORDER BY id DESC
+      `,
+      [tenantId]
+    );
+
+    res.json({ items: rows });
+  } catch (err) {
+    console.error("STOCK LIST ERROR:", err);
+    res.status(500).json({ message: "Database error" });
+  }
+});
+
+/**
+ * ✅ Export stock movements CSV (owner/admin/staff)
+ * Tenant-safe (filters sm.tenant_id)
  * Query params (optional):
  *  - search
  *  - type: IN | OUT
  *  - from: YYYY-MM-DD
  *  - to: YYYY-MM-DD
  */
-router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req, res) => {
+router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, res) => {
   try {
+    const tenantId = req.tenantId;
     const { where, params } = buildMovementFilters(req);
+
+    // Always tenant scope FIRST
+    const whereParts = ["sm.tenant_id = ?"];
+    const allParams = [tenantId];
+
+    if (where.length) {
+      whereParts.push(...where);
+      allParams.push(...params);
+    }
 
     const sql = `
       SELECT
@@ -67,14 +104,16 @@ router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req
         p.sku,
         sm.quantity,
         sm.reason,
-        sm.created_at
+        DATE_FORMAT(sm.created_at, '%Y-%m-%d %H:%i:%s') AS created_at
       FROM stock_movements sm
-      LEFT JOIN products p ON p.id = sm.product_id
-      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      LEFT JOIN products p
+        ON p.id = sm.product_id
+       AND p.tenant_id = sm.tenant_id
+      WHERE ${whereParts.join(" AND ")}
       ORDER BY sm.id DESC
     `;
 
-    const [rows] = await db.query(sql, params);
+    const [rows] = await db.query(sql, allParams);
 
     const header = ["id", "type", "product_name", "sku", "quantity", "reason", "created_at"];
     const lines = [header.join(",")];
@@ -103,101 +142,128 @@ router.get("/export.csv", requireAuth, requireRole("admin", "staff"), async (req
 });
 
 /**
- * ✅ movements (any logged in user)
- * Supports same filters as export:
- *  - search, type, from, to
- * Plus:
- *  - limit (default 200, max 2000)
+ * GET /api/stock/movements?productId=123
+ * Tenant-scoped stock movements
  */
-router.get("/movements", requireAuth, async (req, res) => {
+router.get("/movements", async (req, res) => {
+  const tenantId = req.tenantId;
+  const productId = Number(req.query.productId);
+
+  if (!productId) return res.status(400).json({ message: "productId required" });
+
   try {
-    const { where, params } = buildMovementFilters(req);
+    // Verify product belongs to tenant
+    const [p] = await db.query(
+      `SELECT id FROM products WHERE id = ? AND tenant_id = ? LIMIT 1`,
+      [productId, tenantId]
+    );
+    if (!p.length) return res.status(404).json({ message: "Product not found" });
 
-    const rawLimit = Number(req.query.limit);
-    const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 2000) : 200;
+    const [rows] = await db.query(
+      `
+      SELECT id, product_id, type, quantity, reason, created_at
+      FROM stock_movements
+      WHERE tenant_id = ? AND product_id = ?
+      ORDER BY id DESC
+      LIMIT 200
+      `,
+      [tenantId, productId]
+    );
 
-    const sql = `
-      SELECT
-        sm.id,
-        sm.product_id,
-        p.name AS product_name,
-        p.sku,
-        sm.type,
-        sm.quantity,
-        sm.reason,
-        sm.created_at
-      FROM stock_movements sm
-      JOIN products p ON p.id = sm.product_id
-      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      ORDER BY sm.id DESC
-      LIMIT ?
-    `;
-
-    const [rows] = await db.query(sql, [...params, limit]);
-    res.json(rows);
+    res.json({ movements: rows });
   } catch (err) {
-    console.error("MOVEMENTS GET ERROR:", err);
+    console.error("STOCK MOVEMENTS ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
 });
 
-// ✅ stock update (admin only)
-router.post("/update", requireAuth, requireRole("admin"), async (req, res) => {
-  const connection = await db.getConnection();
+/**
+ * POST /api/stock/move
+ * Body: { productId, type: 'IN'|'OUT', quantity, reason }
+ * Adjusts products.quantity and logs stock_movements (tenant-scoped)
+ */
+router.post("/move", requireRole("owner", "admin", "staff"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const userId = req.user.id;
 
+  const productId = Number(req.body?.productId);
+  const type = String(req.body?.type || "").toUpperCase();
+  const qty = Number(req.body?.quantity);
+  const reason = String(req.body?.reason || "").trim();
+
+  if (!productId) return res.status(400).json({ message: "productId required" });
+  if (!["IN", "OUT"].includes(type)) return res.status(400).json({ message: "type must be IN or OUT" });
+  if (!Number.isFinite(qty) || qty <= 0) return res.status(400).json({ message: "quantity must be > 0" });
+
+  const conn = await db.getConnection();
   try {
-    const { product_id, type, quantity, reason = "" } = req.body;
+    await conn.beginTransaction();
 
-    const pid = Number(product_id);
-    const qty = Number(quantity);
-
-    if (!pid || !["IN", "OUT"].includes(type) || !Number.isFinite(qty) || qty <= 0) {
-      return res.status(400).json({ message: "Invalid input" });
-    }
-
-    await connection.beginTransaction();
-
-    const [[product]] = await connection.query(
-      "SELECT id, name, quantity FROM products WHERE id=? FOR UPDATE",
-      [pid]
+    const [pRows] = await conn.query(
+      `
+      SELECT id, quantity
+      FROM products
+      WHERE id = ? AND tenant_id = ?
+      FOR UPDATE
+      `,
+      [productId, tenantId]
     );
 
-    if (!product) {
-      await connection.rollback();
+    if (!pRows.length) {
+      await conn.rollback();
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const oldQty = Number(product.quantity ?? 0);
-    const newQty = type === "IN" ? oldQty + qty : oldQty - qty;
+    const currentQty = Number(pRows[0].quantity || 0);
+    const newQty = type === "IN" ? currentQty + qty : currentQty - qty;
 
     if (newQty < 0) {
-      await connection.rollback();
-      return res.status(400).json({ message: "Not enough stock to stock out" });
+      await conn.rollback();
+      return res.status(400).json({ message: "Insufficient stock" });
     }
 
-    await connection.query("UPDATE products SET quantity=? WHERE id=?", [newQty, pid]);
-
-    await connection.query(
-      "INSERT INTO stock_movements (product_id, type, quantity, reason) VALUES (?,?,?,?)",
-      [pid, type, qty, String(reason || "").trim()]
+    await conn.query(
+      `UPDATE products SET quantity = ? WHERE id = ? AND tenant_id = ?`,
+      [newQty, productId, tenantId]
     );
 
-    await connection.commit();
+    const [mr] = await conn.query(
+      `
+      INSERT INTO stock_movements (tenant_id, product_id, type, quantity, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, NOW())
+      `,
+      [tenantId, productId, type, qty, reason || null]
+    );
 
-    await logAudit(req, {
-      action: type === "IN" ? "STOCK_IN" : "STOCK_OUT",
+    await conn.commit();
+
+    // Audit AFTER commit (safer: avoids writing audit row if transaction rolls back)
+   await logAudit(req, {
+      action: "STOCK_MOVE",
       entity_type: "product",
-      entity_id: pid,
-      details: { product_name: product.name, qty, reason: String(reason || "").trim(), oldQty, newQty },
+      entity_id: productId,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      details: {
+        type,
+        qty,
+        reason,
+        from: currentQty,
+        to: newQty,
+        movement_id: mr.insertId,
+      },
     });
 
-    res.json({ message: "Stock updated", newQty });
-  } catch (err) {
-    await connection.rollback();
-    console.error("STOCK UPDATE ERROR:", err);
-    res.status(500).json({ message: "Database error" });
+
+    res.status(201).json({ ok: true, movementId: mr.insertId, quantity: newQty });
+  } catch (e) {
+    try {
+      await conn.rollback();
+    } catch {}
+    console.error("STOCK MOVE ERROR:", e);
+    res.status(500).json({ message: "Server error" });
   } finally {
-    connection.release();
+    conn.release();
   }
 });
 

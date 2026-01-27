@@ -1,4 +1,4 @@
-// server.js (top of file)
+// server.js
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import path from "path";
@@ -9,13 +9,14 @@ const __dirname = path.dirname(__filename);
 // ensures .env is loaded even if you start node from another folder
 dotenv.config({ path: path.join(__dirname, ".env") });
 
-
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
+
 import { db } from "./config/db.js";
+
 import productsRoutes from "./routes/products.js";
 import categoriesRoutes from "./routes/categories.js";
 import dashboardRoutes from "./routes/dashboard.js";
@@ -25,9 +26,8 @@ import auditRoutes from "./routes/audit.js";
 import usersRoutes from "./routes/users.js";
 import tenantsRouter from "./routes/tenants.js";
 import healthRoutes from "./routes/health.js";
+
 import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
-
-
 
 const app = express();
 
@@ -53,40 +53,32 @@ app.use(
   })
 );
 
-/**
- * ✅ CORS (tight allowlist)
- * IMPORTANT: CORS must run BEFORE rate limit so OPTIONS/preflight isn't blocked.
- */
-const allowedOrigins = new Set([
-  "https://inventory-dashboard-omega-five.vercel.app",
-  "http://localhost:5173",
-]);
-
-const corsOptions = {
-  origin: (origin, cb) => {
-    // allow curl/postman/no-origin
-    if (!origin) return cb(null, true);
-
-    if (allowedOrigins.has(origin)) return cb(null, true);
-
-    // allow Vercel preview deploys
-    if (/^https:\/\/inventory-dashboard-.*\.vercel\.app$/.test(origin)) return cb(null, true);
-
-    return cb(new Error("Not allowed by CORS"));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  exposedHeaders: ["Authorization", "Set-Cookie"],
-};
-
-app.use(cors(corsOptions));
+const FRONTEND = process.env.FRONTEND_URL || "http://localhost:5173";
 
 /**
- * ✅ Preflight (Express 5 safe)
- * RegExp is safe.
+ * ✅ CORS
+ * IMPORTANT:
+ * - credentials: true because you are using refresh_token cookie
+ * - allowedHeaders must include x-tenant-id (multi-tenant header)
  */
-app.options(/.*/, cors(corsOptions));
+app.use(
+  cors({
+    origin: FRONTEND,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "x-tenant-id"],
+    exposedHeaders: ["Authorization", "Set-Cookie"],
+  })
+);
+
+/**
+ * ✅ Preflight handler
+ * NOTE: app.options("*", ...) crashes on some path-to-regexp versions.
+ * Use regex instead.
+ */
+app.options(/.*/, cors());
+
+
 
 /**
  * ✅ Body + cookies
@@ -125,12 +117,11 @@ app.use("/api/users", usersRoutes);
 app.use("/api/tenants", tenantsRouter);
 app.use("/api/health", healthRoutes);
 
-// start scheduler once
-scheduleDailySnapshots(db, { hourUtc: 0, minuteUtc: 5 });
-
 // ✅ mount same router for admin paths (for dashboard verify button)
 app.use("/api/admin/audit", auditRoutes);
 
+// start scheduler once
+scheduleDailySnapshots(db, { hourUtc: 0, minuteUtc: 5 });
 
 /**
  * ✅ Audit retention job (auto-purge)
@@ -160,7 +151,6 @@ function startAuditRetentionJob() {
   if (typeof timer.unref === "function") timer.unref();
 }
 
-
 function startAlertCooldownCleanupJob() {
   const purgeDays = Number(process.env.ALERT_COOLDOWN_PURGE_DAYS || 30);
 
@@ -183,11 +173,9 @@ function startAlertCooldownCleanupJob() {
     }
   }
 
-  // run once on boot
-  purge();
-
-  // run every 24 hours
-  setInterval(purge, 24 * 60 * 60 * 1000);
+  purge(); // run once on boot
+  const timer = setInterval(purge, 24 * 60 * 60 * 1000);
+  if (typeof timer.unref === "function") timer.unref();
 }
 
 startAuditRetentionJob();
@@ -201,7 +189,7 @@ app.use((req, res) => {
 });
 
 /**
- * ✅ Central error handler (includes CORS rejection)
+ * ✅ Central error handler
  */
 app.use((err, req, res, next) => {
   console.error("SERVER ERROR:", err?.message || err);
@@ -213,6 +201,14 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Server error" });
 });
 
-app.listen(process.env.PORT || 5000, () => {
-  console.log(`Backend running on http://localhost:${process.env.PORT || 5000}`);
+app.use("/api", (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
+
+
+const PORT = Number(process.env.PORT || 5000);
+
+app.listen(PORT, () => {
+  console.log(`Backend running on http://localhost:${PORT}`);
 });

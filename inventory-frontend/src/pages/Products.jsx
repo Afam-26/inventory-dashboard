@@ -103,7 +103,8 @@ function guessMapping(headers) {
 
   return {
     name: find("name", "product name", "product"),
-    sku: find("sku", "product sku", "code", "barcode"),
+    sku: find("sku", "product sku", "code"),
+    barcode: find("barcode", "upc", "ean"),
     category: find("category", "category name"),
     quantity: find("quantity", "qty", "stock"),
     cost_price: find("cost_price", "cost price", "cost"),
@@ -144,6 +145,7 @@ export default function Products({ user }) {
   const [form, setForm] = useState({
     name: "",
     sku: "",
+    barcode: "",
     category_id: "",
     quantity: 0,
     cost_price: 0,
@@ -152,9 +154,9 @@ export default function Products({ user }) {
   });
 
   /* ============================
-     Barcode scanner (IDENTICAL pattern to Stock.jsx)
+     Barcode scanner (Stock.jsx pattern)
      - Uses Quagga loaded globally (window.Quagga)
-     - On detect, fills the SKU field in the create form and closes scanner
+     - On detect, fills the BARCODE field in the create form and closes scanner
   ============================ */
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scanError, setScanError] = useState("");
@@ -167,25 +169,28 @@ export default function Products({ user }) {
         Q.offDetected();
         Q.stop();
       }
-    } catch {
+    } catch (e) {
       // Scanner may already be stopped; safe to ignore
+      void e;
     }
   }
 
-  async function handleDetectedSku(skuRaw) {
-    const sku = String(skuRaw || "").trim();
-    if (!sku) return;
+  async function handleDetectedCode(codeRaw) {
+    const code = String(codeRaw || "").trim();
+    if (!code) return;
 
     // prevent repeated rapid triggers
-    if (sku === lastScan) return;
-    setLastScan(sku);
+    if (code === lastScan) return;
+    setLastScan(code);
 
     setScanError("");
 
-    // Fill SKU on create form, and optionally focus the user to it
+    // Fill barcode on create form
     setForm((prev) => ({
       ...prev,
-      sku,
+      barcode: code,
+      // If you want SKU to auto-fill when empty, uncomment:
+      // sku: prev.sku || code,
     }));
 
     // close scanner
@@ -210,9 +215,7 @@ export default function Products({ user }) {
         inputStream: {
           type: "LiveStream",
           target: document.querySelector("#barcode-scanner-products"),
-          constraints: {
-            facingMode: "environment",
-          },
+          constraints: { facingMode: "environment" },
         },
         decoder: {
           readers: [
@@ -231,11 +234,12 @@ export default function Products({ user }) {
           setScanError(err.message || "Failed to start camera");
           return;
         }
+
         Q.start();
 
         Q.onDetected((data) => {
           const code = data?.codeResult?.code;
-          if (code) handleDetectedSku(code);
+          if (code) handleDetectedCode(code);
         });
       }
     );
@@ -256,6 +260,7 @@ export default function Products({ user }) {
   const [mapping, setMapping] = useState({
     name: -1,
     sku: -1,
+    barcode: -1,
     category: -1,
     quantity: -1,
     cost_price: -1,
@@ -309,12 +314,15 @@ export default function Products({ user }) {
     try {
       await addProduct({
         ...form,
+        sku: String(form.sku || "").trim() || null,
+        barcode: String(form.barcode || "").trim() || null,
         category_id: form.category_id ? Number(form.category_id) : null,
       });
 
       setForm({
         name: "",
         sku: "",
+        barcode: "",
         category_id: "",
         quantity: 0,
         cost_price: 0,
@@ -334,6 +342,7 @@ export default function Products({ user }) {
     setEditForm({
       name: p.name || "",
       sku: p.sku || "",
+      barcode: p.barcode || "",
       category_id: p.category_id ?? "",
       cost_price: p.cost_price ?? 0,
       selling_price: p.selling_price ?? 0,
@@ -356,7 +365,8 @@ export default function Products({ user }) {
     try {
       const payload = {
         name: String(editForm.name || "").trim(),
-        sku: String(editForm.sku || "").trim(),
+        sku: String(editForm.sku || "").trim() || null,
+        barcode: String(editForm.barcode || "").trim() || null,
         category_id:
           editForm.category_id === "" || editForm.category_id == null
             ? null
@@ -392,7 +402,8 @@ export default function Products({ user }) {
 
     const undoPayload = {
       name: p.name,
-      sku: p.sku,
+      sku: p.sku || null,
+      barcode: p.barcode || null,
       category_id: p.category_id ?? null,
       quantity: p.quantity ?? 0,
       cost_price: p.cost_price ?? 0,
@@ -470,6 +481,7 @@ export default function Products({ user }) {
       setMapping({
         name: g.name,
         sku: g.sku,
+        barcode: g.barcode,
         category: g.category,
         quantity: g.quantity,
         cost_price: g.cost_price,
@@ -484,6 +496,7 @@ export default function Products({ user }) {
       setMapping({
         name: -1,
         sku: -1,
+        barcode: -1,
         category: -1,
         quantity: -1,
         cost_price: -1,
@@ -498,6 +511,7 @@ export default function Products({ user }) {
     return {
       name: get(mapping.name),
       sku: get(mapping.sku),
+      barcode: get(mapping.barcode),
       category: get(mapping.category),
       quantity: get(mapping.quantity),
       cost_price: get(mapping.cost_price),
@@ -582,6 +596,7 @@ export default function Products({ user }) {
     return {
       name: String(obj.name || "").trim(),
       sku: String(obj.sku || "").trim(),
+      barcode: String(obj.barcode || "").trim(),
       category: String(obj.category || "").trim(),
       quantity: mapping.quantity >= 0 ? Number(obj.quantity) || 0 : 0,
       cost_price: mapping.cost_price >= 0 ? Number(obj.cost_price) || 0 : 0,
@@ -602,6 +617,7 @@ export default function Products({ user }) {
     setMapping({
       name: -1,
       sku: -1,
+      barcode: -1,
       category: -1,
       quantity: -1,
       cost_price: -1,
@@ -668,7 +684,6 @@ export default function Products({ user }) {
 
       await loadAll(search);
 
-      // ✅ auto-clear import UI a few seconds after completion (no refresh needed)
       window.setTimeout(() => {
         setImportMsg("");
         clearImportUi();
@@ -865,7 +880,8 @@ export default function Products({ user }) {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
                 {[
                   ["name", "Name (required)"],
-                  ["sku", "SKU / Barcode (required)"],
+                  ["sku", "SKU (required)"],
+                  ["barcode", "Barcode"],
                   ["category", "Category"],
                   ["quantity", "Quantity"],
                   ["cost_price", "Cost Price"],
@@ -908,16 +924,13 @@ export default function Products({ user }) {
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Preview (first {previewCount} rows)</div>
                 <div style={{ overflowX: "auto" }}>
-                  <table
-                    border="1"
-                    cellPadding="8"
-                    style={{ width: "100%", borderCollapse: "collapse", background: "#fff" }}
-                  >
+                  <table border="1" cellPadding="8" style={{ width: "100%", borderCollapse: "collapse", background: "#fff" }}>
                     <thead style={{ background: "#f3f4f6" }}>
                       <tr>
                         <th>Line</th>
                         <th>Name</th>
-                        <th>SKU / Barcode</th>
+                        <th>SKU</th>
+                        <th>Barcode</th>
                         <th>Category</th>
                         <th>Qty</th>
                         <th>Cost</th>
@@ -931,6 +944,7 @@ export default function Products({ user }) {
                           <td>{r.line}</td>
                           <td>{r.obj.name}</td>
                           <td>{r.obj.sku}</td>
+                          <td>{r.obj.barcode}</td>
                           <td>{r.obj.category}</td>
                           <td>{r.obj.quantity}</td>
                           <td>{r.obj.cost_price}</td>
@@ -940,7 +954,7 @@ export default function Products({ user }) {
                       ))}
                       {!previewRows.length && (
                         <tr>
-                          <td colSpan={8} style={{ textAlign: "center" }}>
+                          <td colSpan={9} style={{ textAlign: "center" }}>
                             No preview available
                           </td>
                         </tr>
@@ -966,9 +980,7 @@ export default function Products({ user }) {
 
                 {importErrors.length > 0 && (
                   <div style={{ marginTop: 10 }}>
-                    <div style={{ fontWeight: 700, marginBottom: 6, color: "#991b1b" }}>
-                      Import errors (first 10)
-                    </div>
+                    <div style={{ fontWeight: 700, marginBottom: 6, color: "#991b1b" }}>Import errors (first 10)</div>
                     <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#991b1b" }}>
                       {importErrors.slice(0, 10).map((x, i) => (
                         <li key={i}>
@@ -986,10 +998,7 @@ export default function Products({ user }) {
 
       {/* Admin create form */}
       {isAdmin && (
-        <form
-          onSubmit={handleCreate}
-          style={{ display: "grid", gap: 10, maxWidth: 650, marginBottom: 20, marginTop: 14 }}
-        >
+        <form onSubmit={handleCreate} style={{ display: "grid", gap: 10, maxWidth: 650, marginBottom: 20, marginTop: 14 }}>
           <div style={{ display: "flex", gap: 10 }}>
             <input
               className="input"
@@ -998,11 +1007,21 @@ export default function Products({ user }) {
               onChange={(e) => updateField("name", e.target.value)}
               disabled={anyBusy}
             />
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
             <input
               className="input"
-              placeholder="SKU / Barcode"
+              placeholder="SKU"
               value={form.sku}
               onChange={(e) => updateField("sku", e.target.value)}
+              disabled={anyBusy}
+            />
+            <input
+              className="input"
+              placeholder="Barcode"
+              value={form.barcode}
+              onChange={(e) => updateField("barcode", e.target.value)}
               disabled={anyBusy}
             />
           </div>
@@ -1059,14 +1078,9 @@ export default function Products({ user }) {
             />
           </div>
 
-          {/* ✅ Small Add Product button + Scan barcode button next to it */}
+          {/* Small Add Product button + Scan barcode button next to it */}
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button
-              className="btn"
-              type="submit"
-              disabled={anyBusy}
-              style={{ padding: "10px 20px", fontSize: 12, width: "fit-content" }}
-            >
+            <button className="btn" type="submit" disabled={anyBusy} style={{ padding: "10px 20px", fontSize: 12, width: "fit-content" }}>
               Add Product
             </button>
 
@@ -1119,7 +1133,7 @@ export default function Products({ user }) {
               <div>
                 <div style={{ fontWeight: 900 }}>Scan Barcode</div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>
-                  Point camera at barcode. Detected code will auto-fill the SKU field.
+                  Point camera at barcode. Detected code will auto-fill the Barcode field.
                 </div>
               </div>
 
@@ -1173,7 +1187,8 @@ export default function Products({ user }) {
               }}
             >
               <div style={{ fontWeight: 800 }}>{confirmDelete.name}</div>
-              <div style={{ color: "#6b7280" }}>SKU: {confirmDelete.sku}</div>
+              <div style={{ color: "#6b7280" }}>SKU: {confirmDelete.sku || "-"}</div>
+              <div style={{ color: "#6b7280" }}>Barcode: {confirmDelete.barcode || "-"}</div>
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
@@ -1186,9 +1201,7 @@ export default function Products({ user }) {
             </div>
 
             {rowErrors[confirmDelete.id] ? (
-              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>
-                {rowErrors[confirmDelete.id]}
-              </div>
+              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmDelete.id]}</div>
             ) : null}
           </div>
         </div>
@@ -1198,7 +1211,8 @@ export default function Products({ user }) {
         <thead style={{ background: "#f3f4f6" }}>
           <tr>
             <th>Name</th>
-            <th>SKU / Barcode</th>
+            <th>SKU</th>
+            <th>Barcode</th>
             <th>Category</th>
             <th>Stock</th>
             <th>Cost</th>
@@ -1238,7 +1252,20 @@ export default function Products({ user }) {
                       disabled={isSaving}
                     />
                   ) : (
-                    p.sku
+                    p.sku || "-"
+                  )}
+                </td>
+
+                <td>
+                  {isEditing ? (
+                    <input
+                      className="input"
+                      value={editForm?.barcode ?? ""}
+                      onChange={(e) => setEditForm((f) => ({ ...f, barcode: e.target.value }))}
+                      disabled={isSaving}
+                    />
+                  ) : (
+                    p.barcode || "-"
                   )}
                 </td>
 
@@ -1301,7 +1328,7 @@ export default function Products({ user }) {
 
           {!loading && products.length === 0 && (
             <tr>
-              <td colSpan={isAdmin ? 8 : 7} style={{ textAlign: "center" }}>
+              <td colSpan={isAdmin ? 9 : 8} style={{ textAlign: "center" }}>
                 No products yet
               </td>
             </tr>

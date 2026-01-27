@@ -1,11 +1,24 @@
+// src/components/RequireAdmin.jsx
 import { Navigate, useLocation } from "react-router-dom";
 
 export default function RequireAdmin({ user, children }) {
   const location = useLocation();
 
-  if (!user) return <Navigate to="/login" replace />;
+  // Not logged in
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
 
-  if (user.role !== "admin") {
+  /**
+   * IMPORTANT:
+   * - Use tenantRole (owner/admin) instead of global user.role
+   * - tenantRole comes from /auth/select-tenant
+   */
+  const role = String(user.tenantRole || "").toLowerCase();
+
+  const isAdmin = role === "owner" || role === "admin";
+
+  if (!isAdmin) {
     return (
       <Navigate
         to="/unauthorized"

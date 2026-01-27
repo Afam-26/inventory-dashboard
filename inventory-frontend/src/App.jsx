@@ -1,3 +1,4 @@
+// src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useState } from "react";
 
@@ -17,18 +18,35 @@ import AuditLogs from "./pages/AuditLogs";
 import UsersAdmin from "./pages/UsersAdmin";
 import AuditDashboard from "./pages/AuditDashboard";
 
-
-
-import { getStoredUser, setToken, setStoredUser } from "./services/api";
+import { getStoredUser, setToken, setStoredUser, setTenantId } from "./services/api";
 
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
 
   function logout() {
     setToken("");
+    setTenantId(null); // ✅ clear tenant selection too
     setStoredUser(null);
     setUser(null);
   }
+
+  // ✅ Prefer tenantRole for UI + access control; fallback to global role
+  const effectiveRole = String(user?.tenantRole || user?.role || "").toLowerCase();
+  const roleLabel =
+    effectiveRole === "owner"
+      ? "Owner"
+      : effectiveRole === "admin"
+      ? "Admin"
+      : effectiveRole === "staff"
+      ? "Staff"
+      : "User";
+
+  const roleColor =
+    effectiveRole === "owner" || effectiveRole === "admin"
+      ? "#111827"
+      : effectiveRole === "staff"
+      ? "#2563eb"
+      : "#6b7280";
 
   return (
     <BrowserRouter>
@@ -58,15 +76,34 @@ export default function App() {
                       style={{
                         padding: "4px 10px",
                         borderRadius: 999,
-                        background: user.role === "admin" ? "#111827" : "#2563eb",
+                        background: roleColor,
                         color: "#fff",
                         fontWeight: 600,
                         fontSize: 12,
                       }}
                     >
-                  {user.role === "admin" ? "Admin" : user.role === "staff" ? "Staff" : "User"}
+                      {roleLabel}
                     </span>
-                  </p>            
+
+                    {/* ✅ show tenant info if present */}
+                    {user?.tenantId ? (
+                      <span
+                        style={{
+                          marginLeft: 10,
+                          padding: "4px 10px",
+                          borderRadius: 999,
+                          background: "rgba(17,24,39,0.08)",
+                          color: "#111827",
+                          fontWeight: 600,
+                          fontSize: 12,
+                          border: "1px solid rgba(17,24,39,0.15)",
+                        }}
+                        title="Selected tenant"
+                      >
+                        Tenant #{user.tenantId}
+                      </span>
+                    ) : null}
+                  </p>
 
                   <button className="btn" onClick={logout}>
                     Logout
@@ -93,6 +130,7 @@ export default function App() {
                           </RequireAdmin>
                         }
                       />
+
                       <Route
                         path="/audit-dashboard"
                         element={
@@ -114,13 +152,15 @@ export default function App() {
                       {/* ✅ Unauthorized page */}
                       <Route path="/unauthorized" element={<Unauthorized />} />
                       <Route path="/audit" element={<AuditLogs user={user} />} />
+
                       <Route
                         path="/users"
                         element={
                           <RequireAdmin user={user}>
                             <UsersAdmin user={user} />
                           </RequireAdmin>
-                        }/>                       
+                        }
+                      />
 
                       {/* fallback */}
                       <Route path="*" element={<Navigate to="/" replace />} />

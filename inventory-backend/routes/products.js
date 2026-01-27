@@ -287,15 +287,11 @@ router.delete("/:id", requireRole("owner"), async (req, res) => {
   }
 });
 
-/** =========================
- * GET /api/products/by-sku/:sku
- * admin + staff
- * Tenant-scoped (IMPORTANT)
- * ========================= */
+// GET /api/products/by-sku/:sku  (but now it matches SKU OR barcode)
 router.get("/by-sku/:sku", requireRole("owner", "admin", "staff"), async (req, res) => {
   const tenantId = req.tenantId;
-  const sku = String(req.params.sku || "").trim();
-  if (!sku) return res.status(400).json({ message: "SKU is required" });
+  const code = String(req.params.sku || "").trim();
+  if (!code) return res.status(400).json({ message: "SKU is required" });
 
   try {
     const [[p]] = await db.query(
@@ -315,19 +311,22 @@ router.get("/by-sku/:sku", requireRole("owner", "admin", "staff"), async (req, r
       FROM products p
       LEFT JOIN categories c
         ON c.id = p.category_id AND c.tenant_id = p.tenant_id
-      WHERE p.tenant_id = ? AND p.sku = ?
+      WHERE p.tenant_id = ?
+        AND (p.sku = ? OR p.barcode = ?)
       LIMIT 1
       `,
-      [tenantId, sku]
+      [tenantId, code, code]
     );
 
     if (!p) return res.status(404).json({ message: "Product not found" });
     res.json(p);
   } catch (err) {
-    console.error("PRODUCT BY SKU ERROR:", err);
+    console.error("PRODUCT BY SKU/BARCODE ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
 });
+
+
 
 /** =========================
  * CSV export (admin + staff) - tenant scoped

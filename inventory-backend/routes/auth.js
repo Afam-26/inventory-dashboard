@@ -10,21 +10,33 @@ import { passwordResetEmail } from "../utils/emailTemplates.js";
 import { logAudit, sendSecurityAlert, SEVERITY } from "../utils/audit.js";
 
 const router = express.Router();
-
 const isProd = process.env.NODE_ENV === "production";
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
-/**
- * Helpers
- */
-function signAccessToken(user) {
+function signUserToken(user) {
+  // user-token (tenant not selected yet)
   return jwt.sign(
     {
       id: user.id,
       email: user.email,
-      role: user.role, // ✅ MUST come from DB row
-      tenantId: user.tenantId ?? null,
+      role: user.role, // global user role from users table
+      tenantId: null,
     },
-    process.env.JWT_SECRET,
+    JWT_SECRET,
+    { expiresIn: "15m" }
+  );
+}
+
+function signTenantToken({ id, email, tenantId, tenantRole }) {
+  // tenant-token (tenant selected)
+  return jwt.sign(
+    {
+      id,
+      email,
+      role: String(tenantRole || "").toLowerCase(), // owner/admin/staff
+      tenantId: Number(tenantId),
+    },
+    JWT_SECRET,
     { expiresIn: "15m" }
   );
 }
@@ -36,16 +48,13 @@ function makeRefreshToken() {
 function refreshCookieOptions() {
   return {
     httpOnly: true,
-    secure: isProd, // true on Railway/HTTPS
-    sameSite: isProd ? "none" : "lax", // cross-site in prod
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
     path: "/",
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+    maxAge: 30 * 24 * 60 * 60 * 1000,
   };
 }
 
-/**
- * ✅ Non-blocking wrapper: security alerts must NEVER break auth flows
- */
 async function safeSecurityAlert(payload) {
   try {
     await sendSecurityAlert(db, payload);
@@ -54,9 +63,6 @@ async function safeSecurityAlert(payload) {
   }
 }
 
-/**
- * ✅ Non-blocking wrapper: audit must NEVER break auth flows
- */
 async function safeAudit(req, entry) {
   try {
     await logAudit(req, entry);
@@ -65,12 +71,48 @@ async function safeAudit(req, entry) {
   }
 }
 
+function readBearerPayload(req) {
+  const auth = req.headers.authorization || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token) return { ok: false, status: 401, message: "Missing token" };
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload?.id) return { ok: false, status: 401, message: "Invalid token" };
+    return { ok: true, payload };
+  } catch {
+    return { ok: false, status: 401, message: "Invalid token" };
+  }
+}
+
 /**
- * ✅ Rate limiters (DEV vs PROD)
+ * tenant_members schema:
+ * - tenant_id
+ * - user_id
+ * - role (owner/admin/staff)
  */
+async function getUserTenants(userId) {
+  const [rows] = await db.query(
+    `
+    SELECT
+      t.id,
+      t.name,
+      t.slug,
+      tm.role
+    FROM tenant_members tm
+    JOIN tenants t ON t.id = tm.tenant_id
+    WHERE tm.user_id = ?
+      AND tm.status = 'active'
+    ORDER BY t.name ASC
+    `,
+    [userId]
+  );
+  return rows;
+}
+
 const loginLimiter = rateLimit({
-  windowMs: isProd ? 5 * 60 * 1000 : 10 * 1000, // prod 5m, dev 10s
-  max: isProd ? 15 : 100, // prod 15 attempts, dev 100
+  windowMs: isProd ? 5 * 60 * 1000 : 10 * 1000,
+  max: isProd ? 15 : 100,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Too many login attempts. Try again shortly." },
@@ -94,15 +136,17 @@ const resetLimiter = rateLimit({
 
 /**
  * POST /api/auth/login
+ * Returns:
+ *  - token (user-token, tenantId=null)
+ *  - user
+ *  - tenants (from tenant_members)
  */
 router.post("/login", loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-
     const cleanEmail = String(email || "").trim().toLowerCase();
 
     if (!cleanEmail || !password) {
-      // ✅ audit missing fields (no user_id)
       await safeAudit(req, {
         action: "LOGIN_FAILED",
         entity_type: "user",
@@ -112,7 +156,6 @@ router.post("/login", loginLimiter, async (req, res) => {
         user_email: cleanEmail || null,
         severity: SEVERITY.WARN,
       });
-
       return res.status(400).json({ message: "Email and password required" });
     }
 
@@ -133,7 +176,6 @@ router.post("/login", loginLimiter, async (req, res) => {
         severity: SEVERITY.WARN,
       });
 
-      // Non-blocking alert
       await safeSecurityAlert({
         severity: SEVERITY.WARN,
         subject: "Login failed (unknown email)",
@@ -156,7 +198,6 @@ router.post("/login", loginLimiter, async (req, res) => {
         severity: SEVERITY.WARN,
       });
 
-      // Non-blocking alert
       await safeSecurityAlert({
         severity: SEVERITY.WARN,
         subject: "Login failed (bad password)",
@@ -167,22 +208,17 @@ router.post("/login", loginLimiter, async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // short-lived access token (no tenant selected yet)
-    const accessToken = signAccessToken({ ...user, tenantId: null });
+    const accessToken = signUserToken(user);
 
-    // long-lived refresh token stored in DB
     const refreshToken = makeRefreshToken();
-
     await db.query(
       `INSERT INTO refresh_tokens (user_id, token, expires_at)
        VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
       [user.id, refreshToken]
     );
 
-    // cookie for refresh
     res.cookie("refresh_token", refreshToken, refreshCookieOptions());
 
-    // ✅ audit successful login
     await safeAudit(req, {
       action: "LOGIN",
       entity_type: "user",
@@ -193,7 +229,15 @@ router.post("/login", loginLimiter, async (req, res) => {
       severity: SEVERITY.INFO,
     });
 
-    res.json({
+    let tenants = [];
+    try {
+      tenants = await getUserTenants(user.id);
+    } catch (e) {
+      console.error("FETCH TENANTS ON LOGIN FAILED:", e?.message || e);
+      tenants = [];
+    }
+
+    return res.json({
       token: accessToken,
       user: {
         id: user.id,
@@ -201,16 +245,96 @@ router.post("/login", loginLimiter, async (req, res) => {
         role: user.role,
         full_name: user.full_name,
       },
+      tenants,
     });
   } catch (err) {
     console.error("LOGIN ERROR:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * GET /api/auth/tenants
+ * Requires bearer token (user-token or tenant-token)
+ */
+router.get("/tenants", async (req, res) => {
+  try {
+    const r = readBearerPayload(req);
+    if (!r.ok) return res.status(r.status).json({ message: r.message });
+
+    const tenants = await getUserTenants(r.payload.id);
+    return res.json({ tenants });
+  } catch (err) {
+    console.error("AUTH TENANTS ERROR:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * POST /api/auth/select-tenant
+ * Body: { tenantId }
+ * Requires bearer token
+ * Returns: { token, tenantId, role }
+ */
+router.post("/select-tenant", async (req, res) => {
+  try {
+    const r = readBearerPayload(req);
+    if (!r.ok) return res.status(r.status).json({ message: r.message });
+
+    const userId = r.payload.id;
+
+    // ensure we have email
+    let email = r.payload.email;
+    if (!email) {
+      const [[u]] = await db.query("SELECT email FROM users WHERE id=? LIMIT 1", [userId]);
+      email = u?.email || null;
+    }
+
+    const tenantId = Number(req.body?.tenantId);
+    if (!Number.isFinite(tenantId) || tenantId <= 0) {
+      return res.status(400).json({ message: "tenantId is required" });
+    }
+
+    const [[m]] = await db.query(
+      "SELECT role, status FROM tenant_members WHERE user_id=? AND tenant_id=? LIMIT 1",
+      [userId, tenantId]
+    );
+
+    if (!m) return res.status(403).json({ message: "Not a member of this tenant" });
+    if (String(m.status || "active") !== "active") {
+      return res.status(403).json({ message: "Tenant membership is not active" });
+    }
+
+    const tenantRole = String(m.role || "").toLowerCase();
+
+    const tenantToken = signTenantToken({
+      id: userId,
+      email,
+      tenantId,
+      tenantRole,
+    });
+
+    await safeAudit(req, {
+      action: "TENANT_SELECTED",
+      entity_type: "tenant",
+      entity_id: tenantId,
+      details: { tenantId, role: tenantRole },
+      user_id: userId,
+      user_email: email,
+      severity: SEVERITY.INFO,
+    });
+
+    return res.json({ token: tenantToken, tenantId: Number(tenantId), role: tenantRole });
+  } catch (err) {
+    console.error("SELECT TENANT ERROR:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
 /**
  * POST /api/auth/refresh
- * Reads refresh_token from httpOnly cookie
+ * If header x-tenant-id is present and user is member, returns tenant-token.
+ * else returns user-token.
  */
 router.post("/refresh", refreshLimiter, async (req, res) => {
   try {
@@ -223,7 +347,6 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
         details: { reason: "MISSING_REFRESH_COOKIE" },
         severity: SEVERITY.WARN,
       });
-
       return res.status(401).json({ message: "Missing refresh token" });
     }
 
@@ -244,7 +367,6 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
         severity: SEVERITY.CRITICAL,
       });
 
-      // ✅ Critical alert (non-blocking)
       await safeSecurityAlert({
         severity: SEVERITY.CRITICAL,
         subject: "Refresh token rejected (possible session hijack)",
@@ -265,7 +387,6 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
         user_id: row.user_id,
         severity: SEVERITY.WARN,
       });
-
       return res.status(401).json({ message: "Refresh token expired" });
     }
 
@@ -275,33 +396,42 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
     );
 
     const user = users[0];
-    if (!user) {
-      await safeAudit(req, {
-        action: "REFRESH_FAILED",
-        entity_type: "auth",
-        entity_id: null,
-        details: { reason: "USER_NOT_FOUND", user_id: row.user_id },
-        user_id: row.user_id,
-        severity: SEVERITY.WARN,
-      });
+    if (!user) return res.status(401).json({ message: "User not found" });
 
-      return res.status(401).json({ message: "User not found" });
+    const requestedTenantId = Number(req.headers["x-tenant-id"] || 0);
+
+    let newAccessToken = signUserToken(user);
+    let tenantIdUsed = null;
+
+    if (Number.isFinite(requestedTenantId) && requestedTenantId > 0) {
+      const [[m]] = await db.query(
+        "SELECT role, status FROM tenant_members WHERE user_id=? AND tenant_id=? LIMIT 1",
+        [user.id, requestedTenantId]
+      );
+
+      if (m?.role && String(m.status || "active") === "active") {
+        newAccessToken = signTenantToken({
+          id: user.id,
+          email: user.email,
+          tenantId: requestedTenantId,
+          tenantRole: String(m.role || "").toLowerCase(),
+        });
+        tenantIdUsed = requestedTenantId;
+      }
     }
-
-    const newAccess = signAccessToken({ ...user, tenantId: null });
 
     await safeAudit(req, {
       action: "REFRESH",
       entity_type: "auth",
       entity_id: user.id,
-      details: { success: true },
+      details: { success: true, tenantId: tenantIdUsed },
       user_id: user.id,
       user_email: user.email,
       severity: SEVERITY.INFO,
     });
 
-    res.json({
-      token: newAccess,
+    return res.json({
+      token: newAccessToken,
       user: {
         id: user.id,
         email: user.email,
@@ -311,19 +441,17 @@ router.post("/refresh", refreshLimiter, async (req, res) => {
     });
   } catch (err) {
     console.error("REFRESH ERROR:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
 /**
  * POST /api/auth/logout
- * Revokes refresh token + clears cookie
  */
 router.post("/logout", async (req, res) => {
   try {
     const rt = req.cookies?.refresh_token;
 
-    // best effort: find user_id before revoke (for audit)
     let userId = null;
     let userEmail = null;
 
@@ -351,10 +479,10 @@ router.post("/logout", async (req, res) => {
       severity: SEVERITY.INFO,
     });
 
-    res.json({ message: "Logged out" });
+    return res.json({ message: "Logged out" });
   } catch (err) {
     console.error("LOGOUT ERROR:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
@@ -368,13 +496,11 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
 
     const normalized = email.trim().toLowerCase();
 
-    // ✅ declare once; safe for all branches
     let emailStatus = "not_sent";
     let emailError = null;
 
     const [rows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [normalized]);
 
-    // prevent user enumeration
     if (!rows.length) {
       await safeAudit(req, {
         action: "PASSWORD_RESET_REQUEST",
@@ -416,7 +542,6 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
       severity: SEVERITY.INFO,
     });
 
-    // ✅ Send email (do not fail request if email fails)
     try {
       const { subject, html, text } = passwordResetEmail({ resetLink, minutes: 30 });
       await sendEmail({ to: normalized, subject, html, text });
@@ -446,14 +571,14 @@ router.post("/forgot-password", resetLimiter, async (req, res) => {
       }
     }
 
-    res.json({
+    return res.json({
       message: "If the email exists, a reset link was sent.",
       ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd ? { dev_reset_link: resetLink } : {}),
       ...(!isProd ? { emailStatus, emailError } : {}),
     });
   } catch (err) {
     console.error("FORGOT PASSWORD ERROR:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
@@ -501,8 +626,6 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
     await db.query("UPDATE users SET password_hash=? WHERE id=?", [password_hash, userId]);
 
     await db.query("UPDATE password_resets SET used_at=NOW() WHERE id=?", [resetRow.id]);
-
-    // revoke all refresh tokens (recommended)
     await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL", [userId]);
 
     await safeAudit(req, {
@@ -515,7 +638,6 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
       severity: SEVERITY.WARN,
     });
 
-    // Non-blocking alert
     await safeSecurityAlert({
       severity: SEVERITY.WARN,
       subject: "Password reset completed",
@@ -523,10 +645,10 @@ router.post("/reset-password", resetLimiter, async (req, res) => {
       html: `<p><b>Password reset completed</b></p><p>User: ${normalized}</p><p>IP: ${req.ip}</p>`,
     });
 
-    res.json({ message: "Password reset successful. Please login." });
+    return res.json({ message: "Password reset successful. Please login." });
   } catch (err) {
     console.error("RESET PASSWORD ERROR:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 });
 

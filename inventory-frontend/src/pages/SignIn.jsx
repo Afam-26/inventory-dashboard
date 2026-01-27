@@ -1,28 +1,30 @@
 // src/pages/SignIn.jsx
 import React, { useState } from "react";
-import axios from "axios";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-/**
- * SignIn page for your project.
- * - Calls POST /api/auth/login
- * - Saves token + user to localStorage
- * - Navigates to /dashboard (or the page the user originally tried to visit)
- * - Supports refresh_token cookie by sending withCredentials: true
- *
- * Usage:
- * 1) Put this file at: src/pages/SignIn.jsx
- * 2) Add a route: <Route path="/signin" element={<SignIn />} />
- */
+import {
+  login,
+  setToken,
+  setStoredUser,
+  getMyTenants,
+  selectTenantApi,
+  setTenantId,
+  getTenantId,
+} from "../services/api";
 
-const API_BASE =
-  import.meta?.env?.VITE_API_URL?.trim() || "http://localhost:5000";
+function decodeJwtPayload(token) {
+  try {
+    const part = String(token || "").split(".")[1];
+    if (!part) return null;
+    return JSON.parse(atob(part));
+  } catch {
+    return null;
+  }
+}
 
 export default function SignIn() {
   const navigate = useNavigate();
   const location = useLocation();
-
-  // If your ProtectedRoute redirects to /signin with state, this returns the user back.
   const from = location.state?.from?.pathname || "/dashboard";
 
   const [email, setEmail] = useState("");
@@ -38,40 +40,58 @@ export default function SignIn() {
     setLoading(true);
 
     try {
-      const res = await axios.post(
-        `${API_BASE}/api/auth/login`,
-        { email, password },
-        {
-          withCredentials: true, // IMPORTANT: sends/receives refresh_token cookie
-          headers: { "Content-Type": "application/json" },
-        }
-      );
+      // Clear any stale tenant
+      setTenantId(null);
 
-      // Your backend response shape (as you posted):
-      // { token: "...", user: { id, email, role, full_name } }
-      const token = res.data?.token;
-      const user = res.data?.user;
-
-      if (!token || !user) {
-        console.log("Unexpected login response:", res.data);
-        throw new Error("Login succeeded but token/user is missing in response.");
+      // 1) Login (user-token)
+      const res = await login(email, password);
+      if (!res?.token || !res?.user) {
+        console.log("Unexpected login response:", res);
+        throw new Error("Login succeeded but token/user missing.");
       }
 
-      localStorage.setItem("token", token);
-      localStorage.setItem("user", JSON.stringify(user));
+      setToken(res.token);
+      setStoredUser(res.user);
 
-      // Optional: role-based routing (edit paths if your app differs)
-      // const role = user.role;
-      // const target =
-      //   role === "admin" ? "/dashboard" : role === "staff" ? "/dashboard" : from;
+      console.log("LOGIN payload:", decodeJwtPayload(res.token)); // tenantId null is OK here
 
-      // Navigate after saving token/user so your ProtectedRoute can see it immediately
+      // 2) Get tenants (prefer login response, else call /auth/tenants)
+      let tenants = Array.isArray(res.tenants) ? res.tenants : null;
+      if (!tenants) {
+        const t = await getMyTenants(); // <-- THIS must show in Network
+        tenants = Array.isArray(t?.tenants) ? t.tenants : [];
+      }
+
+      console.log("TENANTS:", tenants);
+
+      if (!tenants.length) {
+        throw new Error("No tenants found for this user (tenant_members is empty or status not active).");
+      }
+
+      // 3) Choose tenant (reuse stored if exists and user belongs)
+      const saved = getTenantId();
+      const chosen = saved
+        ? tenants.find((x) => Number(x.id) === Number(saved)) || tenants[0]
+        : tenants[0];
+
+      // 4) Select tenant (tenant-token)
+      const sel = await selectTenantApi(chosen.id); // <-- THIS must show in Network
+      console.log("SELECT TENANT response:", sel);
+
+      if (!sel?.token || !sel?.tenantId) {
+        throw new Error("Tenant selection succeeded but token/tenantId missing.");
+      }
+
+      setToken(sel.token);
+      setTenantId(sel.tenantId);
+
+      console.log("AFTER SELECT payload:", decodeJwtPayload(sel.token));
+      console.log("tenantId saved:", localStorage.getItem("tenantId"));
+
+      // 5) Go
       navigate(from, { replace: true });
     } catch (err) {
-      const msg =
-        err?.response?.data?.message ||
-        err?.message ||
-        "Unable to sign in. Please try again.";
+      const msg = err?.message || "Unable to sign in.";
       setError(msg);
     } finally {
       setLoading(false);
@@ -83,9 +103,7 @@ export default function SignIn() {
       <div style={styles.card}>
         <div style={{ marginBottom: 18 }}>
           <h1 style={styles.title}>Sign in</h1>
-          <p style={styles.subtitle}>
-            Use your admin/staff credentials to access the dashboard.
-          </p>
+          <p style={styles.subtitle}>We’ll auto-select your tenant after login.</p>
         </div>
 
         {error ? (
@@ -124,7 +142,6 @@ export default function SignIn() {
                 type="button"
                 onClick={() => setShowPassword((s) => !s)}
                 style={styles.ghostBtn}
-                aria-label={showPassword ? "Hide password" : "Show password"}
               >
                 {showPassword ? "Hide" : "Show"}
               </button>
@@ -141,12 +158,6 @@ export default function SignIn() {
           <Link to="/contact" style={styles.link}>
             Contact support
           </Link>
-        </div>
-
-        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-          <div>
-            API Base: <code>{API_BASE}</code>
-          </div>
         </div>
       </div>
     </div>
@@ -174,12 +185,7 @@ const styles = {
   },
   title: { margin: 0, fontSize: 24, letterSpacing: -0.2 },
   subtitle: { margin: "6px 0 0", color: "rgba(0,0,0,0.6)", fontSize: 14 },
-  label: {
-    display: "grid",
-    gap: 6,
-    fontSize: 13,
-    color: "rgba(0,0,0,0.75)",
-  },
+  label: { display: "grid", gap: 6, fontSize: 13, color: "rgba(0,0,0,0.75)" },
   input: {
     height: 42,
     borderRadius: 12,
@@ -223,13 +229,7 @@ const styles = {
     marginBottom: 12,
     fontSize: 13,
   },
-  footerRow: {
-    display: "flex",
-    justifyContent: "center",
-    gap: 8,
-    marginTop: 16,
-    fontSize: 13,
-  },
+  footerRow: { display: "flex", justifyContent: "center", gap: 8, marginTop: 16, fontSize: 13 },
   link: { color: "#111827", textDecoration: "underline" },
   muted: { color: "rgba(0,0,0,0.6)" },
 };

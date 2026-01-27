@@ -1,87 +1,33 @@
 // routes/audit.js
 import express from "express";
-import rateLimit from "express-rate-limit";
 import { db } from "../config/db.js";
 import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 import { verifyAuditChain } from "../utils/audit.js";
+import { buildAuditProofBundle, verifyAuditProofBundle } from "../utils/auditProof.js";
+import { createDailySnapshot } from "../utils/auditSnapshots.js";
+
 
 const router = express.Router();
 
-// ✅ Tenant-scoped + owner/admin only
-router.use(requireAuth, requireTenant, requireRole("owner", "admin"));
-
-const auditLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-function csvEscape(v) {
-  if (v === null || v === undefined) return "";
-  const s = typeof v === "string" ? v : JSON.stringify(v);
-  const needs = /[,"\n\r]/.test(s);
-  const escaped = s.replace(/"/g, '""');
-  return needs ? `"${escaped}"` : escaped;
-}
-
 /**
- * Build WHERE clause + params for audit queries (tenant-safe).
- * Owner/Admin can filter by user_email, action, entity_type, and query text.
+ * All audit endpoints are tenant-scoped
  */
-function buildAuditWhere(req) {
-  const q = String(req.query.q || "").trim();
-  const action = String(req.query.action || "").trim();
-  const entity_type = String(req.query.entity_type || "").trim();
-  const user_email = String(req.query.user_email || "").trim().toLowerCase();
-
-  const where = [];
-  const params = [];
-
-  // ✅ Always tenant scope first
-  where.push("tenant_id = ?");
-  params.push(req.tenantId);
-
-  if (action) {
-    where.push("action = ?");
-    params.push(action);
-  }
-
-  if (entity_type) {
-    where.push("entity_type = ?");
-    params.push(entity_type);
-  }
-
-  if (user_email) {
-    where.push("LOWER(user_email) = LOWER(?)");
-    params.push(user_email);
-  }
-
-  if (q) {
-    const like = `%${q}%`;
-    where.push(
-      `(LOWER(user_email) LIKE LOWER(?) OR action LIKE ? OR entity_type LIKE ? OR CAST(entity_id AS CHAR) LIKE ?)`
-    );
-    params.push(like, like, like, like);
-  }
-
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  return { whereSql, params };
-}
+router.use(requireAuth, requireTenant);
 
 /**
- * GET /api/audit
- * Owner/Admin: tenant logs
+ * GET /api/audit?limit=50
+ * List recent audit logs for current tenant
  */
 router.get("/", async (req, res) => {
   const tenantId = req.tenantId;
+  const limit = Math.min(Math.max(Number(req.query?.limit || 50), 1), 500);
 
   try {
-    const limit = Math.min(5000, Math.max(1, Number(req.query.limit || 500)));
-
     const [rows] = await db.query(
       `
-      SELECT id, user_id, user_email, action, entity_type, entity_id, details, ip_address, user_agent, created_at
+      SELECT
+        id, tenant_id, user_id, user_email, action, entity_type, entity_id,
+        details, ip_address, user_agent, created_at
       FROM audit_logs
       WHERE tenant_id = ?
       ORDER BY id DESC
@@ -90,7 +36,20 @@ router.get("/", async (req, res) => {
       [tenantId, limit]
     );
 
-    res.json({ logs: rows });
+    // Normalize details to object for client convenience
+    const logs = rows.map((r) => {
+      let detailsObj = null;
+      if (r.details != null) {
+        try {
+          detailsObj = typeof r.details === "string" ? JSON.parse(r.details) : r.details;
+        } catch {
+          detailsObj = r.details;
+        }
+      }
+      return { ...r, details: detailsObj };
+    });
+
+    res.json({ logs });
   } catch (err) {
     console.error("AUDIT LIST ERROR:", err);
     res.status(500).json({ message: "Database error" });
@@ -98,285 +57,98 @@ router.get("/", async (req, res) => {
 });
 
 /**
- * ✅ Verify tamper-evident chain (Owner/Admin only)
- * GET /api/admin/audit/verify?limit=20000
- *
- * IMPORTANT:
- * This assumes verifyAuditChain() internally validates hashes/prev_hash ordering.
- * ✅ We pass tenant_id so verification is per-tenant.
+ * GET /api/audit/verify?limit=20000
+ * Verify tamper-evident chain (tenant-scoped)
  */
-router.get("/verify", async (req, res) => {
+router.get("/verify", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const limit = Math.min(Math.max(Number(req.query?.limit || 20000), 1), 200000);
+
   try {
-    const limit = Math.min(50000, Math.max(1, Number(req.query.limit || 20000)));
-    const startId = req.query.startId ? Number(req.query.startId) : null;
+    const out = await verifyAuditChain(db, { limit, tenantId });
 
-    const result = await verifyAuditChain(db, {
-      limit,
-      tenantId: req.tenantId,
-      startId,
-    });
-
-    res.json(result);
-  } catch (err) {
-    console.error("AUDIT VERIFY ERROR:", err);
-    res.status(500).json({ message: "Audit verification failed" });
-  }
-});
-
-
-/**
- * ✅ CSV Export (Owner/Admin only)
- * GET /api/audit/export.csv
- */
-router.get("/export.csv", auditLimiter, async (req, res) => {
-  try {
-    const { whereSql, params } = buildAuditWhere(req);
-    const limit = Math.min(50000, Math.max(1, Number(req.query.limit || 5000)));
-
-    const [rows] = await db.query(
-      `
-      SELECT
-        id, user_id, user_email, action, entity_type, entity_id,
-        details, ip_address, user_agent, created_at
-      FROM audit_logs
-      ${whereSql}
-      ORDER BY id DESC
-      LIMIT ?
-      `,
-      [...params, limit]
-    );
-
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="audit_logs.csv"`);
-
-    res.write(
-      [
-        "id",
-        "user_id",
-        "user_email",
-        "action",
-        "entity_type",
-        "entity_id",
-        "details",
-        "ip_address",
-        "user_agent",
-        "created_at",
-      ].join(",") + "\n"
-    );
-
-    for (const r of rows) {
-      const line = [
-        r.id,
-        r.user_id,
-        r.user_email,
-        r.action,
-        r.entity_type,
-        r.entity_id,
-        r.details,
-        r.ip_address,
-        r.user_agent,
-        r.created_at,
-      ]
-        .map(csvEscape)
-        .join(",");
-      res.write(line + "\n");
+    // Add lastCreatedAtIso (requested)
+    if (out.ok) {
+      const [[last]] = await db.query(
+        `
+        SELECT created_at_iso AS lastCreatedAtIso
+        FROM audit_logs
+        WHERE tenant_id = ?
+          AND row_hash IS NOT NULL
+          AND created_at_iso IS NOT NULL
+        ORDER BY id DESC
+        LIMIT 1
+        `,
+        [tenantId]
+      );
+      out.lastCreatedAtIso = last?.lastCreatedAtIso ?? null;
     }
 
-    res.end();
+    res.json(out);
   } catch (err) {
-    console.error("AUDIT CSV ERROR:", err);
-    res.status(500).json({ message: "Database error" });
+    console.error("AUDIT VERIFY ERROR:", err);
+    res.status(500).json({ message: "Server error" });
   }
 });
 
 /**
- * ✅ Stats for charts (Owner/Admin only)
- * GET /api/audit/stats?days=30
+ * GET /api/audit/proof
+ * Query:
+ *  - date=YYYY-MM-DD (UTC day)  OR
+ *  - fromId=...&toId=...
+ *  - download=1  => sets attachment headers
  */
-router.get("/stats", auditLimiter, async (req, res) => {
+router.get("/proof", async (req, res) => {
   try {
-    const tenantId = req.tenantId;
-    const days = Math.min(365, Math.max(1, Number(req.query.days || 30)));
+    const tenantId = Number(req.tenantId);
 
-    const [byDay] = await db.query(
-      `
-      SELECT DATE(created_at) AS day, COUNT(*) AS count
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY DATE(created_at)
-      ORDER BY day ASC
-      `,
-      [tenantId, days]
-    );
+    const date = req.query?.date ? String(req.query.date) : null;
+    const fromId = req.query?.fromId ? Number(req.query.fromId) : null;
+    const toId = req.query?.toId ? Number(req.query.toId) : null;
+    const download = String(req.query?.download || "") === "1";
 
-    const [byAction] = await db.query(
-      `
-      SELECT action, COUNT(*) AS count
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY action
-      ORDER BY count DESC
-      LIMIT 20
-      `,
-      [tenantId, days]
-    );
-
-    const [byEntity] = await db.query(
-      `
-      SELECT entity_type, COUNT(*) AS count
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY entity_type
-      ORDER BY count DESC
-      LIMIT 20
-      `,
-      [tenantId, days]
-    );
-
-    const [topUsers] = await db.query(
-      `
-      SELECT user_email, COUNT(*) AS count
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-        AND user_email IS NOT NULL
-      GROUP BY user_email
-      ORDER BY count DESC
-      LIMIT 20
-      `,
-      [tenantId, days]
-    );
-
-    res.json({ days, byDay, byAction, byEntity, topUsers });
-  } catch (err) {
-    console.error("AUDIT STATS ERROR:", err);
-    res.status(500).json({ message: "Database error" });
-  }
-});
-
-/**
- * ✅ SOC-style report (Owner/Admin only)
- * GET /api/audit/report?days=7
- */
-router.get("/report", auditLimiter, async (req, res) => {
-  try {
-    const tenantId = req.tenantId;
-    const days = Math.min(365, Math.max(1, Number(req.query.days || 7)));
-
-    const [[summary]] = await db.query(
-      `
-      SELECT
-        COUNT(*) AS total_events,
-        SUM(action='LOGIN') AS logins,
-        SUM(action='LOGIN_FAILED') AS failed_logins,
-        SUM(action LIKE '%DELETE%') AS deletes,
-        SUM(action='USER_ROLE_UPDATE') AS role_changes
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      `,
-      [tenantId, days]
-    );
-
-    const [failedByEmail] = await db.query(
-      `
-      SELECT user_email, COUNT(*) AS count
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-        AND action='LOGIN_FAILED'
-        AND user_email IS NOT NULL
-      GROUP BY user_email
-      ORDER BY count DESC
-      LIMIT 20
-      `,
-      [tenantId, days]
-    );
-
-    const [failedByIp] = await db.query(
-      `
-      SELECT ip_address, COUNT(*) AS count
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-        AND action='LOGIN_FAILED'
-        AND ip_address IS NOT NULL
-      GROUP BY ip_address
-      ORDER BY count DESC
-      LIMIT 20
-      `,
-      [tenantId, days]
-    );
-
-    const [roleEvents] = await db.query(
-      `
-      SELECT id, user_email, action, entity_type, entity_id, details, ip_address, created_at
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-        AND action='USER_ROLE_UPDATE'
-      ORDER BY id DESC
-      LIMIT 200
-      `,
-      [tenantId, days]
-    );
-
-    const [deleteEvents] = await db.query(
-      `
-      SELECT id, user_email, action, entity_type, entity_id, details, ip_address, created_at
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-        AND action LIKE '%DELETE%'
-      ORDER BY id DESC
-      LIMIT 200
-      `,
-      [tenantId, days]
-    );
-
-    const [afterHoursLogins] = await db.query(
-      `
-      SELECT id, user_email, ip_address, created_at, details
-      FROM audit_logs
-      WHERE tenant_id = ?
-        AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-        AND action='LOGIN'
-        AND (HOUR(created_at) < 7 OR HOUR(created_at) >= 19)
-      ORDER BY id DESC
-      LIMIT 200
-      `,
-      [tenantId, days]
-    );
-
-    res.json({
-      generated_at: new Date().toISOString(),
-      window_days: days,
-      summary: {
-        total_events: Number(summary?.total_events || 0),
-        logins: Number(summary?.logins || 0),
-        failed_logins: Number(summary?.failed_logins || 0),
-        deletes: Number(summary?.deletes || 0),
-        role_changes: Number(summary?.role_changes || 0),
-      },
-      findings: {
-        failed_logins_by_email: failedByEmail,
-        failed_logins_by_ip: failedByIp,
-        after_hours_logins: afterHoursLogins,
-        privileged_changes: roleEvents,
-        destructive_events: deleteEvents,
-      },
-      notes: [
-        "After-hours logins are a heuristic; tune hours to your business policy.",
-        "Use IP + user_agent correlation to validate unusual activity.",
-      ],
+    const bundle = await buildAuditProofBundle(db, {
+      tenantId,
+      date,
+      fromId,
+      toId,
     });
-  } catch (err) {
-    console.error("AUDIT REPORT ERROR:", err);
-    res.status(500).json({ message: "Database error" });
+
+    // Attach snapshot for date mode if it exists; optionally create it if missing
+    if (date && !bundle.snapshot) {
+      // optional: auto-create snapshot for requested date (safe upsert)
+      const snap = await createDailySnapshot(db, { tenantId, dateStr: date });
+      bundle.snapshot = snap;
+    }
+
+    if (download) {
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="audit-proof-${tenantId}-${date || "range"}.json"`);
+    }
+
+    return res.json(bundle);
+  } catch (e) {
+    console.error("AUDIT PROOF ERROR:", e?.message || e);
+    return res.status(500).json({ message: "Proof generation failed" });
   }
 });
+
+/**
+ * POST /api/audit/proof/verify
+ * Body: { bundle: <proof json> }
+ */
+router.post("/proof/verify", async (req, res) => {
+  try {
+    const bundle = req.body?.bundle;
+    if (!bundle) return res.status(400).json({ ok: false, message: "bundle is required" });
+
+    const out = verifyAuditProofBundle(bundle);
+    return res.json(out);
+  } catch (e) {
+    console.error("PROOF VERIFY ERROR:", e?.message || e);
+    return res.status(500).json({ ok: false, message: "Proof verify failed" });
+  }
+});
+
 
 export default router;

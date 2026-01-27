@@ -1,0 +1,202 @@
+{
+  "v": "proof-v1",
+  "generatedAtIso": "2026-01-26T20:52:13.382Z",
+  "summary": {
+    "tenantId": 1,
+    "mode": "date",
+    "date": "2026-01-26",
+    "fromId": null,
+    "toId": null,
+    "count": 9,
+    "startId": 172,
+    "endId": 180,
+    "startPrevHash": null,
+    "endRowHash": "87405219bb44687e332ee90add6cf2f75396abcf96f212959ce8108c50821562",
+    "lastCreatedAtIso": "2026-01-26T20:52:01.779Z"
+  },
+  "snapshot": null,
+  "rowsRoot": "8c56db01e11cc1aec8af0780ce8d6635231c0e9dbe09de3df3da9ac99bf0549a",
+  "bundleHash": "cfe0ae025b3885d8fef198d6a1f599941705332f3a294c8c594ce989bffcc229",
+  "rows": [
+    {
+      "id": 172,
+      "tenant_id": 1,
+      "user_id": 1,
+      "user_email": "admin@store.com",
+      "action": "LOGIN",
+      "entity_type": "user",
+      "entity_id": 1,
+      "details": {
+        "role": "admin",
+        "email": "admin@store.com",
+        "success": true
+      },
+      "ip_address": "::ffff:127.0.0.1",
+      "user_agent": "curl/7.84.0",
+      "prev_hash": null,
+      "row_hash": "1990d7190c0714f6e53b1a358e354375734b4e464eee4cbf0de527c1239349e9",
+      "created_at_iso": "2026-01-26T00:59:43.757Z",
+      "created_at": "2026-01-26T00:59:43.000Z"
+    },
+    {
+      "id": 173,
+      "tenant_id": 1,
+      "user_id": 1,
+      "user_email": "admin@store.com",
+      "action": "TENANT_SELECT",
+      "entity_type": "tenant",
+      "entity_id": 1,
+      "details": {
+        "role": "owner",
+        "tenantId": 1
+      },
+      "ip_address": "::ffff:127.0.0.1",
+      "user_agent": "curl/7.84.0",
+      "prev_hash": "1990d7190c0714f6e53b1a358e354375734b4e464eee4cbf0de527c1239349e9",
+      "row_hash": "64169c6a84bc69d452b003f40e8414ad8b1654d76f7aabd8900e83808309b7d0",
+      "created_at_iso": "2026-01-26T00:59:53.741Z",
+      "created_at": "2026-01-26T00:59:53.000Z"
+    },
+    {
+      "id": 174,
+      "tenant_id": 1,
+      "user_id": 1,
+      "user_email": "admin@store.com",
+      "action": "STOCK_MOVE",
+      "entity_type": "product",
+      "entity_id": 68,
+      "details": {
+        "to": 23,
+        "qty": 1,
+        "from": 22,
+        "type": "IN",
+        "reason": "Rehash test",
+        "movement_id": 20
+      },
+      "ip_address": "::ffff:127.0.0.1",
+      "user_agent": "curl/7.84.0",
+      "prev_hash": "64169c6a84bc69d452b003f40e8414ad8b1654d76f7aabd8900e83808309b7d0",
+      "row_hash": "7645905f9dccced20f29e277284cc680990aaf55fa4844336236aed7f69f65bb",
+      "created_at_iso": "2026-01-26T01:00:19.778Z",
+      "created_at": "2026-01-26T01:00:19.000Z"
+    },
+    {
+      "id": 175,
+      "tenant_id": 1,
+      "user_id": 2,
+      "user_email": "staff@store.com",
+      "action": "LOGIN",
+      "entity_type": "user",
+      "entity_id": 2,
+      "details": {
+        "role": "staff",
+        "email": "staff@store.com",
+        "success": true
+      },
+      "ip_address": "::1",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
+      "prev_hash": "7645905f9dccced20f29e277284cc680990aaf55fa4844336236aed7f69f65bb",
+      "row_hash": "7a3b6d591f667064afbde562f6b3b2429fe9d683ded98b44117c8a74ca3ba061",
+      "created_at_iso": "2026-01-26T01:02:02.542Z",
+      "created_at": "2026-01-26T01:02:02.000Z"
+    },
+    {
+      "id": 176,
+      "tenant_id": 1,
+      "user_id": 2,
+      "user_email": "staff@store.com",
+      "action": "LOGIN",
+      "entity_type": "user",
+      "entity_id": 2,
+      "details": {
+        "role": "staff",
+        "email": "staff@store.com",
+        "success": true
+      },
+      "ip_address": "::1",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
+      "prev_hash": "7a3b6d591f667064afbde562f6b3b2429fe9d683ded98b44117c8a74ca3ba061",
+      "row_hash": "6c835e238a260e890df4cf738b31cddedee8af71de738516585e72bfcb68cb9d",
+      "created_at_iso": "2026-01-26T18:42:55.251Z",
+      "created_at": "2026-01-26T18:42:55.000Z"
+    },
+    {
+      "id": 177,
+      "tenant_id": 1,
+      "user_id": 1,
+      "user_email": "admin@store.com",
+      "action": "LOGIN",
+      "entity_type": "user",
+      "entity_id": 1,
+      "details": {
+        "role": "admin",
+        "email": "admin@store.com",
+        "success": true
+      },
+      "ip_address": "::1",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
+      "prev_hash": "6c835e238a260e890df4cf738b31cddedee8af71de738516585e72bfcb68cb9d",
+      "row_hash": "247da5323994be1d5feaa5435d4d69d57fbc22bc030c6566b7f317b4dddfa910",
+      "created_at_iso": "2026-01-26T19:14:10.777Z",
+      "created_at": "2026-01-26T19:14:10.000Z"
+    },
+    {
+      "id": 178,
+      "tenant_id": 1,
+      "user_id": 1,
+      "user_email": "admin@store.com",
+      "action": "DASHBOARD_INVENTORY_VALUE_VIEW",
+      "entity_type": "dashboard",
+      "entity_id": null,
+      "details": {
+        "success": true,
+        "inventory_value_returned": true
+      },
+      "ip_address": "::1",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
+      "prev_hash": "247da5323994be1d5feaa5435d4d69d57fbc22bc030c6566b7f317b4dddfa910",
+      "row_hash": "10acf6fb22a6fc054112997aaa902f5d6a126ae5136eb721e1067b9dd9266d0d",
+      "created_at_iso": "2026-01-26T19:14:10.824Z",
+      "created_at": "2026-01-26T19:14:10.000Z"
+    },
+    {
+      "id": 179,
+      "tenant_id": 1,
+      "user_id": 1,
+      "user_email": "admin@store.com",
+      "action": "LOGIN",
+      "entity_type": "user",
+      "entity_id": 1,
+      "details": {
+        "role": "admin",
+        "email": "admin@store.com",
+        "success": true
+      },
+      "ip_address": "::ffff:127.0.0.1",
+      "user_agent": "curl/7.84.0",
+      "prev_hash": "10acf6fb22a6fc054112997aaa902f5d6a126ae5136eb721e1067b9dd9266d0d",
+      "row_hash": "c1eb8a94861f15fb4b841c8b253509a038bb7b151dae3b7a4a506e66d9d1a237",
+      "created_at_iso": "2026-01-26T20:52:00.614Z",
+      "created_at": "2026-01-26T20:52:00.000Z"
+    },
+    {
+      "id": 180,
+      "tenant_id": 1,
+      "user_id": 1,
+      "user_email": "admin@store.com",
+      "action": "TENANT_SELECT",
+      "entity_type": "tenant",
+      "entity_id": 1,
+      "details": {
+        "role": "owner",
+        "tenantId": 1
+      },
+      "ip_address": "::ffff:127.0.0.1",
+      "user_agent": "curl/7.84.0",
+      "prev_hash": "c1eb8a94861f15fb4b841c8b253509a038bb7b151dae3b7a4a506e66d9d1a237",
+      "row_hash": "87405219bb44687e332ee90add6cf2f75396abcf96f212959ce8108c50821562",
+      "created_at_iso": "2026-01-26T20:52:01.779Z",
+      "created_at": "2026-01-26T20:52:01.000Z"
+    }
+  ]
+}

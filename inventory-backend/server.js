@@ -1,4 +1,15 @@
-import "dotenv/config";
+// server.js (top of file)
+import dotenv from "dotenv";
+import { fileURLToPath } from "url";
+import path from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ensures .env is loaded even if you start node from another folder
+dotenv.config({ path: path.join(__dirname, ".env") });
+
+
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -13,6 +24,9 @@ import authRoutes from "./routes/auth.js";
 import auditRoutes from "./routes/audit.js";
 import usersRoutes from "./routes/users.js";
 import tenantsRouter from "./routes/tenants.js";
+import healthRoutes from "./routes/health.js";
+import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
+
 
 
 const app = express();
@@ -109,11 +123,14 @@ app.use("/api/stock", stockRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/tenants", tenantsRouter);
+app.use("/api/health", healthRoutes);
 
-
+// start scheduler once
+scheduleDailySnapshots(db, { hourUtc: 0, minuteUtc: 5 });
 
 // ✅ mount same router for admin paths (for dashboard verify button)
 app.use("/api/admin/audit", auditRoutes);
+
 
 /**
  * ✅ Audit retention job (auto-purge)

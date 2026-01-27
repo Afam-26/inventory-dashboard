@@ -458,17 +458,15 @@ export async function verifyAuditChain(db, { limit = 20000, tenantId = null } = 
 
   const endRow = rows[rows.length - 1];
 
-  return {
+   return {
     ok: true,
     checked: rows.length - startIndex,
-    scanned: rows.length,
-    startId,
-    endId: endRow.id,
-    startHash,
-    endHash: endRow.row_hash ?? null,
-    lastCreatedAtIso: endRow.created_at_iso ?? null,
-    legacyUnhashedBeforeStart,
+    startId: rows[startIndex].id,
     tenantId: tenantId ? Number(tenantId) : null,
+    lastId: rows[rows.length - 1]?.id ?? null,
+    lastCreatedAtIso: rows[rows.length - 1]?.created_at_iso ?? null,
+    lastRowHash: rows[rows.length - 1]?.row_hash ?? null,
   };
+
 }
 

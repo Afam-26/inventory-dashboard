@@ -53,17 +53,25 @@ app.use(
   })
 );
 
-const FRONTEND = process.env.FRONTEND_URL || "http://localhost:5173";
+// ✅ Allowed frontend origins
+const ALLOWED_ORIGINS = [
+  "http://localhost:5173",
+  "https://inventory-dashboard-omega-five.vercel.app",
+];
 
-/**
- * ✅ CORS
- * IMPORTANT:
- * - credentials: true because you are using refresh_token cookie
- * - allowedHeaders must include x-tenant-id (multi-tenant header)
- */
 app.use(
   cors({
-    origin: FRONTEND,
+    origin(origin, callback) {
+      // allow server-to-server / curl / Railway health checks
+      if (!origin) return callback(null, true);
+
+      if (ALLOWED_ORIGINS.includes(origin)) {
+        return callback(null, true);
+      }
+
+      console.error("❌ Blocked by CORS:", origin);
+      return callback(new Error("Not allowed by CORS"));
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "x-tenant-id"],
@@ -71,12 +79,6 @@ app.use(
   })
 );
 
-/**
- * ✅ Preflight handler
- * NOTE: app.options("*", ...) crashes on some path-to-regexp versions.
- * Use regex instead.
- */
-app.options(/.*/, cors());
 
 
 

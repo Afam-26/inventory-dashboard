@@ -142,40 +142,80 @@ router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, re
 });
 
 /**
- * GET /api/stock/movements?productId=123
- * Tenant-scoped stock movements
+ * GET /api/stock/movements
+ * Query params (optional):
+ *  - limit (default 200, max 500)
+ *  - productId (optional)
+ *  - search (optional)
+ *  - type (optional: IN/OUT)
+ *  - from (optional: YYYY-MM-DD)
+ *  - to (optional: YYYY-MM-DD)
  */
+// GET /api/stock/movements
+// Supports optional filters: search, type, from, to, limit, productId
+// routes/stock.js
 router.get("/movements", async (req, res) => {
-  const tenantId = req.tenantId;
-  const productId = Number(req.query.productId);
-
-  if (!productId) return res.status(400).json({ message: "productId required" });
-
   try {
-    // Verify product belongs to tenant
-    const [p] = await db.query(
-      `SELECT id FROM products WHERE id = ? AND tenant_id = ? LIMIT 1`,
-      [productId, tenantId]
-    );
-    if (!p.length) return res.status(404).json({ message: "Product not found" });
+    const tenantId = req.tenantId; // ✅ you already have requireTenant middleware
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit || 200)));
 
-    const [rows] = await db.query(
-      `
-      SELECT id, product_id, type, quantity, reason, created_at
-      FROM stock_movements
-      WHERE tenant_id = ? AND product_id = ?
-      ORDER BY id DESC
-      LIMIT 200
-      `,
-      [tenantId, productId]
-    );
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || "").trim();
+    const type = String(req.query.type || "").trim().toUpperCase();
+    const search = String(req.query.search || "").trim();
 
-    res.json({ movements: rows });
-  } catch (err) {
-    console.error("STOCK MOVEMENTS ERROR:", err);
-    res.status(500).json({ message: "Database error" });
+    const where = ["sm.tenant_id = ?"];
+    const params = [tenantId];
+
+    if (type === "IN" || type === "OUT") {
+      where.push("sm.type = ?");
+      params.push(type);
+    }
+
+    if (from) {
+      where.push("DATE(sm.created_at) >= ?");
+      params.push(from);
+    }
+    if (to) {
+      where.push("DATE(sm.created_at) <= ?");
+      params.push(to);
+    }
+
+    if (search) {
+      const like = `%${search}%`;
+      where.push("(p.name LIKE ? OR p.sku LIKE ? OR sm.reason LIKE ?)");
+      params.push(like, like, like);
+    }
+
+    const sql = `
+      SELECT
+        sm.id,
+        sm.product_id,
+        p.name AS product_name,
+        p.sku,
+        sm.type,
+        sm.quantity,
+        sm.reason,
+        sm.created_at
+      FROM stock_movements sm
+      LEFT JOIN products p
+        ON p.id = sm.product_id
+       AND p.tenant_id = sm.tenant_id
+      WHERE ${where.join(" AND ")}
+      ORDER BY sm.id DESC
+      LIMIT ?
+    `;
+
+    params.push(limit);
+
+    const [rows] = await db.query(sql, params);
+    res.json({ movements: rows || [] });
+  } catch (e) {
+    console.error("STOCK MOVEMENTS ERROR:", e?.message || e);
+    res.status(500).json({ message: "Server error" });
   }
 });
+
 
 /**
  * POST /api/stock/move

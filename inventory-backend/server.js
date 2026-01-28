@@ -1,4 +1,4 @@
-// server.js
+// server.js (top of file)
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 import path from "path";
@@ -14,7 +14,6 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
-
 import { db } from "./config/db.js";
 
 import productsRoutes from "./routes/products.js";
@@ -26,7 +25,6 @@ import auditRoutes from "./routes/audit.js";
 import usersRoutes from "./routes/users.js";
 import tenantsRouter from "./routes/tenants.js";
 import healthRoutes from "./routes/health.js";
-
 import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
 
 const app = express();
@@ -43,8 +41,13 @@ app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
 /**
+ * ✅ IMPORTANT: Disable ETag for APIs
+ * Prevents 304 responses that break JSON parsing on the frontend
+ */
+app.set("etag", false);
+
+/**
  * ✅ Helmet (security headers)
- * - Keep CSP off unless configured (can break apps)
  */
 app.use(
   helmet({
@@ -53,25 +56,16 @@ app.use(
   })
 );
 
-// ✅ Allowed frontend origins
-const ALLOWED_ORIGINS = [
-  "http://localhost:5173",
-  "https://inventory-dashboard-omega-five.vercel.app",
-];
+/**
+ * ✅ CORS
+ * FRONTEND_URL MUST include protocol in production
+ * e.g. https://inventory-dashboard-omega-five.vercel.app
+ */
+const FRONTEND = process.env.FRONTEND_URL || "http://localhost:5173";
 
 app.use(
   cors({
-    origin(origin, callback) {
-      // allow server-to-server / curl / Railway health checks
-      if (!origin) return callback(null, true);
-
-      if (ALLOWED_ORIGINS.includes(origin)) {
-        return callback(null, true);
-      }
-
-      console.error("❌ Blocked by CORS:", origin);
-      return callback(new Error("Not allowed by CORS"));
-    },
+    origin: FRONTEND,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "x-tenant-id"],
@@ -79,14 +73,28 @@ app.use(
   })
 );
 
-
-
+/**
+ * ✅ Preflight (Express v5 / path-to-regexp friendly)
+ * DO NOT use "*" or "/*" here (crashes on newer path-to-regexp)
+ */
+app.options(/.*/, cors());
 
 /**
  * ✅ Body + cookies
  */
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+
+/**
+ * ✅ Force no-cache for API responses
+ * (prevents browser/CDN caching causing 304s)
+ */
+app.use("/api", (req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
 
 /**
  * ✅ Rate limit (global /api)
@@ -119,11 +127,11 @@ app.use("/api/users", usersRoutes);
 app.use("/api/tenants", tenantsRouter);
 app.use("/api/health", healthRoutes);
 
-// ✅ mount same router for admin paths (for dashboard verify button)
-app.use("/api/admin/audit", auditRoutes);
-
 // start scheduler once
 scheduleDailySnapshots(db, { hourUtc: 0, minuteUtc: 5 });
+
+// ✅ mount same router for admin paths (for dashboard verify button)
+app.use("/api/admin/audit", auditRoutes);
 
 /**
  * ✅ Audit retention job (auto-purge)
@@ -175,9 +183,8 @@ function startAlertCooldownCleanupJob() {
     }
   }
 
-  purge(); // run once on boot
-  const timer = setInterval(purge, 24 * 60 * 60 * 1000);
-  if (typeof timer.unref === "function") timer.unref();
+  purge();
+  setInterval(purge, 24 * 60 * 60 * 1000);
 }
 
 startAuditRetentionJob();
@@ -203,14 +210,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Server error" });
 });
 
-app.use("/api", (req, res, next) => {
-  res.setHeader("Cache-Control", "no-store");
-  next();
-});
-
-
-const PORT = Number(process.env.PORT || 5000);
-
-app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
+app.listen(process.env.PORT || 5000, () => {
+  console.log(`Backend running on http://localhost:${process.env.PORT || 5000}`);
 });

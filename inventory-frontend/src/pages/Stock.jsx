@@ -9,7 +9,8 @@ import {
 } from "../services/api";
 
 export default function Stock({ user }) {
-  const isAdmin = user?.role === "admin";
+  const isAdmin = ["admin", "owner"].includes(String(user?.role || "").toLowerCase());
+
 
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
@@ -241,7 +242,7 @@ export default function Stock({ user }) {
     setSubmitting(true);
     try {
       await updateStock({
-        product_id: pid,
+        productId: pid,
         type: form.type,
         quantity: qty,
         reason: String(form.reason || "").trim(),
@@ -411,14 +412,7 @@ export default function Stock({ user }) {
               placeholder="Quantity"
               disabled={busy}
             />
-          </div>
-
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button className="btn" type="button" onClick={() => setScannerOpen(true)} disabled={busy}>
-              Scan barcode
-            </button>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>(Tip: works best on phone camera)</div>
-          </div>
+          </div>       
 
           <input
             className="input"
@@ -431,6 +425,13 @@ export default function Stock({ user }) {
           <button className="btn" type="submit" disabled={!canSubmit}>
             {submitting ? "Updating..." : "Update Stock"}
           </button>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <button className="btn" type="button" onClick={() => setScannerOpen(true)} disabled={busy}>
+              Scan barcode
+            </button>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>(Tip: works best on phone camera)</div>
+          </div>
         </form>
       )}
 

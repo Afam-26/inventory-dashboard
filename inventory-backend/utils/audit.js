@@ -58,7 +58,6 @@ function normalizeEmailList(input) {
 function hmacSha256Hex(input) {
   const secret = process.env.AUDIT_HASH_SECRET;
   if (!secret) {
-    // If you prefer hard-fail, revert to: requireEnv("AUDIT_HASH_SECRET")
     console.warn("WARN: AUDIT_HASH_SECRET is not set (audit hashing disabled for this row).");
     // fallback: deterministic but NOT secret (only to avoid crashes)
     return crypto.createHash("sha256").update(`NO_SECRET|${input}`).digest("hex");
@@ -145,15 +144,17 @@ function canonicalAuditPayload(entry, createdAtIso) {
  * - audit_logs.tenant_id is NOT NULL, so we ALWAYS write tenant_id
  * - if req.tenantId exists (tenant token), we use it
  * - otherwise fall back to default tenant (slug='default', typically id=1)
- * - prev_hash is computed PER TENANT (tenant_id scoped chain)
  *
- * Note: entry.severity is allowed (ignored by DB insert unless you later add a column)
+ * ✅ FIXED:
+ * - prev_hash is computed PER TENANT
+ * - but now done atomically with a transaction + FOR UPDATE
+ *   to prevent concurrent inserts from breaking the chain
  */
 export async function logAudit(req, entry, options = {}) {
   if (!entry?.action) throw new Error("logAudit: entry.action is required");
   if (!entry?.entity_type) throw new Error("logAudit: entry.entity_type is required");
 
-  const db = options.db || defaultDb;
+  const pool = options.db || defaultDb;
   const { ip, ua } = getRequestContext(req);
   const createdAtIso = new Date().toISOString();
 
@@ -165,15 +166,8 @@ export async function logAudit(req, entry, options = {}) {
     entry?.tenantId ??
     null;
 
-  if (!tenantId) tenantId = await getDefaultTenantId(db);
+  if (!tenantId) tenantId = await getDefaultTenantId(pool);
   tenantId = Number(tenantId);
-
-  // ✅ Tenant-scoped prev hash
-  const [lastRows] = await db.query(
-    "SELECT row_hash FROM audit_logs WHERE tenant_id = ? ORDER BY id DESC LIMIT 1",
-    [tenantId]
-  );
-  const prevHash = lastRows?.[0]?.row_hash ?? null;
 
   // Ensure details is an object or null (DB column is JSON)
   const detailsObj =
@@ -185,47 +179,83 @@ export async function logAudit(req, entry, options = {}) {
 
   const detailsC14n = stableStringify(detailsObj);
 
-  const canonical = canonicalAuditPayload(
-    {
-      tenant_id: tenantId,
-      user_id: entry.user_id ?? null,
-      user_email: entry.user_email ?? null,
-      action: entry.action,
-      entity_type: entry.entity_type ?? null,
-      entity_id: entry.entity_id ?? null,
-      ip_address: entry.ip_address ?? ip,
-      user_agent: entry.user_agent ?? ua,
-      details_c14n: detailsC14n,
-    },
-    createdAtIso
-  );
+  // ✅ Use a dedicated connection so we can lock safely
+  const conn = typeof pool.getConnection === "function" ? await pool.getConnection() : null;
+  const db = conn || pool;
 
-  const rowHash = hmacSha256Hex(`${canonical}|prev=${prevHash || ""}`);
+  try {
+    if (conn) await conn.beginTransaction();
 
-  await db.query(
-    `
-      INSERT INTO audit_logs
-        (tenant_id, user_id, user_email, action, entity_type, entity_id, details, ip_address, user_agent, prev_hash, row_hash, created_at_iso)
-      VALUES
-        (?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, ?, ?)
-    `,
-    [
-      tenantId,
-      entry.user_id ?? null,
-      entry.user_email ?? null,
-      entry.action,
-      entry.entity_type,
-      entry.entity_id ?? null,
-      JSON.stringify(detailsObj),
-      entry.ip_address ?? ip,
-      entry.user_agent ?? ua,
-      prevHash,
-      rowHash,
-      createdAtIso,
-    ]
-  );
+    // 🔒 Lock the latest audit row for this tenant
+    // This serializes chain creation per tenant and prevents prev_hash races.
+    const [lastRows] = await db.query(
+      `
+        SELECT row_hash
+        FROM audit_logs
+        WHERE tenant_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [tenantId]
+    );
 
-  return { tenantId, prevHash, rowHash, createdAtIso };
+    const prevHash = lastRows?.[0]?.row_hash ?? null;
+
+    const canonical = canonicalAuditPayload(
+      {
+        tenant_id: tenantId,
+        user_id: entry.user_id ?? null,
+        user_email: entry.user_email ?? null,
+        action: entry.action,
+        entity_type: entry.entity_type ?? null,
+        entity_id: entry.entity_id ?? null,
+        ip_address: entry.ip_address ?? ip,
+        user_agent: entry.user_agent ?? ua,
+        details_c14n: detailsC14n,
+      },
+      createdAtIso
+    );
+
+    const rowHash = hmacSha256Hex(`${canonical}|prev=${prevHash || ""}`);
+
+    await db.query(
+      `
+        INSERT INTO audit_logs
+          (tenant_id, user_id, user_email, action, entity_type, entity_id,
+           details, ip_address, user_agent, prev_hash, row_hash, created_at_iso)
+        VALUES
+          (?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, ?, ?)
+      `,
+      [
+        tenantId,
+        entry.user_id ?? null,
+        entry.user_email ?? null,
+        entry.action,
+        entry.entity_type,
+        entry.entity_id ?? null,
+        JSON.stringify(detailsObj),
+        entry.ip_address ?? ip,
+        entry.user_agent ?? ua,
+        prevHash,
+        rowHash,
+        createdAtIso,
+      ]
+    );
+
+    if (conn) await conn.commit();
+
+    return { tenantId, prevHash, rowHash, createdAtIso };
+  } catch (e) {
+    if (conn) {
+      try {
+        await conn.rollback();
+      } catch {}
+    }
+    throw e;
+  } finally {
+    if (conn) conn.release();
+  }
 }
 
 export async function getAdminAlertTargets(db, severity) {
@@ -286,7 +316,7 @@ export async function sendSecurityAlert(db, alert) {
   const emailRecipients = targets
     .filter((t) => Number(t.email_enabled) === 1)
     .map((t) => t?.email)
-    .flatMap((e) => normalizeEmailList(e)) // handles any accidental comma strings
+    .flatMap((e) => normalizeEmailList(e))
     .filter(Boolean);
 
   const shouldSlack = targets.some((t) => Number(t.slack_enabled) === 1);
@@ -295,7 +325,7 @@ export async function sendSecurityAlert(db, alert) {
   if (emailRecipients.length > 0 && (alert?.html || alert?.text)) {
     try {
       await sendEmail({
-        to: emailRecipients, // ✅ always array
+        to: emailRecipients,
         subject: alert.subject ?? "Security Alert",
         html: alert.html,
         text: alert.text,
@@ -456,9 +486,7 @@ export async function verifyAuditChain(db, { limit = 20000, tenantId = null } = 
     expectedPrev = r.row_hash;
   }
 
-  const endRow = rows[rows.length - 1];
-
-   return {
+  return {
     ok: true,
     checked: rows.length - startIndex,
     startId: rows[startIndex].id,
@@ -467,6 +495,4 @@ export async function verifyAuditChain(db, { limit = 20000, tenantId = null } = 
     lastCreatedAtIso: rows[rows.length - 1]?.created_at_iso ?? null,
     lastRowHash: rows[rows.length - 1]?.row_hash ?? null,
   };
-
 }
-

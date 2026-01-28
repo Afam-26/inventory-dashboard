@@ -1,4 +1,3 @@
-// src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useState } from "react";
 
@@ -18,35 +17,20 @@ import AuditLogs from "./pages/AuditLogs";
 import UsersAdmin from "./pages/UsersAdmin";
 import AuditDashboard from "./pages/AuditDashboard";
 
-import { getStoredUser, setToken, setStoredUser, setTenantId } from "./services/api";
+import { getStoredUser, setToken, setStoredUser } from "./services/api";
 
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
 
   function logout() {
     setToken("");
-    setTenantId(null); // ✅ clear tenant selection too
     setStoredUser(null);
     setUser(null);
   }
 
-  // ✅ Prefer tenantRole for UI + access control; fallback to global role
-  const effectiveRole = String(user?.tenantRole || user?.role || "").toLowerCase();
-  const roleLabel =
-    effectiveRole === "owner"
-      ? "Owner"
-      : effectiveRole === "admin"
-      ? "Admin"
-      : effectiveRole === "staff"
-      ? "Staff"
-      : "User";
-
-  const roleColor =
-    effectiveRole === "owner" || effectiveRole === "admin"
-      ? "#111827"
-      : effectiveRole === "staff"
-      ? "#2563eb"
-      : "#6b7280";
+  // ✅ Use tenantRole for UI authorization/labeling
+  const uiRole = String(user?.tenantRole || user?.role || "").toLowerCase();
+  const isAdmin = uiRole === "admin" || uiRole === "owner";
 
   return (
     <BrowserRouter>
@@ -56,12 +40,13 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
 
-        {/* ✅ Protected app (requires login) */}
+        {/* ✅ Protected app */}
         <Route
           path="/*"
           element={
             user ? (
               <div>
+                {/* top bar */}
                 <div
                   style={{
                     display: "flex",
@@ -76,33 +61,15 @@ export default function App() {
                       style={{
                         padding: "4px 10px",
                         borderRadius: 999,
-                        background: roleColor,
+                        background: isAdmin ? "#111827" : "#2563eb",
                         color: "#fff",
                         fontWeight: 600,
                         fontSize: 12,
+                        textTransform: "uppercase",
                       }}
                     >
-                      {roleLabel}
+                      {uiRole || "user"}
                     </span>
-
-                    {/* ✅ show tenant info if present */}
-                    {user?.tenantId ? (
-                      <span
-                        style={{
-                          marginLeft: 10,
-                          padding: "4px 10px",
-                          borderRadius: 999,
-                          background: "rgba(17,24,39,0.08)",
-                          color: "#111827",
-                          fontWeight: 600,
-                          fontSize: 12,
-                          border: "1px solid rgba(17,24,39,0.15)",
-                        }}
-                        title="Selected tenant"
-                      >
-                        Tenant #{user.tenantId}
-                      </span>
-                    ) : null}
                   </p>
 
                   <button className="btn" onClick={logout}>
@@ -111,17 +78,14 @@ export default function App() {
                 </div>
 
                 <div style={{ display: "flex", minHeight: "100vh" }}>
-                  {/* ✅ Pass user to Sidebar */}
                   <Sidebar user={user} />
 
                   <main style={{ flex: 1, padding: 20 }}>
                     <Routes>
                       <Route path="/" element={<Dashboard user={user} />} />
-
-                      {/* ✅ Products: anyone logged in can view (read-only for staff handled inside Products page) */}
                       <Route path="/products" element={<Products user={user} />} />
 
-                      {/* ✅ Admin-only */}
+                      {/* ✅ Admin/Owner-only pages */}
                       <Route
                         path="/categories"
                         element={
@@ -149,10 +113,6 @@ export default function App() {
                         }
                       />
 
-                      {/* ✅ Unauthorized page */}
-                      <Route path="/unauthorized" element={<Unauthorized />} />
-                      <Route path="/audit" element={<AuditLogs user={user} />} />
-
                       <Route
                         path="/users"
                         element={
@@ -162,7 +122,10 @@ export default function App() {
                         }
                       />
 
-                      {/* fallback */}
+                      {/* Logs page accessible to everyone (admin sees all, staff sees own) */}
+                      <Route path="/audit" element={<AuditLogs user={user} />} />
+
+                      <Route path="/unauthorized" element={<Unauthorized />} />
                       <Route path="*" element={<Navigate to="/" replace />} />
                     </Routes>
                   </main>

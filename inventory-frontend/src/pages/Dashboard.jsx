@@ -1,8 +1,10 @@
+// src/pages/Dashboard.jsx
 import { useEffect, useState } from "react";
 import { getDashboard } from "../services/api";
 
 export default function Dashboard({ user }) {
-  const isAdmin = user?.role === "admin";
+  const role = String(user?.tenantRole || user?.role || "").toLowerCase();
+  const isAdmin = role === "owner" || role === "admin";
 
   const [data, setData] = useState({
     totalProducts: 0,
@@ -18,9 +20,9 @@ export default function Dashboard({ user }) {
         setError("");
         setLoading(true);
         const d = await getDashboard();
-        setData(d);
+        setData(d || {});
       } catch (e) {
-        setError(e.message);
+        setError(e.message || "Failed to load dashboard");
       } finally {
         setLoading(false);
       }
@@ -37,15 +39,14 @@ export default function Dashboard({ user }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
         <div className="card">
           <h3>Total Products</h3>
-          <p style={{ fontSize: 24 }}>{data.totalProducts}</p>
+          <p style={{ fontSize: 24 }}>{Number(data.totalProducts || 0)}</p>
         </div>
 
         <div className="card">
           <h3>Low Stock Items</h3>
-          <p style={{ fontSize: 24 }}>{data.lowStockCount}</p>
+          <p style={{ fontSize: 24 }}>{Number(data.lowStockCount || 0)}</p>
         </div>
 
-        {/* ✅ Admin-only card */}
         {isAdmin ? (
           <div className="card">
             <h3>Inventory Value</h3>

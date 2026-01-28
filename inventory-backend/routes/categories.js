@@ -1,36 +1,70 @@
+// routes/categories.js
 import express from "express";
 import { db } from "../config/db.js";
 import { logAudit } from "../utils/audit.js";
-import { requireAuth, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// ✅ anyone logged in can view categories
-router.get("/", requireAuth, async (req, res) => {
+// All category routes require tenant context
+router.use(requireAuth, requireTenant);
+
+/**
+ * GET /api/categories
+ * Tenant-scoped list
+ */
+router.get("/", async (req, res) => {
   try {
-    const [rows] = await db.query("SELECT id, name FROM categories ORDER BY name ASC");
-    res.json(rows);
+    const tenantId = req.tenantId;
+
+    const [rows] = await db.query(
+      `SELECT id, name
+       FROM categories
+       WHERE tenant_id = ?
+       ORDER BY name ASC`,
+      [tenantId]
+    );
+
+    res.json(rows || []);
   } catch (err) {
     console.error("CATEGORIES GET ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
 });
 
-// ✅ admin only can create categories
-router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
+/**
+ * POST /api/categories
+ * Owner/Admin only
+ * Body: { name }
+ */
+router.post("/", requireRole("owner", "admin"), async (req, res) => {
   try {
-    const { name } = req.body;
-    if (!name?.trim()) return res.status(400).json({ message: "Name is required" });
+    const tenantId = req.tenantId;
 
-    const clean = name.trim();
+    const name = String(req.body?.name || "").trim();
+    if (!name) return res.status(400).json({ message: "Name is required" });
 
-    const [result] = await db.query("INSERT INTO categories (name) VALUES (?)", [clean]);
+    // optional: prevent duplicates per tenant
+    const [[exists]] = await db.query(
+      `SELECT id FROM categories WHERE tenant_id = ? AND LOWER(name) = LOWER(?) LIMIT 1`,
+      [tenantId, name]
+    );
+    if (exists?.id) {
+      return res.status(409).json({ message: "Category already exists" });
+    }
+
+    const [result] = await db.query(
+      `INSERT INTO categories (tenant_id, name) VALUES (?, ?)`,
+      [tenantId, name]
+    );
 
     await logAudit(req, {
       action: "CATEGORY_CREATE",
       entity_type: "category",
       entity_id: result.insertId,
-      details: { name: clean },
+      details: { name },
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
     });
 
     res.json({ message: "Category created", id: result.insertId });
@@ -40,30 +74,54 @@ router.post("/", requireAuth, requireRole("admin"), async (req, res) => {
   }
 });
 
-// ✅ admin only can delete categories (with in-use protection)
-router.delete("/:id", requireAuth, requireRole("admin"), async (req, res) => {
+/**
+ * DELETE /api/categories/:id
+ * Owner/Admin only
+ * Tenant-safe delete with in-use protection
+ */
+router.delete("/:id", requireRole("owner", "admin"), async (req, res) => {
   try {
+    const tenantId = req.tenantId;
     const id = Number(req.params.id);
     if (!id) return res.status(400).json({ message: "Invalid category id" });
 
-    const [[current]] = await db.query("SELECT id, name FROM categories WHERE id=? LIMIT 1", [id]);
+    const [[current]] = await db.query(
+      `SELECT id, name
+       FROM categories
+       WHERE id = ? AND tenant_id = ?
+       LIMIT 1`,
+      [id, tenantId]
+    );
     if (!current) return res.status(404).json({ message: "Category not found" });
 
-    // prevent deleting category used by products
-    const [[used]] = await db.query("SELECT COUNT(*) AS cnt FROM products WHERE category_id=?", [id]);
-    if (Number(used.cnt) > 0) {
+    // prevent deleting category used by products (tenant-safe)
+    const [[used]] = await db.query(
+      `SELECT COUNT(*) AS cnt
+       FROM products
+       WHERE tenant_id = ?
+         AND category_id = ?`,
+      [tenantId, id]
+    );
+
+    if (Number(used?.cnt || 0) > 0) {
       return res.status(409).json({
         message: "Category is in use by one or more products. Reassign/remove products first.",
       });
     }
 
-    await db.query("DELETE FROM categories WHERE id=?", [id]);
+    await db.query(
+      `DELETE FROM categories
+       WHERE id = ? AND tenant_id = ?`,
+      [id, tenantId]
+    );
 
     await logAudit(req, {
       action: "CATEGORY_DELETE",
       entity_type: "category",
       entity_id: id,
       details: { deleted: current },
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
     });
 
     res.json({ message: "Category deleted", deleted: current });

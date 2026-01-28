@@ -277,18 +277,25 @@ export default function Products({ user }) {
   const previewCount = 20;
 
   async function loadAll(searchQuery = "") {
-    setLoading(true);
-    setError("");
-    try {
-      const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
-      setProducts(Array.isArray(p) ? p : []);
-      setCategories(Array.isArray(c) ? c : []);
+  setLoading(true);
+  setError("");
+  try {
+    const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
+
+    // ✅ PRODUCTS API returns { products: [...] }
+    const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
+    setProducts(list);
+
+    // ✅ CATEGORIES might be { categories: [...] } or [...]
+    const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
+      setCategories(cats);
     } catch (e2) {
       setError(e2.message || "Failed to load");
     } finally {
       setLoading(false);
     }
   }
+
 
   useEffect(() => {
     loadAll("");

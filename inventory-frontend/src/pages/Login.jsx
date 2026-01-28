@@ -1,4 +1,3 @@
-// src/pages/Login.jsx
 import React, { useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 
@@ -14,9 +13,7 @@ import {
 export default function Login({ onSuccess }) {
   const navigate = useNavigate();
   const location = useLocation();
-
-  // Supports redirects like: navigate("/login", { state: { from: { pathname: "/products" } } })
-  const from = location.state?.from?.pathname || location.state?.from || "/";
+  const from = location.state?.from || "/";
 
   const [email, setEmail] = useState("admin@store.com");
   const [password, setPassword] = useState("admin123");
@@ -26,11 +23,9 @@ export default function Login({ onSuccess }) {
   const [error, setError] = useState("");
 
   async function resolveTenantsFromLogin(res) {
-    // res may already include tenants from /auth/login
     if (Array.isArray(res?.tenants)) return res.tenants;
 
-    // otherwise fetch using the user-token we just stored
-    const t = await getMyTenants(); // { tenants: [] }
+    const t = await getMyTenants();
     return Array.isArray(t?.tenants) ? t.tenants : [];
   }
 
@@ -40,7 +35,7 @@ export default function Login({ onSuccess }) {
     setLoading(true);
 
     try {
-      // 1) login -> user-token (tenantId null)
+      // 1) login user-token (tenantId null)
       const res = await login(email, password);
 
       if (!res?.token || !res?.user) {
@@ -48,44 +43,28 @@ export default function Login({ onSuccess }) {
         throw new Error("Login succeeded but token/user missing.");
       }
 
-      // store user-token + user (global)
+      // store user-token first (needed for /auth/tenants or /select-tenant)
       setToken(res.token);
       setStoredUser(res.user);
 
-      // 2) get tenants
+      // 2) tenants
       const tenants = await resolveTenantsFromLogin(res);
+      if (!tenants.length) throw new Error("No tenants found for this user.");
 
-      if (!tenants.length) {
-        throw new Error("No tenants found for this user.");
-      }
-
-      // 3) select a tenant (TEMP: auto-pick first)
+      // 3) pick a tenant (auto first)
       const chosen = tenants[0];
-      const sel = await selectTenantApi(chosen.id); // { token, tenantId, role }
+      const sel = await selectTenantApi(chosen.id);
 
       if (!sel?.token || !sel?.tenantId) {
         console.log("Unexpected select-tenant response:", sel);
         throw new Error("Tenant selection failed (missing token/tenantId).");
       }
 
-      // ✅ DEBUG
-      console.log("selectTenant response:", sel);
-
-      // store tenant-scoped token + tenantId
+      // ✅ store tenant scoped auth
       setToken(sel.token);
       setTenantId(sel.tenantId);
 
-      console.log("stored tenantId:", localStorage.getItem("tenantId"));
-      console.log(
-        "decoded token tenantId:",
-        JSON.parse(atob(sel.token.split(".")[1])).tenantId
-      );
-      console.log(
-        "decoded token role:",
-        JSON.parse(atob(sel.token.split(".")[1])).role
-      );
-
-      // 4) store tenant-enhanced user in localStorage and App state
+      // ✅ build app user object (tenant aware)
       const u = {
         ...res.user,
         tenantId: sel.tenantId,
@@ -93,15 +72,19 @@ export default function Login({ onSuccess }) {
       };
 
       setStoredUser(u);
-      onSuccess?.(u); // ✅ CALL ONCE (do not overwrite)
+      onSuccess?.(u);
 
-      // 5) navigate into app
+      // Debug (optional)
+      console.log("selectTenant response:", sel);
+      console.log("stored tenantId:", localStorage.getItem("tenantId"));
+      console.log(
+        "decoded token tenantId:",
+        JSON.parse(atob(sel.token.split(".")[1])).tenantId
+      );
+
       navigate(from, { replace: true });
     } catch (err) {
-      const msg =
-        err?.response?.data?.message ||
-        err?.message ||
-        "Unable to sign in. Please try again.";
+      const msg = err?.message || "Unable to sign in. Please try again.";
       setError(msg);
     } finally {
       setLoading(false);

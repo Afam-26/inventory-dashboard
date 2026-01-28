@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { createUser, getUsers, updateUserRoleById } from "../services/api";
 
 export default function UsersAdmin({ user }) {
-  const isAdmin = user?.role === "admin";
+  // ✅ owner OR admin can access
+  const isAdmin = ["admin", "owner"].includes(String(user?.role || "").toLowerCase());
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -11,16 +12,10 @@ export default function UsersAdmin({ user }) {
   const [query, setQuery] = useState("");
   const [savingId, setSavingId] = useState(null);
 
-  // per-row inline error
-  const [rowErrors, setRowErrors] = useState({}); // { [id]: "msg" }
+  const [rowErrors, setRowErrors] = useState({});
+  const [undoMap, setUndoMap] = useState({});
+  const [confirm, setConfirm] = useState(null);
 
-  // undo buffer (only stores last change per user)
-  const [undoMap, setUndoMap] = useState({}); // { [id]: { prevRole, newRole, at } }
-
-  // confirm modal state
-  const [confirm, setConfirm] = useState(null); // { target, prevRole, nextRole }
-
-  // toasts
   const [toasts, setToasts] = useState([]);
   function toast(type, message) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -28,7 +23,6 @@ export default function UsersAdmin({ user }) {
     window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
   }
 
-  // create form
   const [createForm, setCreateForm] = useState({
     full_name: "",
     email: "",
@@ -42,7 +36,10 @@ export default function UsersAdmin({ user }) {
     setPageErr("");
     try {
       const data = await getUsers();
-      setRows(Array.isArray(data) ? data : []);
+
+      // ✅ backend returns { users: [...] }
+      const list = Array.isArray(data?.users) ? data.users : Array.isArray(data) ? data : [];
+      setRows(list);
       setRowErrors({});
     } catch (e) {
       setPageErr(e?.message || "Failed to load users");
@@ -69,14 +66,16 @@ export default function UsersAdmin({ user }) {
   }, [rows, query]);
 
   function canChangeRole(targetUser, nextRole) {
-    if (targetUser.id === user?.id && String(nextRole).toLowerCase() !== "admin") {
-      return { ok: false, reason: "You cannot remove your own admin role." };
+    // ✅ protect self from losing admin/owner access
+    const me = Number(targetUser.id) === Number(user?.id);
+    const next = String(nextRole || "").toLowerCase();
+    if (me && !["admin", "owner"].includes(next)) {
+      return { ok: false, reason: "You cannot remove your own admin/owner access." };
     }
     return { ok: true };
   }
 
   function requestChangeRole(targetUser, nextRole) {
-    // clear row error
     setRowErrors((prev) => ({ ...prev, [targetUser.id]: "" }));
 
     const prevRole = targetUser.role;
@@ -89,7 +88,6 @@ export default function UsersAdmin({ user }) {
       return;
     }
 
-    // open confirm modal
     setConfirm({ target: targetUser, prevRole, nextRole });
   }
 
@@ -100,20 +98,15 @@ export default function UsersAdmin({ user }) {
     const prevRole = confirm.prevRole;
     const nextRole = confirm.nextRole;
 
-    // close modal
     setConfirm(null);
-
-    // disable dropdown while saving
     setSavingId(target.id);
     setRowErrors((prev) => ({ ...prev, [target.id]: "" }));
 
-    // optimistic update
     setRows((prev) => prev.map((u) => (u.id === target.id ? { ...u, role: nextRole } : u)));
 
     try {
       const res = await updateUserRoleById(target.id, nextRole);
 
-      // store undo info
       setUndoMap((prev) => ({
         ...prev,
         [target.id]: { prevRole, newRole: nextRole, at: Date.now() },
@@ -121,7 +114,6 @@ export default function UsersAdmin({ user }) {
 
       toast("success", res?.message || `Updated ${target.email} to ${nextRole}`);
     } catch (e) {
-      // revert on failure
       setRows((prev) => prev.map((u) => (u.id === target.id ? { ...u, role: prevRole } : u)));
       const msg = e?.message || "Failed to update role";
       setRowErrors((prev) => ({ ...prev, [target.id]: msg }));
@@ -154,13 +146,11 @@ export default function UsersAdmin({ user }) {
 
     const currentRole = target.role;
 
-    // optimistic
     setRows((prev) => prev.map((u) => (u.id === userId ? { ...u, role: info.prevRole } : u)));
 
     try {
       const res = await updateUserRoleById(userId, info.prevRole);
 
-      // clear undo entry
       setUndoMap((prev) => {
         const copy = { ...prev };
         delete copy[userId];
@@ -169,7 +159,6 @@ export default function UsersAdmin({ user }) {
 
       toast("success", res?.message || `Reverted role to ${info.prevRole}`);
     } catch (e) {
-      // revert
       setRows((prev) => prev.map((u) => (u.id === userId ? { ...u, role: currentRole } : u)));
       const msg = e?.message || "Undo failed";
       setRowErrors((prev) => ({ ...prev, [userId]: msg }));
@@ -298,12 +287,6 @@ export default function UsersAdmin({ user }) {
               <div style={{ marginTop: 8, fontSize: 13, color: "#6b7280" }}>
                 Current: <b>{confirm.prevRole}</b> → New: <b>{confirm.nextRole}</b>
               </div>
-
-              {confirm.target.id === user?.id && confirm.nextRole !== "admin" && (
-                <div style={{ marginTop: 10, color: "#991b1b", fontSize: 13 }}>
-                  You cannot remove your own admin role.
-                </div>
-              )}
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
@@ -378,6 +361,7 @@ export default function UsersAdmin({ user }) {
             >
               <option value="staff">staff</option>
               <option value="admin">admin</option>
+              <option value="owner">owner</option>
             </select>
           </div>
 
@@ -462,6 +446,7 @@ export default function UsersAdmin({ user }) {
                         >
                           <option value="staff">staff</option>
                           <option value="admin">admin</option>
+                          <option value="owner">owner</option>
                         </select>
 
                         {isMe && (

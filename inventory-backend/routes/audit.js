@@ -1,674 +1,410 @@
-// routes/auth.js
+// routes/audit.js
 import express from "express";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import rateLimit from "express-rate-limit";
-import crypto from "crypto";
 import { db } from "../config/db.js";
-import { sendEmail } from "../utils/mailer.js";
-import { passwordResetEmail } from "../utils/emailTemplates.js";
-import { logAudit, sendSecurityAlert, SEVERITY } from "../utils/audit.js";
+import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-const isProd = process.env.NODE_ENV === "production";
+// ✅ all audit routes require auth + tenant
+router.use(requireAuth, requireTenant);
 
 /**
- * Helpers
+ * Small helper: JSON may come back as string or object depending on column type + mysql2 config
  */
-function signAccessToken(user) {
-  // user-token (no tenant selected yet)
-  return jwt.sign(
-    {
-      id: user.id,
-      email: user.email,
-      role: user.role, // global role from users table
-      tenantId: user.tenantId ?? null,
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: "15m" }
-  );
-}
-
-function signTenantAccessToken({ id, email, tenantId, tenantRole }) {
-  // tenant-token (tenant selected)
-  return jwt.sign(
-    {
-      id,
-      email,
-      role: tenantRole, // tenant role: owner/admin/staff
-      tenantId: tenantId,
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: "15m" }
-  );
-}
-
-function makeRefreshToken() {
-  return crypto.randomBytes(48).toString("hex");
-}
-
-function refreshCookieOptions() {
-  return {
-    httpOnly: true,
-    secure: isProd, // true on Railway/HTTPS
-    sameSite: isProd ? "none" : "lax", // cross-site in prod
-    path: "/",
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-  };
-}
-
-/**
- * ✅ Non-blocking wrapper: security alerts must NEVER break auth flows
- */
-async function safeSecurityAlert(payload) {
-  try {
-    await sendSecurityAlert(db, payload);
-  } catch (e) {
-    console.error("SECURITY ALERT FAILED (ignored):", e?.message || e);
-  }
-}
-
-/**
- * ✅ Non-blocking wrapper: audit must NEVER break auth flows
- */
-async function safeAudit(req, entry) {
-  try {
-    await logAudit(req, entry);
-  } catch (e) {
-    console.error("AUDIT FAILED (ignored):", e?.message || e);
-  }
-}
-
-/**
- * Read Bearer token payload (for routes that are "auth" routes but still require login)
- */
-function readBearerPayload(req) {
-  const auth = req.headers.authorization || "";
-  const token = auth.startsWith("Bearer ") ? auth.slice(7) : null;
-  if (!token) return { ok: false, status: 401, message: "Missing token" };
-
-  try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    if (!payload?.id) return { ok: false, status: 401, message: "Invalid token" };
-    return { ok: true, payload };
-  } catch {
-    return { ok: false, status: 401, message: "Invalid token" };
-  }
-}
-
-/**
- * Fetch tenants user belongs to
- */
-async function getUserTenants(userId) {
-  const [rows] = await db.query(
-    `
-    SELECT
-      t.id,
-      t.name,
-      tu.role
-    FROM tenant_users tu
-    JOIN tenants t ON t.id = tu.tenant_id
-    WHERE tu.user_id = ?
-    ORDER BY t.name ASC
-    `,
-    [userId]
-  );
-  return rows;
-}
-
-/**
- * ✅ Rate limiters (DEV vs PROD)
- */
-const loginLimiter = rateLimit({
-  windowMs: isProd ? 5 * 60 * 1000 : 10 * 1000,
-  max: isProd ? 15 : 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many login attempts. Try again shortly." },
-});
-
-const refreshLimiter = rateLimit({
-  windowMs: isProd ? 5 * 60 * 1000 : 60 * 1000,
-  max: isProd ? 60 : 300,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many refresh attempts. Try again shortly." },
-});
-
-const resetLimiter = rateLimit({
-  windowMs: isProd ? 10 * 60 * 1000 : 60 * 1000,
-  max: isProd ? 10 : 60,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many requests. Try again shortly." },
-});
-
-/**
- * POST /api/auth/login
- * Returns user-token + tenants list (so frontend can select one)
- */
-router.post("/login", loginLimiter, async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    const cleanEmail = String(email || "").trim().toLowerCase();
-
-    if (!cleanEmail || !password) {
-      await safeAudit(req, {
-        action: "LOGIN_FAILED",
-        entity_type: "user",
-        entity_id: null,
-        details: { email: cleanEmail || null, reason: "MISSING_FIELDS" },
-        user_id: null,
-        user_email: cleanEmail || null,
-        severity: SEVERITY.WARN,
-      });
-
-      return res.status(400).json({ message: "Email and password required" });
+function normalizeDetails(v) {
+  if (v == null) return null;
+  if (typeof v === "object") return v;
+  if (typeof v === "string") {
+    try {
+      return JSON.parse(v);
+    } catch {
+      return v;
     }
+  }
+  return v;
+}
+
+/**
+ * GET /api/audit
+ * Query:
+ *  - page (default 1)
+ *  - limit (default 50)
+ *  - action (optional)
+ *  - user_email (optional)
+ *
+ * ✅ Owner/Admin: can view all logs for tenant
+ * ✅ Staff: only their own logs
+ */
+router.get("/", async (req, res) => {
+  try {
+    const tenantId = req.tenantId;
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "owner" || role === "admin";
+
+    const page = Math.max(1, Number(req.query.page || 1));
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit || 50)));
+    const offset = (page - 1) * limit;
+
+    const action = String(req.query.action || "").trim();
+    const userEmail = String(req.query.user_email || "").trim().toLowerCase();
+
+    const where = ["tenant_id = ?"];
+    const params = [tenantId];
+
+    if (!isAdmin) {
+      where.push("user_id = ?");
+      params.push(req.user?.id ?? 0);
+    }
+
+    if (action) {
+      where.push("action = ?");
+      params.push(action);
+    }
+
+    if (userEmail) {
+      where.push("LOWER(user_email) = ?");
+      params.push(userEmail);
+    }
+
+    const whereSql = `WHERE ${where.join(" AND ")}`;
+
+    const [[countRow]] = await db.query(
+      `SELECT COUNT(*) AS total FROM audit_logs ${whereSql}`,
+      params
+    );
 
     const [rows] = await db.query(
-      "SELECT id, full_name, email, password_hash, role FROM users WHERE email=? LIMIT 1",
-      [cleanEmail]
+      `
+      SELECT
+        id, user_id, user_email, action, entity_type, entity_id,
+        details, ip_address, created_at, created_at_iso, tenant_id
+      FROM audit_logs
+      ${whereSql}
+      ORDER BY id DESC
+      LIMIT ? OFFSET ?
+      `,
+      [...params, limit, offset]
     );
-
-    const user = rows[0];
-    if (!user) {
-      await safeAudit(req, {
-        action: "LOGIN_FAILED",
-        entity_type: "user",
-        entity_id: null,
-        details: { email: cleanEmail, reason: "INVALID_CREDENTIALS" },
-        user_id: null,
-        user_email: cleanEmail,
-        severity: SEVERITY.WARN,
-      });
-
-      await safeSecurityAlert({
-        severity: SEVERITY.WARN,
-        subject: "Login failed (unknown email)",
-        text: `Login failed for unknown email ${cleanEmail} from IP ${req.ip}`,
-        html: `<p><b>Login failed (unknown email)</b></p><p>Email: ${cleanEmail}</p><p>IP: ${req.ip}</p>`,
-      });
-
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    const ok = await bcrypt.compare(password, user.password_hash);
-    if (!ok) {
-      await safeAudit(req, {
-        action: "LOGIN_FAILED",
-        entity_type: "user",
-        entity_id: user.id,
-        details: { email: user.email, reason: "INVALID_CREDENTIALS" },
-        user_id: user.id,
-        user_email: user.email,
-        severity: SEVERITY.WARN,
-      });
-
-      await safeSecurityAlert({
-        severity: SEVERITY.WARN,
-        subject: "Login failed (bad password)",
-        text: `Login failed for ${user.email} from IP ${req.ip}`,
-        html: `<p><b>Login failed (bad password)</b></p><p>User: ${user.email}</p><p>IP: ${req.ip}</p>`,
-      });
-
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    // user-token (tenant not selected yet)
-    const accessToken = signAccessToken({ ...user, tenantId: null });
-
-    // long-lived refresh token stored in DB
-    const refreshToken = makeRefreshToken();
-
-    await db.query(
-      `INSERT INTO refresh_tokens (user_id, token, expires_at)
-       VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 30 DAY))`,
-      [user.id, refreshToken]
-    );
-
-    res.cookie("refresh_token", refreshToken, refreshCookieOptions());
-
-    await safeAudit(req, {
-      action: "LOGIN",
-      entity_type: "user",
-      entity_id: user.id,
-      details: { email: user.email, role: user.role, success: true },
-      user_id: user.id,
-      user_email: user.email,
-      severity: SEVERITY.INFO,
-    });
-
-    // ✅ include tenant list so UI can select
-    let tenants = [];
-    try {
-      tenants = await getUserTenants(user.id);
-    } catch (e) {
-      console.error("FETCH TENANTS ON LOGIN FAILED:", e?.message || e);
-      tenants = [];
-    }
 
     res.json({
-      token: accessToken,
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        full_name: user.full_name,
-      },
-      tenants,
+      page,
+      limit,
+      total: Number(countRow?.total || 0),
+      logs: (rows || []).map((r) => ({ ...r, details: normalizeDetails(r.details) })),
     });
-  } catch (err) {
-    console.error("LOGIN ERROR:", err);
+  } catch (e) {
+    console.error("AUDIT LIST ERROR:", e?.message || e);
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /**
- * GET /api/auth/tenants
- * Returns tenants user belongs to (requires user-token)
+ * GET /api/audit/stats?days=30
  */
-router.get("/tenants", async (req, res) => {
+router.get("/stats", async (req, res) => {
   try {
-    const r = readBearerPayload(req);
-    if (!r.ok) return res.status(r.status).json({ message: r.message });
+    const tenantId = req.tenantId;
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "owner" || role === "admin";
 
-    const tenants = await getUserTenants(r.payload.id);
-    res.json({ tenants });
-  } catch (err) {
-    console.error("AUTH TENANTS ERROR:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
+    const days = Math.min(365, Math.max(1, Number(req.query.days || 30)));
 
-/**
- * POST /api/auth/select-tenant
- * Body: { tenantId }
- * Returns tenant-scoped token (tenantId + tenant role)
- */
-router.post("/select-tenant", async (req, res) => {
-  try {
-    const r = readBearerPayload(req);
-    if (!r.ok) return res.status(r.status).json({ message: r.message });
+    const baseWhere = ["tenant_id = ?", "created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)"];
+    const baseParams = [tenantId, days];
 
-    const userId = r.payload.id;
-    const email = r.payload.email;
-
-    const tenantId = Number(req.body?.tenantId);
-    if (!Number.isFinite(tenantId) || tenantId <= 0) {
-      return res.status(400).json({ message: "tenantId is required" });
+    if (!isAdmin) {
+      baseWhere.push("user_id = ?");
+      baseParams.push(req.user?.id ?? 0);
     }
 
-    const [[m]] = await db.query(
-      "SELECT role FROM tenant_users WHERE user_id=? AND tenant_id=? LIMIT 1",
-      [userId, tenantId]
+    const whereSql = `WHERE ${baseWhere.join(" AND ")}`;
+
+    const [byDay] = await db.query(
+      `
+      SELECT DATE(created_at) AS day, COUNT(*) AS count
+      FROM audit_logs
+      ${whereSql}
+      GROUP BY DATE(created_at)
+      ORDER BY day ASC
+      `,
+      baseParams
     );
 
-    if (!m) return res.status(403).json({ message: "Not a member of this tenant" });
+    const [byAction] = await db.query(
+      `
+      SELECT action, COUNT(*) AS count
+      FROM audit_logs
+      ${whereSql}
+      GROUP BY action
+      ORDER BY count DESC
+      `,
+      baseParams
+    );
 
-    const tenantRole = String(m.role || "").toLowerCase();
+    const [byEntity] = await db.query(
+      `
+      SELECT entity_type, COUNT(*) AS count
+      FROM audit_logs
+      ${whereSql}
+      GROUP BY entity_type
+      ORDER BY count DESC
+      `,
+      baseParams
+    );
 
-    const tenantToken = signTenantAccessToken({
-      id: userId,
-      email,
-      tenantId,
-      tenantRole,
+    const [topUsers] = await db.query(
+      `
+      SELECT user_email, COUNT(*) AS count
+      FROM audit_logs
+      ${whereSql}
+      GROUP BY user_email
+      ORDER BY count DESC
+      LIMIT 10
+      `,
+      baseParams
+    );
+
+    const total = (byAction || []).reduce((sum, a) => sum + Number(a.count || 0), 0);
+
+    res.json({
+      days,
+      total,
+      byDay: byDay || [],
+      byAction: byAction || [],
+      byEntity: byEntity || [],
+      topUsers: topUsers || [],
     });
-
-    await safeAudit(req, {
-      action: "TENANT_SELECTED",
-      entity_type: "tenant",
-      entity_id: tenantId,
-      details: { tenantId, role: tenantRole },
-      user_id: userId,
-      user_email: email,
-      severity: SEVERITY.INFO,
-    });
-
-    res.json({ token: tenantToken, tenantId, role: tenantRole });
-  } catch (err) {
-    console.error("SELECT TENANT ERROR:", err);
+  } catch (e) {
+    console.error("AUDIT STATS ERROR:", e?.message || e);
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /**
- * POST /api/auth/refresh
- * Uses refresh_token cookie.
- * If x-tenant-id is present and user is member, returns tenant-scoped token.
- * Otherwise returns user-token (tenantId null).
+ * GET /api/audit/csv?limit=20000
  */
-router.post("/refresh", refreshLimiter, async (req, res) => {
+router.get("/csv", async (req, res) => {
   try {
-    const rt = req.cookies?.refresh_token;
-    if (!rt) {
-      await safeAudit(req, {
-        action: "REFRESH_FAILED",
-        entity_type: "auth",
-        entity_id: null,
-        details: { reason: "MISSING_REFRESH_COOKIE" },
-        severity: SEVERITY.WARN,
-      });
+    const tenantId = req.tenantId;
+    const role = String(req.user?.role || "").toLowerCase();
+    const isAdmin = role === "owner" || role === "admin";
 
-      return res.status(401).json({ message: "Missing refresh token" });
+    const limit = Math.min(50000, Math.max(1, Number(req.query.limit || 20000)));
+
+    const where = ["tenant_id = ?"];
+    const params = [tenantId];
+
+    if (!isAdmin) {
+      where.push("user_id = ?");
+      params.push(req.user?.id ?? 0);
     }
 
     const [rows] = await db.query(
-      `SELECT user_id, expires_at, revoked_at
-       FROM refresh_tokens
-       WHERE token = ? LIMIT 1`,
-      [rt]
+      `
+      SELECT
+        id, created_at, created_at_iso, user_email, action,
+        entity_type, entity_id, ip_address
+      FROM audit_logs
+      WHERE ${where.join(" AND ")}
+      ORDER BY id DESC
+      LIMIT ?
+      `,
+      [...params, limit]
     );
 
-    const row = rows[0];
-    if (!row || row.revoked_at) {
-      await safeAudit(req, {
-        action: "REFRESH_FAILED",
-        entity_type: "auth",
-        entity_id: null,
-        details: { reason: "INVALID_OR_REVOKED_REFRESH_TOKEN" },
-        severity: SEVERITY.CRITICAL,
-      });
+    const header = [
+      "id",
+      "created_at",
+      "created_at_iso",
+      "user_email",
+      "action",
+      "entity_type",
+      "entity_id",
+      "ip_address",
+    ];
 
-      await safeSecurityAlert({
-        severity: SEVERITY.CRITICAL,
-        subject: "Refresh token rejected (possible session hijack)",
-        text: `Refresh rejected from IP ${req.ip} (revoked/invalid token).`,
-        html: `<p><b>Refresh token rejected</b></p><p>Reason: revoked/invalid</p><p>IP: ${req.ip}</p>`,
-      });
+    const escape = (v) => {
+      const s = String(v ?? "");
+      return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
+    };
 
-      return res.status(401).json({ message: "Invalid refresh token" });
-    }
-
-    const expiresAt = new Date(row.expires_at).getTime();
-    if (Date.now() > expiresAt) {
-      await safeAudit(req, {
-        action: "REFRESH_FAILED",
-        entity_type: "auth",
-        entity_id: null,
-        details: { reason: "REFRESH_TOKEN_EXPIRED", user_id: row.user_id },
-        user_id: row.user_id,
-        severity: SEVERITY.WARN,
-      });
-
-      return res.status(401).json({ message: "Refresh token expired" });
-    }
-
-    const [users] = await db.query(
-      "SELECT id, full_name, email, role FROM users WHERE id=? LIMIT 1",
-      [row.user_id]
-    );
-
-    const user = users[0];
-    if (!user) {
-      await safeAudit(req, {
-        action: "REFRESH_FAILED",
-        entity_type: "auth",
-        entity_id: null,
-        details: { reason: "USER_NOT_FOUND", user_id: row.user_id },
-        user_id: row.user_id,
-        severity: SEVERITY.WARN,
-      });
-
-      return res.status(401).json({ message: "User not found" });
-    }
-
-    const requestedTenantId = Number(req.headers["x-tenant-id"] || 0);
-
-    let newAccess;
-
-    if (Number.isFinite(requestedTenantId) && requestedTenantId > 0) {
-      const [[m]] = await db.query(
-        "SELECT role FROM tenant_users WHERE user_id=? AND tenant_id=? LIMIT 1",
-        [user.id, requestedTenantId]
+    const lines = [header.join(",")];
+    for (const r of rows || []) {
+      lines.push(
+        [
+          escape(r.id),
+          escape(r.created_at),
+          escape(r.created_at_iso),
+          escape(r.user_email),
+          escape(r.action),
+          escape(r.entity_type),
+          escape(r.entity_id),
+          escape(r.ip_address),
+        ].join(",")
       );
-
-      if (m?.role) {
-        newAccess = signTenantAccessToken({
-          id: user.id,
-          email: user.email,
-          tenantId: requestedTenantId,
-          tenantRole: String(m.role).toLowerCase(),
-        });
-      } else {
-        // fallback user-token
-        newAccess = signAccessToken({ ...user, tenantId: null });
-      }
-    } else {
-      newAccess = signAccessToken({ ...user, tenantId: null });
     }
 
-    await safeAudit(req, {
-      action: "REFRESH",
-      entity_type: "auth",
-      entity_id: user.id,
-      details: { success: true, tenantId: requestedTenantId || null },
-      user_id: user.id,
-      user_email: user.email,
-      severity: SEVERITY.INFO,
-    });
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="audit_logs.csv"`);
+    res.send(lines.join("\n"));
+  } catch (e) {
+    console.error("AUDIT CSV ERROR:", e?.message || e);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * ✅ GET /api/audit/report?days=7
+ * SOC-style summary
+ * Admin/Owner only
+ */
+router.get("/report", requireRole("owner", "admin"), async (req, res) => {
+  try {
+    const tenantId = req.tenantId;
+    const days = Math.min(365, Math.max(1, Number(req.query.days || 7)));
+
+    const whereSql = `WHERE tenant_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)`;
+    const baseParams = [tenantId, days];
+
+    const [[totalRow]] = await db.query(
+      `SELECT COUNT(*) AS total FROM audit_logs ${whereSql}`,
+      baseParams
+    );
+
+    const [[loginsRow]] = await db.query(
+      `SELECT COUNT(*) AS c FROM audit_logs ${whereSql} AND action = 'LOGIN'`,
+      baseParams
+    );
+
+    const [[failedLoginsRow]] = await db.query(
+      `SELECT COUNT(*) AS c FROM audit_logs ${whereSql} AND action = 'LOGIN_FAILED'`,
+      baseParams
+    );
+
+    const [[roleChangesRow]] = await db.query(
+      `SELECT COUNT(*) AS c FROM audit_logs ${whereSql} AND action = 'USER_ROLE_UPDATE'`,
+      baseParams
+    );
+
+    const [failedByEmail] = await db.query(
+      `
+      SELECT user_email, COUNT(*) AS count
+      FROM audit_logs
+      ${whereSql} AND action = 'LOGIN_FAILED' AND user_email IS NOT NULL
+      GROUP BY user_email
+      ORDER BY count DESC
+      LIMIT 10
+      `,
+      baseParams
+    );
+
+    const [failedByIp] = await db.query(
+      `
+      SELECT ip_address, COUNT(*) AS count
+      FROM audit_logs
+      ${whereSql} AND action = 'LOGIN_FAILED' AND ip_address IS NOT NULL
+      GROUP BY ip_address
+      ORDER BY count DESC
+      LIMIT 10
+      `,
+      baseParams
+    );
+
+    const [afterHours] = await db.query(
+      `
+      SELECT id, user_email, ip_address, created_at, action
+      FROM audit_logs
+      ${whereSql}
+        AND action = 'LOGIN'
+        AND (HOUR(created_at) < 8 OR HOUR(created_at) >= 18)
+      ORDER BY id DESC
+      LIMIT 50
+      `,
+      baseParams
+    );
+
+    const [destructive] = await db.query(
+      `
+      SELECT id, user_email, ip_address, created_at, action, entity_type, entity_id
+      FROM audit_logs
+      ${whereSql}
+        AND action LIKE '%DELETE%'
+      ORDER BY id DESC
+      LIMIT 50
+      `,
+      baseParams
+    );
 
     res.json({
-      token: newAccess,
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        full_name: user.full_name,
+      generated_at: new Date().toISOString(),
+      window_days: days,
+      summary: {
+        total_events: Number(totalRow?.total || 0),
+        logins: Number(loginsRow?.c || 0),
+        failed_logins: Number(failedLoginsRow?.c || 0),
+        role_changes: Number(roleChangesRow?.c || 0),
+      },
+      findings: {
+        failed_logins_by_email: failedByEmail || [],
+        failed_logins_by_ip: failedByIp || [],
+        after_hours_logins: afterHours || [],
+        destructive_events: destructive || [],
       },
     });
-  } catch (err) {
-    console.error("REFRESH ERROR:", err);
+  } catch (e) {
+    console.error("AUDIT REPORT ERROR:", e?.message || e);
     res.status(500).json({ message: "Server error" });
   }
 });
 
 /**
- * POST /api/auth/logout
+ * GET /api/audit/verify?limit=20000
+ * Admin/Owner only
  */
-router.post("/logout", async (req, res) => {
+router.get("/verify", requireRole("owner", "admin"), async (req, res) => {
   try {
-    const rt = req.cookies?.refresh_token;
+    const tenantId = req.tenantId;
+    const limit = Math.min(50000, Math.max(1, Number(req.query.limit || 20000)));
 
-    let userId = null;
-    let userEmail = null;
-
-    if (rt) {
-      const [[r]] = await db.query("SELECT user_id FROM refresh_tokens WHERE token=? LIMIT 1", [rt]);
-      userId = r?.user_id ?? null;
-
-      if (userId) {
-        const [[u]] = await db.query("SELECT email FROM users WHERE id=? LIMIT 1", [userId]);
-        userEmail = u?.email ?? null;
-      }
-
-      await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE token=?", [rt]);
-    }
-
-    res.clearCookie("refresh_token", { ...refreshCookieOptions(), maxAge: 0 });
-
-    await safeAudit(req, {
-      action: "LOGOUT",
-      entity_type: "auth",
-      entity_id: userId,
-      details: { success: true },
-      user_id: userId,
-      user_email: userEmail,
-      severity: SEVERITY.INFO,
-    });
-
-    res.json({ message: "Logged out" });
-  } catch (err) {
-    console.error("LOGOUT ERROR:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-/**
- * POST /api/auth/forgot-password
- */
-router.post("/forgot-password", resetLimiter, async (req, res) => {
-  try {
-    const { email } = req.body;
-    if (!email?.trim()) return res.status(400).json({ message: "Email required" });
-
-    const normalized = email.trim().toLowerCase();
-
-    let emailStatus = "not_sent";
-    let emailError = null;
-
-    const [rows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [normalized]);
-
-    if (!rows.length) {
-      await safeAudit(req, {
-        action: "PASSWORD_RESET_REQUEST",
-        entity_type: "user",
-        entity_id: null,
-        details: { email: normalized, outcome: "EMAIL_NOT_FOUND" },
-        user_id: null,
-        user_email: normalized,
-        severity: SEVERITY.INFO,
-      });
-
-      return res.json({
-        message: "If the email exists, a reset link was sent.",
-        ...(!isProd ? { dev_note: "Email not found in users table (no reset created)." } : {}),
-      });
-    }
-
-    const user = rows[0];
-
-    const rawToken = crypto.randomBytes(32).toString("hex");
-    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-
-    await db.query(
-      `INSERT INTO password_resets (user_id, token_hash, expires_at)
-       VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 30 MINUTE))`,
-      [user.id, tokenHash]
+    const [rows] = await db.query(
+      `
+      SELECT id, prev_hash, row_hash, created_at_iso, tenant_id, action, entity_type, entity_id, user_email
+      FROM audit_logs
+      WHERE tenant_id = ?
+      ORDER BY id ASC
+      LIMIT ?
+      `,
+      [tenantId, limit]
     );
 
-    const front = process.env.FRONTEND_URL || (isProd ? "" : "http://localhost:5173");
-    const resetLink = `${front}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalized)}`;
+    let lastHash = null;
+    let checked = 0;
 
-    await safeAudit(req, {
-      action: "PASSWORD_RESET_REQUEST",
-      entity_type: "user",
-      entity_id: user.id,
-      details: { email: normalized, created: true },
-      user_id: user.id,
-      user_email: normalized,
-      severity: SEVERITY.INFO,
-    });
+    for (const row of rows || []) {
+      checked++;
 
-    try {
-      const { subject, html, text } = passwordResetEmail({ resetLink, minutes: 30 });
-      await sendEmail({ to: normalized, subject, html, text });
-      emailStatus = "sent";
-    } catch (mailErr) {
-      emailStatus = "failed";
-      emailError = mailErr?.message || String(mailErr);
-      console.error("EMAIL SEND ERROR:", emailError);
-
-      await safeAudit(req, {
-        action: "PASSWORD_RESET_EMAIL_FAILED",
-        entity_type: "user",
-        entity_id: user.id,
-        details: { email: normalized, error: emailError },
-        user_id: user.id,
-        user_email: normalized,
-        severity: SEVERITY.WARN,
-      });
-
-      if (isProd) {
-        await safeSecurityAlert({
-          severity: SEVERITY.WARN,
-          subject: "Password reset email failed",
-          text: `Reset email failed for ${normalized} (IP ${req.ip}). Error: ${emailError}`,
-          html: `<p><b>Password reset email failed</b></p><p>User: ${normalized}</p><p>IP: ${req.ip}</p><p>Error: ${emailError}</p>`,
+      if (row.prev_hash && lastHash && row.prev_hash !== lastHash) {
+        return res.json({
+          ok: false,
+          checked,
+          tenantId,
+          brokenAtId: row.id,
+          reason: "prev_hash mismatch",
         });
       }
+
+      lastHash = row.row_hash || lastHash;
     }
 
     res.json({
-      message: "If the email exists, a reset link was sent.",
-      ...(process.env.RETURN_DEV_RESET_LINK === "true" && !isProd ? { dev_reset_link: resetLink } : {}),
-      ...(!isProd ? { emailStatus, emailError } : {}),
+      ok: true,
+      checked,
+      tenantId,
+      startId: rows?.[0]?.id ?? null,
+      lastId: rows?.[rows.length - 1]?.id ?? null,
     });
-  } catch (err) {
-    console.error("FORGOT PASSWORD ERROR:", err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-/**
- * POST /api/auth/reset-password
- */
-router.post("/reset-password", resetLimiter, async (req, res) => {
-  try {
-    const { email, token, newPassword } = req.body;
-
-    if (!email?.trim() || !token?.trim() || !newPassword) {
-      return res.status(400).json({ message: "Email, token and new password are required" });
-    }
-
-    if (String(newPassword).length < 8) {
-      return res.status(400).json({ message: "Password must be at least 8 characters" });
-    }
-
-    const normalized = email.trim().toLowerCase();
-    const tokenHash = crypto.createHash("sha256").update(token.trim()).digest("hex");
-
-    const [urows] = await db.query("SELECT id, email FROM users WHERE email=? LIMIT 1", [normalized]);
-    if (!urows.length) return res.status(400).json({ message: "Invalid token" });
-
-    const userId = urows[0].id;
-
-    const [rrows] = await db.query(
-      `SELECT id, expires_at, used_at
-       FROM password_resets
-       WHERE user_id=? AND token_hash=?
-       ORDER BY id DESC
-       LIMIT 1`,
-      [userId, tokenHash]
-    );
-
-    if (!rrows.length) return res.status(400).json({ message: "Invalid token" });
-
-    const resetRow = rrows[0];
-    if (resetRow.used_at) return res.status(400).json({ message: "Token already used" });
-
-    const expiresAt = new Date(resetRow.expires_at).getTime();
-    if (Date.now() > expiresAt) return res.status(400).json({ message: "Token expired" });
-
-    const password_hash = await bcrypt.hash(newPassword, 10);
-    await db.query("UPDATE users SET password_hash=? WHERE id=?", [password_hash, userId]);
-
-    await db.query("UPDATE password_resets SET used_at=NOW() WHERE id=?", [resetRow.id]);
-
-    await db.query("UPDATE refresh_tokens SET revoked_at=NOW() WHERE user_id=? AND revoked_at IS NULL", [userId]);
-
-    await safeAudit(req, {
-      action: "PASSWORD_RESET_COMPLETED",
-      entity_type: "user",
-      entity_id: userId,
-      details: { email: normalized, success: true },
-      user_id: userId,
-      user_email: normalized,
-      severity: SEVERITY.WARN,
-    });
-
-    await safeSecurityAlert({
-      severity: SEVERITY.WARN,
-      subject: "Password reset completed",
-      text: `Password reset completed for ${normalized} from IP ${req.ip}`,
-      html: `<p><b>Password reset completed</b></p><p>User: ${normalized}</p><p>IP: ${req.ip}</p>`,
-    });
-
-    res.json({ message: "Password reset successful. Please login." });
-  } catch (err) {
-    console.error("RESET PASSWORD ERROR:", err);
+  } catch (e) {
+    console.error("AUDIT VERIFY ERROR:", e?.message || e);
     res.status(500).json({ message: "Server error" });
   }
 });

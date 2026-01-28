@@ -14,10 +14,12 @@ const API_BASE =
  * ============================
  */
 async function safeJson(res) {
+  // 204/304 usually have no body
+  if (res.status === 204 || res.status === 304) return null;
   try {
     return await res.json();
   } catch {
-    return {};
+    return null;
   }
 }
 
@@ -98,16 +100,30 @@ async function baseFetch(
     ...(useTenantHeader && tenantId ? { "x-tenant-id": String(tenantId) } : {}),
   };
 
-  const res = await fetch(url, {
-    ...options,
-    headers,
-    ...(useCookie ? { credentials: "include" } : {}),
-  });
+  const doFetch = async (u) =>
+    fetch(u, {
+      ...options,
+      headers,
+      ...(useCookie ? { credentials: "include" } : {}),
+      cache: "no-store",
+    });
+
+  let res = await doFetch(url);
+
+  // ✅ If 304 happens, force a fresh GET with a cache-busting query param
+  if (res.status === 304) {
+    const sep = url.includes("?") ? "&" : "?";
+    res = await doFetch(`${url}${sep}_ts=${Date.now()}`);
+  }
+
+  // Some 204 responses also have no body
+  if (res.status === 204) return {};
 
   const data = await safeJson(res);
   if (!res.ok) throw new Error(data?.message || "Request failed");
-  return data;
+  return data ?? {};
 }
+
 
 /**
  * ============================
@@ -236,7 +252,15 @@ export async function getProducts(search = "") {
   const url = q
     ? `${API_BASE}/products?search=${encodeURIComponent(q)}`
     : `${API_BASE}/products`;
-  return baseFetch(url, {}, { useAuth: true });
+
+  const data = await baseFetch(url, {}, { useAuth: true });
+
+  // ✅ normalize common shapes
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.items)) return data.items;
+  if (Array.isArray(data?.products)) return data.products;
+
+  return [];
 }
 
 export async function addProduct(payload) {
@@ -351,13 +375,21 @@ export async function updateStock(payload) {
   );
 }
 
+
 export async function getMovements(params = {}) {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params || {})) {
     if (v !== undefined && v !== null && String(v).trim() !== "") qs.set(k, String(v));
   }
+
   const url = `${API_BASE}/stock/movements${qs.toString() ? `?${qs}` : ""}`;
-  return baseFetch(url, {}, { useAuth: true });
+  const data = await baseFetch(url, {}, { useAuth: true });
+
+  // ✅ normalize
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.movements)) return data.movements;
+
+  return [];
 }
 
 export async function fetchStockCsvBlob(params = {}) {
@@ -398,7 +430,13 @@ export async function downloadStockCsv(params = {}) {
  * ============================
  */
 export async function getUsers() {
-  return baseFetch(`${API_BASE}/users`, {}, { useAuth: true });
+  const data = await baseFetch(`${API_BASE}/users`, {}, { useAuth: true });
+
+  // ✅ normalize
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.users)) return data.users;
+
+  return [];
 }
 
 export async function createUser(payload) {
@@ -436,13 +474,24 @@ export async function getAuditLogs(params = {}) {
     if (v !== undefined && v !== null && String(v).trim() !== "") qs.set(k, String(v));
   }
 
-  return baseFetch(
+  const data = await baseFetch(
     `${API_BASE}/audit${qs.toString() ? `?${qs}` : ""}`,
     {},
     { useAuth: true }
   );
+
+  // ✅ normalize (this one returns an object for pagination)
+  return {
+    page: Number(data?.page || 1),
+    limit: Number(data?.limit || 50),
+    total: Number(data?.total || 0),
+    logs: Array.isArray(data?.logs) ? data.logs : [],
+  };
 }
 
+/**
+ * ✅ Fix audit CSV endpoint (backend is /audit/csv)
+ */
 export async function fetchAuditCsvBlob(params = {}) {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params || {})) {
@@ -450,7 +499,7 @@ export async function fetchAuditCsvBlob(params = {}) {
   }
 
   const res = await fetch(
-    `${API_BASE}/audit/export.csv${qs.toString() ? `?${qs}` : ""}`,
+    `${API_BASE}/audit/csv${qs.toString() ? `?${qs}` : ""}`,
     { headers: { ...authHeaders(), ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}) } }
   );
 
@@ -460,6 +509,7 @@ export async function fetchAuditCsvBlob(params = {}) {
   }
   return await res.blob();
 }
+
 
 export async function downloadAuditCsv(params = {}) {
   const blob = await fetchAuditCsvBlob(params);

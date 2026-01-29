@@ -14,7 +14,6 @@ const API_BASE =
  * ============================
  */
 async function safeJson(res) {
-  // 204/304 usually have no body
   if (res.status === 204 || res.status === 304) return null;
   try {
     return await res.json();
@@ -43,7 +42,7 @@ function authHeaders() {
 
 /**
  * ============================
- * Tenant handling (NEW)
+ * Tenant handling
  * ============================
  */
 export function getTenantId() {
@@ -81,11 +80,23 @@ export function setStoredUser(user) {
 
 /**
  * ============================
+ * Error helper
+ * ============================
+ */
+function makeApiError(message, code, status) {
+  const err = new Error(message || "Request failed");
+  if (code) err.code = code;
+  if (status) err.status = status;
+  return err;
+}
+
+/**
+ * ============================
  * Base Fetch Helper
  * ============================
  * - useAuth: adds Authorization
  * - useCookie: sends refresh cookie
- * - useTenantHeader: adds x-tenant-id if tenant is selected (multi-tenant)
+ * - useTenantHeader: adds x-tenant-id if tenant is selected
  */
 async function baseFetch(
   url,
@@ -110,20 +121,32 @@ async function baseFetch(
 
   let res = await doFetch(url);
 
-  // ✅ If 304 happens, force a fresh GET with a cache-busting query param
+  // ✅ If 304 happens, force a fresh GET with cache-busting
   if (res.status === 304) {
     const sep = url.includes("?") ? "&" : "?";
     res = await doFetch(`${url}${sep}_ts=${Date.now()}`);
   }
 
-  // Some 204 responses also have no body
   if (res.status === 204) return {};
 
   const data = await safeJson(res);
-  if (!res.ok) throw new Error(data?.message || "Request failed");
+
+  if (!res.ok) {
+    const msg = data?.message || "Request failed";
+
+    // ✅ Normalize "No tenant selected" into a code
+    if (
+      String(msg).toLowerCase().includes("tenant") &&
+      String(msg).toLowerCase().includes("selected")
+    ) {
+      throw makeApiError(msg, "TENANT_REQUIRED", res.status);
+    }
+
+    throw makeApiError(msg, "API_ERROR", res.status);
+  }
+
   return data ?? {};
 }
-
 
 /**
  * ============================
@@ -131,7 +154,7 @@ async function baseFetch(
  * ============================
  */
 export async function login(email, password) {
-  return baseFetch(
+  const data = await baseFetch(
     `${API_BASE}/auth/login`,
     {
       method: "POST",
@@ -139,28 +162,41 @@ export async function login(email, password) {
       body: JSON.stringify({ email, password }),
     },
     { useCookie: true, useTenantHeader: false }
-  ); // { token, user, tenants? }
+  );
+
+  // store token + user
+  if (data?.token) setToken(data.token);
+  if (data?.user) setStoredUser(data.user);
+
+  // IMPORTANT: do NOT setTenantId here (login returns user-token)
+  return data; // { token, user, tenants }
 }
 
-/**
- * Refresh token (cookie-based).
- * If you have tenantId saved, baseFetch automatically passes x-tenant-id
- * so refresh can return tenant-scoped token.
- */
 export async function refresh() {
-  return baseFetch(
+  const data = await baseFetch(
     `${API_BASE}/auth/refresh`,
     { method: "POST" },
-    { useCookie: true }
+    { useCookie: true } // includes tenant header automatically if tenantId exists
   );
+
+  if (data?.token) setToken(data.token);
+  if (data?.user) setStoredUser(data.user);
+  return data;
 }
 
 export async function logoutApi() {
-  return baseFetch(
+  const data = await baseFetch(
     `${API_BASE}/auth/logout`,
     { method: "POST" },
     { useCookie: true }
   );
+
+  // Clear local state
+  setToken("");
+  setTenantId(null);
+  setStoredUser(null);
+
+  return data;
 }
 
 export async function requestPasswordReset(email) {
@@ -189,15 +225,15 @@ export async function resetPassword(email, token, newPassword) {
 
 /**
  * ============================
- * TENANTS (NEW)
+ * TENANTS
  * ============================
  */
 export async function getMyTenants() {
-  return baseFetch(`${API_BASE}/auth/tenants`, {}, { useAuth: true, useTenantHeader: false }); // { tenants: [] }
+  return baseFetch(`${API_BASE}/auth/tenants`, {}, { useAuth: true, useTenantHeader: false });
 }
 
 export async function selectTenantApi(tenantId) {
-  return baseFetch(
+  const data = await baseFetch(
     `${API_BASE}/auth/select-tenant`,
     {
       method: "POST",
@@ -205,8 +241,102 @@ export async function selectTenantApi(tenantId) {
       body: JSON.stringify({ tenantId }),
     },
     { useAuth: true, useTenantHeader: false }
-  ); // { token, tenantId, role }
+  );
+
+  if (data?.token) setToken(data.token);
+  if (data?.tenantId) setTenantId(data.tenantId);
+
+  // also update stored user role info (optional)
+  const u = getStoredUser();
+  if (u) setStoredUser({ ...u, tenantRole: data?.role });
+
+  return data; // { token, tenantId, role }
 }
+
+export async function createTenantApi(payload) {
+  return baseFetch(
+    `${API_BASE}/tenants`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useAuth: true, useTenantHeader: false }
+  );
+}
+
+export async function getCurrentTenantApi() {
+  return baseFetch(`${API_BASE}/tenants/current`, {}, { useAuth: true });
+}
+
+export async function updateTenantBrandingApi(payload) {
+  return baseFetch(
+    `${API_BASE}/tenants/current/branding`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useAuth: true }
+  );
+}
+
+export async function inviteUserApi(payload) {
+  return baseFetch(
+    `${API_BASE}/tenants/current/invite`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useAuth: true }
+  );
+}
+
+export async function acceptInviteApi(payload) {
+  // payload: { email, token, full_name, password }
+  return baseFetch(
+    `${API_BASE}/invites/accept`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useTenantHeader: false }
+  );
+}
+
+/**
+ * ============================
+ * TENANT INVITES (NEW)
+ * ============================
+ */
+export async function inviteUserToTenant(payload) {
+  // calls /api/tenants/current/invite
+  return baseFetch(
+    `${API_BASE}/tenants/current/invite`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useAuth: true }
+  );
+}
+
+export async function acceptInvite(payload) {
+  // calls /api/invites/accept (no auth required)
+  return baseFetch(
+    `${API_BASE}/invites/accept`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useTenantHeader: false, useCookie: false }
+  );
+}
+
 
 /**
  * ============================
@@ -255,7 +385,6 @@ export async function getProducts(search = "") {
 
   const data = await baseFetch(url, {}, { useAuth: true });
 
-  // ✅ normalize common shapes
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.items)) return data.items;
   if (Array.isArray(data?.products)) return data.products;
@@ -276,7 +405,6 @@ export async function addProduct(payload) {
 }
 
 export async function updateProduct(id, payload) {
-  // keep PUT (your note)
   return baseFetch(
     `${API_BASE}/products/${id}`,
     {
@@ -302,7 +430,10 @@ export async function getProductBySku(sku) {
 
 export async function fetchProductsCsvBlob() {
   const res = await fetch(`${API_BASE}/products/export.csv`, {
-    headers: { ...authHeaders(), ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}) },
+    headers: {
+      ...authHeaders(),
+      ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}),
+    },
   });
 
   if (!res.ok) {
@@ -356,7 +487,6 @@ export async function importProductsRows(rows, { createMissingCategories = true 
  * ============================
  */
 export async function updateStock(payload) {
-  // backend: /api/stock/move expects productId
   const body = {
     productId: Number(payload.product_id ?? payload.productId),
     type: String(payload.type || "").toUpperCase(),
@@ -375,7 +505,6 @@ export async function updateStock(payload) {
   );
 }
 
-
 export async function getMovements(params = {}) {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params || {})) {
@@ -385,10 +514,8 @@ export async function getMovements(params = {}) {
   const url = `${API_BASE}/stock/movements${qs.toString() ? `?${qs}` : ""}`;
   const data = await baseFetch(url, {}, { useAuth: true });
 
-  // ✅ normalize
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.movements)) return data.movements;
-
   return [];
 }
 
@@ -400,7 +527,12 @@ export async function fetchStockCsvBlob(params = {}) {
 
   const res = await fetch(
     `${API_BASE}/stock/export.csv${qs.toString() ? `?${qs}` : ""}`,
-    { headers: { ...authHeaders(), ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}) } }
+    {
+      headers: {
+        ...authHeaders(),
+        ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}),
+      },
+    }
   );
 
   if (!res.ok) {
@@ -432,10 +564,8 @@ export async function downloadStockCsv(params = {}) {
 export async function getUsers() {
   const data = await baseFetch(`${API_BASE}/users`, {}, { useAuth: true });
 
-  // ✅ normalize
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.users)) return data.users;
-
   return [];
 }
 
@@ -463,6 +593,10 @@ export async function updateUserRoleById(id, role) {
   );
 }
 
+export async function removeUserFromTenant(id) {
+  return baseFetch(`${API_BASE}/users/${id}`, { method: "DELETE" }, { useAuth: true });
+}
+
 /**
  * ============================
  * AUDIT LOGS (Admin)
@@ -480,7 +614,6 @@ export async function getAuditLogs(params = {}) {
     { useAuth: true }
   );
 
-  // ✅ normalize (this one returns an object for pagination)
   return {
     page: Number(data?.page || 1),
     limit: Number(data?.limit || 50),
@@ -489,19 +622,18 @@ export async function getAuditLogs(params = {}) {
   };
 }
 
-/**
- * ✅ Fix audit CSV endpoint (backend is /audit/csv)
- */
 export async function fetchAuditCsvBlob(params = {}) {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(params || {})) {
     if (v !== undefined && v !== null && String(v).trim() !== "") qs.set(k, String(v));
   }
 
-  const res = await fetch(
-    `${API_BASE}/audit/csv${qs.toString() ? `?${qs}` : ""}`,
-    { headers: { ...authHeaders(), ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}) } }
-  );
+  const res = await fetch(`${API_BASE}/audit/csv${qs.toString() ? `?${qs}` : ""}`, {
+    headers: {
+      ...authHeaders(),
+      ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}),
+    },
+  });
 
   if (!res.ok) {
     const text = await res.text();
@@ -509,7 +641,6 @@ export async function fetchAuditCsvBlob(params = {}) {
   }
   return await res.blob();
 }
-
 
 export async function downloadAuditCsv(params = {}) {
   const blob = await fetchAuditCsvBlob(params);

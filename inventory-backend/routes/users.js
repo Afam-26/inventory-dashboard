@@ -7,29 +7,29 @@ import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// Tenant admins/owners only
+// Only tenant admins / owners
 router.use(requireAuth, requireTenant, requireRole("owner", "admin"));
 
 /**
  * GET /api/users
- * List tenant members (tenant-scoped)
  */
 router.get("/", async (req, res) => {
-  const tenantId = req.tenantId;
-
   try {
+    const tenantId = req.tenantId;
+
     const [rows] = await db.query(
       `
-      SELECT 
+      SELECT
         u.id,
         u.full_name,
         u.email,
         tm.role,
+        tm.status,
         tm.created_at
       FROM tenant_members tm
       JOIN users u ON u.id = tm.user_id
-      WHERE tm.tenant_id = ?
-      ORDER BY u.id DESC
+      WHERE tm.tenant_id=?
+      ORDER BY tm.role='owner' DESC, u.id DESC
       `,
       [tenantId]
     );
@@ -43,45 +43,39 @@ router.get("/", async (req, res) => {
 
 /**
  * POST /api/users
- * Add user to tenant:
- * Body: { full_name, email, password, role } OR { email, role } if user already exists
  */
 router.post("/", async (req, res) => {
   const tenantId = req.tenantId;
-
-  const full_name = String(req.body?.full_name || "").trim();
   const email = String(req.body?.email || "").trim().toLowerCase();
+  const full_name = String(req.body?.full_name || "").trim();
   const password = String(req.body?.password || "");
-  const role = String(req.body?.role || "staff").trim().toLowerCase();
+  const role = String(req.body?.role || "staff").toLowerCase();
 
   if (!email) return res.status(400).json({ message: "email required" });
   if (!["owner", "admin", "staff"].includes(role)) {
-    return res.status(400).json({ message: "role must be owner, admin, or staff" });
+    return res.status(400).json({ message: "invalid role" });
   }
 
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
 
-    // Find user
-    const [urows] = await conn.query(
+    const [[u]] = await conn.query(
       "SELECT id FROM users WHERE email=? LIMIT 1",
       [email]
     );
 
-    let userId = urows[0]?.id;
+    let userId = u?.id;
 
-    // Create user if not exists
     if (!userId) {
-      if (!password || password.length < 8) {
+      if (password.length < 8) {
         await conn.rollback();
-        return res.status(400).json({ message: "password required (min 8 chars) for new user" });
+        return res.status(400).json({ message: "password min 8 chars" });
       }
 
       const hash = await bcrypt.hash(password, 10);
-
       const [r] = await conn.query(
-        "INSERT INTO users (full_name, email, password_hash, role) VALUES (?, ?, ?, 'user')",
+        "INSERT INTO users (full_name,email,password_hash,role) VALUES (?,?,?,'user')",
         [full_name || null, email, hash]
       );
       userId = r.insertId;
@@ -90,17 +84,15 @@ router.post("/", async (req, res) => {
         action: "USER_CREATE",
         entity_type: "user",
         entity_id: userId,
-        details: { email, full_name: full_name || null },
+        details: { email },
       }, { db: conn });
-
     }
 
-    // Add membership (or update role if exists)
-    const [mr] = await conn.query(
+    await conn.query(
       `
-      INSERT INTO tenant_members (tenant_id, user_id, role, created_at)
-      VALUES (?, ?, ?, NOW())
-      ON DUPLICATE KEY UPDATE role=VALUES(role)
+      INSERT INTO tenant_members (tenant_id,user_id,role,status,created_at)
+      VALUES (?,?,?,'active',NOW())
+      ON DUPLICATE KEY UPDATE role=VALUES(role), status='active'
       `,
       [tenantId, userId, role]
     );
@@ -109,14 +101,14 @@ router.post("/", async (req, res) => {
       action: "TENANT_MEMBER_UPSERT",
       entity_type: "tenant_member",
       entity_id: userId,
-      details: { tenantId, userId, role, affectedRows: mr.affectedRows },
-    });
+      details: { tenantId, role },
+    }, { db: conn });
 
     await conn.commit();
-    res.status(201).json({ ok: true, userId, role });
+    res.status(201).json({ ok: true });
   } catch (err) {
-    try { await conn.rollback(); } catch {}
-    console.error("USER UPSERT ERROR:", err);
+    await conn.rollback();
+    console.error("USER CREATE ERROR:", err);
     res.status(500).json({ message: "Database error" });
   } finally {
     conn.release();
@@ -125,65 +117,106 @@ router.post("/", async (req, res) => {
 
 /**
  * PATCH /api/users/:id/role
- * Body: { role }
  */
 router.patch("/:id/role", async (req, res) => {
   const tenantId = req.tenantId;
   const userId = Number(req.params.id);
-  const role = String(req.body?.role || "").trim().toLowerCase();
+  const role = String(req.body?.role || "").toLowerCase();
 
-  if (!userId) return res.status(400).json({ message: "Invalid user id" });
   if (!["owner", "admin", "staff"].includes(role)) {
-    return res.status(400).json({ message: "role must be owner, admin, or staff" });
+    return res.status(400).json({ message: "invalid role" });
   }
 
   try {
+    // prevent removing last owner
+    if (role !== "owner") {
+      const [[count]] = await db.query(
+        `
+        SELECT COUNT(*) AS c
+        FROM tenant_members
+        WHERE tenant_id=? AND role='owner'
+        `,
+        [tenantId]
+      );
+
+      if (count?.c <= 1) {
+        return res.status(400).json({ message: "Tenant must have at least one owner" });
+      }
+    }
+
     const [r] = await db.query(
-      `UPDATE tenant_members
-       SET role=?
-       WHERE tenant_id=? AND user_id=?`,
+      `
+      UPDATE tenant_members
+      SET role=?
+      WHERE tenant_id=? AND user_id=?
+      `,
       [role, tenantId, userId]
     );
 
-    if (r.affectedRows === 0) return res.status(404).json({ message: "Member not found" });
+    if (!r.affectedRows) {
+      return res.status(404).json({ message: "Member not found" });
+    }
 
     await logAudit(req, {
       action: "TENANT_MEMBER_ROLE_UPDATE",
       entity_type: "tenant_member",
       entity_id: userId,
-      details: { tenantId, userId, role },
+      details: { tenantId, role },
     });
 
     res.json({ ok: true });
   } catch (err) {
-    console.error("USER ROLE UPDATE ERROR:", err);
+    console.error("ROLE UPDATE ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
 });
 
 /**
  * DELETE /api/users/:id
- * Remove user from tenant (does not delete user globally)
  */
 router.delete("/:id", async (req, res) => {
   const tenantId = req.tenantId;
   const userId = Number(req.params.id);
 
-  if (!userId) return res.status(400).json({ message: "Invalid user id" });
-
   try {
+    // prevent deleting last owner
+    const [[m]] = await db.query(
+      `
+      SELECT role FROM tenant_members
+      WHERE tenant_id=? AND user_id=?
+      `,
+      [tenantId, userId]
+    );
+
+    if (m?.role === "owner") {
+      const [[count]] = await db.query(
+        `
+        SELECT COUNT(*) AS c
+        FROM tenant_members
+        WHERE tenant_id=? AND role='owner'
+        `,
+        [tenantId]
+      );
+
+      if (count?.c <= 1) {
+        return res.status(400).json({ message: "Cannot remove last owner" });
+      }
+    }
+
     const [r] = await db.query(
       `DELETE FROM tenant_members WHERE tenant_id=? AND user_id=?`,
       [tenantId, userId]
     );
 
-    if (r.affectedRows === 0) return res.status(404).json({ message: "Member not found" });
+    if (!r.affectedRows) {
+      return res.status(404).json({ message: "Member not found" });
+    }
 
     await logAudit(req, {
       action: "TENANT_MEMBER_REMOVE",
       entity_type: "tenant_member",
       entity_id: userId,
-      details: { tenantId, userId },
+      details: { tenantId },
     });
 
     res.json({ ok: true });

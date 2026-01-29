@@ -23,43 +23,25 @@ function requireEnv(name) {
 }
 
 /**
- * ✅ Normalize emails into an array for Resend
- * - supports array
- * - supports "a@b.com"
- * - supports "a@b.com,b@c.com"
- * - trims + drops empties
+ * ✅ Normalize emails into an array
  */
 function normalizeEmailList(input) {
   if (Array.isArray(input)) {
-    return input
-      .flat()
-      .map((x) => String(x || "").trim())
-      .filter(Boolean);
+    return input.flat().map((x) => String(x || "").trim()).filter(Boolean);
   }
-
   const s = String(input || "").trim();
   if (!s) return [];
-
-  if (s.includes(",")) {
-    return s
-      .split(",")
-      .map((x) => x.trim())
-      .filter(Boolean);
-  }
-
+  if (s.includes(",")) return s.split(",").map((x) => x.trim()).filter(Boolean);
   return [s];
 }
 
 /**
- * ✅ HMAC helper
- * - If AUDIT_HASH_SECRET missing, we still want the app to run.
- * - But we DO want you to notice in logs.
+ * ✅ HMAC helper (never crashes app if secret missing)
  */
 function hmacSha256Hex(input) {
   const secret = process.env.AUDIT_HASH_SECRET;
   if (!secret) {
-    console.warn("WARN: AUDIT_HASH_SECRET is not set (audit hashing disabled for this row).");
-    // fallback: deterministic but NOT secret (only to avoid crashes)
+    console.warn("WARN: AUDIT_HASH_SECRET is not set (audit hashing fallback used).");
     return crypto.createHash("sha256").update(`NO_SECRET|${input}`).digest("hex");
   }
   return crypto.createHmac("sha256", secret).update(input).digest("hex");
@@ -67,18 +49,12 @@ function hmacSha256Hex(input) {
 
 /**
  * Stable JSON stringify: sorts object keys recursively
- * so MySQL JSON key reordering won't break verification.
  */
 function stableStringify(value) {
   if (value === null || value === undefined) return "null";
+  if (typeof value !== "object") return JSON.stringify(value);
 
-  if (typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map(stableStringify).join(",")}]`;
-  }
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
 
   const keys = Object.keys(value).sort();
   const entries = keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`);
@@ -103,24 +79,17 @@ function getRequestContext(req) {
 let _cachedDefaultTenantId = null;
 async function getDefaultTenantId(db) {
   if (_cachedDefaultTenantId) return _cachedDefaultTenantId;
-
   try {
     const [[t]] = await db.query("SELECT id FROM tenants WHERE slug='default' LIMIT 1");
     _cachedDefaultTenantId = Number(t?.id || 1);
   } catch {
     _cachedDefaultTenantId = 1;
   }
-
   return _cachedDefaultTenantId;
 }
 
 /**
- * Canonical payload for hashing.
- * IMPORTANT: Keep stable over time.
- *
- * Key point: we hash details_c14n (a stable string), not the raw JSON object.
- *
- * ✅ Multi-tenant: includes tenant_id so chains are tenant-bound.
+ * Canonical payload for hashing (stable).
  */
 function canonicalAuditPayload(entry, createdAtIso) {
   return stableStringify({
@@ -137,18 +106,64 @@ function canonicalAuditPayload(entry, createdAtIso) {
   });
 }
 
+function isDeadlock(e) {
+  return (
+    e?.code === "ER_LOCK_DEADLOCK" ||
+    e?.errno === 1213 ||
+    e?.sqlState === "40001" ||
+    /deadlock/i.test(String(e?.message || ""))
+  );
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * ✅ Retry helper for deadlocks / serialization failures
+ */
+async function withDeadlockRetry(fn, { tries = 4, baseDelayMs = 25 } = {}) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (e) {
+      attempt++;
+      if (!isDeadlock(e) || attempt >= tries) throw e;
+
+      const jitter = Math.floor(Math.random() * 15);
+      await sleep(baseDelayMs * attempt + jitter);
+    }
+  }
+}
+
+/**
+ * Acquire a per-tenant advisory lock for audit chain creation.
+ */
+async function acquireTenantAuditLock(db, tenantId, timeoutSec = 2) {
+  const lockName = `audit_chain_tenant_${Number(tenantId)}`;
+  try {
+    const [[r]] = await db.query("SELECT GET_LOCK(?, ?) AS ok", [lockName, timeoutSec]);
+    return Number(r?.ok || 0) === 1 ? lockName : null;
+  } catch {
+    return null;
+  }
+}
+
+async function releaseTenantAuditLock(db, lockName) {
+  if (!lockName) return;
+  try {
+    await db.query("SELECT RELEASE_LOCK(?)", [lockName]);
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * ✅ logAudit(req, entry)
- *
- * ✅ Multi-tenant rules:
- * - audit_logs.tenant_id is NOT NULL, so we ALWAYS write tenant_id
- * - if req.tenantId exists (tenant token), we use it
- * - otherwise fall back to default tenant (slug='default', typically id=1)
- *
- * ✅ FIXED:
- * - prev_hash is computed PER TENANT
- * - but now done atomically with a transaction + FOR UPDATE
- *   to prevent concurrent inserts from breaking the chain
+ * - tenant chain locked per tenant
+ * - deadlock retry
+ * - ✅ FIX: automatically fills user_id/user_email from req.user when missing
  */
 export async function logAudit(req, entry, options = {}) {
   if (!entry?.action) throw new Error("logAudit: entry.action is required");
@@ -156,9 +171,8 @@ export async function logAudit(req, entry, options = {}) {
 
   const pool = options.db || defaultDb;
   const { ip, ua } = getRequestContext(req);
-  const createdAtIso = new Date().toISOString();
 
-  // ✅ Resolve tenant_id
+  // resolve tenantId
   let tenantId =
     req?.tenantId ??
     req?.user?.tenantId ??
@@ -169,7 +183,6 @@ export async function logAudit(req, entry, options = {}) {
   if (!tenantId) tenantId = await getDefaultTenantId(pool);
   tenantId = Number(tenantId);
 
-  // Ensure details is an object or null (DB column is JSON)
   const detailsObj =
     entry.details && typeof entry.details === "object"
       ? entry.details
@@ -179,85 +192,123 @@ export async function logAudit(req, entry, options = {}) {
 
   const detailsC14n = stableStringify(detailsObj);
 
-  // ✅ Use a dedicated connection so we can lock safely
   const conn = typeof pool.getConnection === "function" ? await pool.getConnection() : null;
   const db = conn || pool;
 
-  try {
-    if (conn) await conn.beginTransaction();
+  let lockName = null;
 
-    // 🔒 Lock the latest audit row for this tenant
-    // This serializes chain creation per tenant and prevents prev_hash races.
-    const [lastRows] = await db.query(
-      `
+  const run = async () => {
+    // createdAtIso should be unique per attempt (helps if we retry after deadlock)
+    const createdAtIso = new Date().toISOString();
+
+    try {
+      if (conn) await conn.beginTransaction();
+
+      // advisory lock to serialize chain per tenant
+      lockName = await acquireTenantAuditLock(db, tenantId, 2);
+
+      // 🔒 lock latest row for this tenant
+      const [lastRows] = await db.query(
+        `
         SELECT row_hash
         FROM audit_logs
         WHERE tenant_id = ?
         ORDER BY id DESC
         LIMIT 1
         FOR UPDATE
-      `,
-      [tenantId]
-    );
+        `,
+        [tenantId]
+      );
 
-    const prevHash = lastRows?.[0]?.row_hash ?? null;
+      const prevHash = lastRows?.[0]?.row_hash ?? null;
 
-    const canonical = canonicalAuditPayload(
-      {
-        tenant_id: tenantId,
-        user_id: entry.user_id ?? null,
-        user_email: entry.user_email ?? null,
-        action: entry.action,
-        entity_type: entry.entity_type ?? null,
-        entity_id: entry.entity_id ?? null,
-        ip_address: entry.ip_address ?? ip,
-        user_agent: entry.user_agent ?? ua,
-        details_c14n: detailsC14n,
-      },
-      createdAtIso
-    );
+      // ✅ Resolve actor (fixes user/email showing as "-")
+      const resolvedUserId = entry.user_id ?? req?.user?.id ?? null;
 
-    const rowHash = hmacSha256Hex(`${canonical}|prev=${prevHash || ""}`);
+      let resolvedUserEmail = entry.user_email ?? req?.user?.email ?? null;
 
-    await db.query(
-      `
+      // If we still don't have email but we have userId, look it up (best-effort)
+      if (!resolvedUserEmail && resolvedUserId) {
+        try {
+          const [[u]] = await db.query("SELECT email FROM users WHERE id=? LIMIT 1", [
+            Number(resolvedUserId),
+          ]);
+          resolvedUserEmail = u?.email ?? null;
+        } catch {
+          // ignore
+        }
+      }
+
+      const canonical = canonicalAuditPayload(
+        {
+          tenant_id: tenantId,
+          user_id: resolvedUserId,
+          user_email: resolvedUserEmail,
+          action: entry.action,
+          entity_type: entry.entity_type ?? null,
+          entity_id: entry.entity_id ?? null,
+          ip_address: entry.ip_address ?? ip,
+          user_agent: entry.user_agent ?? ua,
+          details_c14n: detailsC14n,
+        },
+        createdAtIso
+      );
+
+      const rowHash = hmacSha256Hex(`${canonical}|prev=${prevHash || ""}`);
+
+      await db.query(
+        `
         INSERT INTO audit_logs
           (tenant_id, user_id, user_email, action, entity_type, entity_id,
            details, ip_address, user_agent, prev_hash, row_hash, created_at_iso)
         VALUES
           (?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, ?, ?)
-      `,
-      [
-        tenantId,
-        entry.user_id ?? null,
-        entry.user_email ?? null,
-        entry.action,
-        entry.entity_type,
-        entry.entity_id ?? null,
-        JSON.stringify(detailsObj),
-        entry.ip_address ?? ip,
-        entry.user_agent ?? ua,
-        prevHash,
-        rowHash,
-        createdAtIso,
-      ]
-    );
+        `,
+        [
+          tenantId,
+          resolvedUserId,
+          resolvedUserEmail,
+          entry.action,
+          entry.entity_type,
+          entry.entity_id ?? null,
+          JSON.stringify(detailsObj),
+          entry.ip_address ?? ip,
+          entry.user_agent ?? ua,
+          prevHash,
+          rowHash,
+          createdAtIso,
+        ]
+      );
 
-    if (conn) await conn.commit();
+      if (conn) await conn.commit();
 
-    return { tenantId, prevHash, rowHash, createdAtIso };
-  } catch (e) {
-    if (conn) {
+      return { tenantId, prevHash, rowHash, createdAtIso };
+    } catch (e) {
+      if (conn) {
+        try {
+          await conn.rollback();
+        } catch {}
+      }
+      throw e;
+    } finally {
+      // release lock outside of transaction too
       try {
-        await conn.rollback();
+        await releaseTenantAuditLock(db, lockName);
       } catch {}
+      lockName = null;
     }
-    throw e;
+  };
+
+  try {
+    return await withDeadlockRetry(run, { tries: 4, baseDelayMs: 25 });
   } finally {
     if (conn) conn.release();
   }
 }
 
+/**
+ * Admin alert targets
+ */
 export async function getAdminAlertTargets(db, severity) {
   try {
     const [rows] = await db.query(
@@ -276,12 +327,10 @@ export async function getAdminAlertTargets(db, severity) {
     );
     return rows.filter((r) => Number(severity) >= Number(r.min_severity));
   } catch (e) {
-    // Fallback to env var (can be comma-separated)
     const emailTo = process.env.ALERT_EMAIL_TO;
     const fallbackEmails = normalizeEmailList(emailTo);
 
     if (fallbackEmails.length) {
-      // Return multiple rows so downstream logic works without changes
       return fallbackEmails.map((email) => ({
         admin_user_id: null,
         email,
@@ -297,10 +346,7 @@ export async function getAdminAlertTargets(db, severity) {
 }
 
 /**
- * ✅ IMPORTANT:
- * - Resend expects `to` as an array of emails, NOT a comma-separated string.
- * - Alerts should NEVER break main request flow (login, stock move, etc.)
- * - This function never throws.
+ * Alerts never throw
  */
 export async function sendSecurityAlert(db, alert) {
   const severity = alert?.severity ?? SEVERITY.WARN;
@@ -321,7 +367,6 @@ export async function sendSecurityAlert(db, alert) {
 
   const shouldSlack = targets.some((t) => Number(t.slack_enabled) === 1);
 
-  // ✅ Email (non-blocking)
   if (emailRecipients.length > 0 && (alert?.html || alert?.text)) {
     try {
       await sendEmail({
@@ -335,7 +380,6 @@ export async function sendSecurityAlert(db, alert) {
     }
   }
 
-  // ✅ Slack (non-blocking)
   if (shouldSlack && (alert?.text || alert?.subject || alert?.blocks)) {
     try {
       await sendSlackAlert({
@@ -350,9 +394,6 @@ export async function sendSecurityAlert(db, alert) {
 
 /**
  * Verify tamper-evident audit chain.
- * ✅ Uses created_at_iso and stable JSON canonicalization.
- * ✅ Skips legacy rows without hashes.
- * ✅ Multi-tenant: can verify a single tenant chain via tenantId.
  */
 export async function verifyAuditChain(db, { limit = 20000, tenantId = null } = {}) {
   const params = [];
@@ -362,19 +403,18 @@ export async function verifyAuditChain(db, { limit = 20000, tenantId = null } = 
     where.push("tenant_id = ?");
     params.push(Number(tenantId));
   }
-
   params.push(Number(limit));
 
   const [rows] = await db.query(
     `
-      SELECT
-        id, tenant_id, user_id, user_email, action, entity_type, entity_id,
-        details, ip_address, user_agent,
-        prev_hash, row_hash, created_at_iso
-      FROM audit_logs
-      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-      ORDER BY id ASC
-      LIMIT ?
+    SELECT
+      id, tenant_id, user_id, user_email, action, entity_type, entity_id,
+      details, ip_address, user_agent,
+      prev_hash, row_hash, created_at_iso
+    FROM audit_logs
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY id ASC
+    LIMIT ?
     `,
     params
   );

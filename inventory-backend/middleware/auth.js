@@ -1,5 +1,6 @@
 // middleware/auth.js
 import jwt from "jsonwebtoken";
+import { db } from "../config/db.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
@@ -14,12 +15,11 @@ export function requireAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
 
-    // Normalize
     req.user = {
       id: payload.id ?? payload.userId ?? null,
       email: payload.email ?? null,
-      role: payload.role ?? null, // NOTE: can be global user role OR tenant role after select-tenant
-      tenantId: payload.tenantId ?? null,
+      role: payload.role ?? null, // tenant role IF tenant-token, otherwise global
+      tenantId: payload.tenantId ?? null, // tenant-token includes this
     };
 
     if (!req.user.id) return res.status(401).json({ message: "Invalid token" });
@@ -32,30 +32,56 @@ export function requireAuth(req, res, next) {
 
 /**
  * ✅ Require a selected tenant.
- * Accept tenant from:
- *  - x-tenant-id header (user-token flow)
- *  - token tenantId (tenant-token flow)
+ * - If token has tenantId: use it (tenant-token flow)
+ * - Else if x-tenant-id present: verify membership & set role from tenant_members
  */
-export function requireTenant(req, res, next) {
+export async function requireTenant(req, res, next) {
   const headerTenant = req.headers["x-tenant-id"];
   const tokenTenant = req.user?.tenantId;
 
-  const tenantId = Number(headerTenant || tokenTenant);
+  const tenantId = Number(tokenTenant || headerTenant);
 
   if (!Number.isFinite(tenantId) || tenantId <= 0) {
     return res.status(400).json({ message: "No tenant selected" });
   }
 
-  req.tenantId = tenantId;
-  // keep normalized
-  req.user.tenantId = tenantId;
+  // If token already has tenantId, trust it (it came from select-tenant mint)
+  if (Number(tokenTenant) === tenantId && Number(tokenTenant) > 0) {
+    req.tenantId = tenantId;
+    req.user.tenantId = tenantId;
+    return next();
+  }
 
-  return next();
+  // Otherwise: header-based tenant selection -> MUST verify membership
+  try {
+    const [[m]] = await db.query(
+      `SELECT role, status
+       FROM tenant_members
+       WHERE tenant_id=? AND user_id=?
+       LIMIT 1`,
+      [tenantId, req.user.id]
+    );
+
+    if (!m) return res.status(403).json({ message: "Not a member of this tenant" });
+    if (String(m.status || "active") !== "active") {
+      return res.status(403).json({ message: "Tenant membership is not active" });
+    }
+
+    // ✅ lock request to tenant + set tenant role for requireRole()
+    req.tenantId = tenantId;
+    req.user.tenantId = tenantId;
+    req.user.role = String(m.role || "").toLowerCase();
+
+    return next();
+  } catch (e) {
+    console.error("REQUIRE TENANT ERROR:", e?.message || e);
+    return res.status(500).json({ message: "Database error" });
+  }
 }
 
 /**
- * Require one of the allowed roles.
- * IMPORTANT: use on tenant-scoped routes AFTER requireTenant.
+ * Require one of the allowed roles (tenant role).
+ * Use AFTER requireTenant.
  */
 export function requireRole(...allowed) {
   const allowedSet = new Set(allowed.map((x) => String(x).toLowerCase()));

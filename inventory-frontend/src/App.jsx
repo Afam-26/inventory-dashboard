@@ -1,5 +1,6 @@
+// src/App.jsx
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import Sidebar from "./components/Sidebar";
 import RequireAdmin from "./components/RequireAdmin";
@@ -16,37 +17,79 @@ import Stock from "./pages/Stock";
 import AuditLogs from "./pages/AuditLogs";
 import UsersAdmin from "./pages/UsersAdmin";
 import AuditDashboard from "./pages/AuditDashboard";
+import SelectTenant from "./pages/SelectTenant";
 
-import { getStoredUser, setToken, setStoredUser } from "./services/api";
+import { getStoredUser, setToken, setStoredUser, setTenantId } from "./services/api";
 
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
 
+  const uiRole = useMemo(
+    () => String(user?.tenantRole || user?.role || "").toLowerCase(),
+    [user]
+  );
+  const isAdmin = uiRole === "admin" || uiRole === "owner";
+
   function logout() {
+    // clear everything auth-related
     setToken("");
     setStoredUser(null);
+    setTenantId(null);
     setUser(null);
   }
 
-  // ✅ Use tenantRole for UI authorization/labeling
-  const uiRole = String(user?.tenantRole || user?.role || "").toLowerCase();
-  const isAdmin = uiRole === "admin" || uiRole === "owner";
+  // ✅ Auth states:
+  // - no user => must login
+  // - user exists but no tenantId => must select tenant
+  const needsLogin = !user;
+  const needsTenant = !!user && !user?.tenantId;
 
   return (
     <BrowserRouter>
       <Routes>
-        {/* ✅ Public routes */}
-        <Route path="/login" element={<Login onSuccess={(u) => setUser(u)} />} />
+        {/* =========================
+            Public routes
+           ========================= */}
+        <Route
+          path="/login"
+          element={
+            needsLogin ? (
+              <Login onSuccess={(u) => setUser(u)} />
+            ) : needsTenant ? (
+              <Navigate to="/select-tenant" replace />
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
+        />
+
+        <Route
+          path="/select-tenant"
+          element={
+            needsLogin ? (
+              <Navigate to="/login" replace />
+            ) : (
+              <SelectTenant onSuccess={(u) => setUser(u)} />
+            )
+          }
+        />
+
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
 
-        {/* ✅ Protected app */}
+        {/* =========================
+            Protected app
+           ========================= */}
         <Route
           path="/*"
           element={
-            user ? (
+            needsLogin ? (
+              <Navigate to="/login" replace />
+            ) : needsTenant ? (
+              <Navigate to="/select-tenant" replace />
+            ) : (
               <div>
-                {/* top bar */}
+                {/* Top bar */}
                 <div
                   style={{
                     display: "flex",
@@ -85,7 +128,7 @@ export default function App() {
                       <Route path="/" element={<Dashboard user={user} />} />
                       <Route path="/products" element={<Products user={user} />} />
 
-                      {/* ✅ Admin/Owner-only pages */}
+                      {/* Admin/Owner-only pages */}
                       <Route
                         path="/categories"
                         element={
@@ -122,7 +165,7 @@ export default function App() {
                         }
                       />
 
-                      {/* Logs page accessible to everyone (admin sees all, staff sees own) */}
+                      {/* Logs page accessible to everyone */}
                       <Route path="/audit" element={<AuditLogs user={user} />} />
 
                       <Route path="/unauthorized" element={<Unauthorized />} />
@@ -131,8 +174,6 @@ export default function App() {
                   </main>
                 </div>
               </div>
-            ) : (
-              <Navigate to="/login" replace />
             )
           }
         />

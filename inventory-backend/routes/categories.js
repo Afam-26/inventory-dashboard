@@ -1,13 +1,26 @@
 // routes/categories.js
 import express from "express";
 import { db } from "../config/db.js";
-import { logAudit } from "../utils/audit.js";
+import { logAudit, SEVERITY } from "../utils/audit.js";
 import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
 // All category routes require tenant context
 router.use(requireAuth, requireTenant);
+
+function normalizeCategoryName(input) {
+  // trim and collapse whitespace
+  return String(input || "").trim().replace(/\s+/g, " ");
+}
+
+async function safeAudit(req, entry) {
+  try {
+    await logAudit(req, entry);
+  } catch (e) {
+    console.error("AUDIT FAILED (ignored):", e?.message || e);
+  }
+}
 
 /**
  * GET /api/categories
@@ -41,34 +54,33 @@ router.post("/", requireRole("owner", "admin"), async (req, res) => {
   try {
     const tenantId = req.tenantId;
 
-    const name = String(req.body?.name || "").trim();
+    const name = normalizeCategoryName(req.body?.name);
     if (!name) return res.status(400).json({ message: "Name is required" });
 
-    // optional: prevent duplicates per tenant
-    const [[exists]] = await db.query(
-      `SELECT id FROM categories WHERE tenant_id = ? AND LOWER(name) = LOWER(?) LIMIT 1`,
-      [tenantId, name]
-    );
-    if (exists?.id) {
-      return res.status(409).json({ message: "Category already exists" });
-    }
-
+    // ✅ Let DB enforce uniqueness: UNIQUE(tenant_id, name)
+    // This avoids race conditions (two requests at once).
     const [result] = await db.query(
       `INSERT INTO categories (tenant_id, name) VALUES (?, ?)`,
       [tenantId, name]
     );
 
-    await logAudit(req, {
+    await safeAudit(req, {
       action: "CATEGORY_CREATE",
       entity_type: "category",
       entity_id: result.insertId,
       details: { name },
       user_id: req.user?.id ?? null,
       user_email: req.user?.email ?? null,
+      severity: SEVERITY.INFO,
     });
 
-    res.json({ message: "Category created", id: result.insertId });
+    res.status(201).json({ message: "Category created", id: result.insertId });
   } catch (err) {
+    // ✅ Clean duplicate response
+    if (err?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({ message: "Category already exists in this tenant" });
+    }
+
     console.error("CATEGORIES POST ERROR:", err);
     res.status(500).json({ message: "Database error" });
   }
@@ -109,19 +121,16 @@ router.delete("/:id", requireRole("owner", "admin"), async (req, res) => {
       });
     }
 
-    await db.query(
-      `DELETE FROM categories
-       WHERE id = ? AND tenant_id = ?`,
-      [id, tenantId]
-    );
+    await db.query(`DELETE FROM categories WHERE id = ? AND tenant_id = ?`, [id, tenantId]);
 
-    await logAudit(req, {
+    await safeAudit(req, {
       action: "CATEGORY_DELETE",
       entity_type: "category",
       entity_id: id,
       details: { deleted: current },
       user_id: req.user?.id ?? null,
       user_email: req.user?.email ?? null,
+      severity: SEVERITY.INFO,
     });
 
     res.json({ message: "Category deleted", deleted: current });

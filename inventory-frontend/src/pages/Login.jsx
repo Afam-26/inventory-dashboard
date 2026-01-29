@@ -1,3 +1,4 @@
+// src/pages/Login.jsx
 import React, { useState } from "react";
 import { useNavigate, useLocation, Link } from "react-router-dom";
 
@@ -8,6 +9,7 @@ import {
   setTenantId,
   setToken,
   setStoredUser,
+  getStoredUser,
 } from "../services/api";
 
 export default function Login({ onSuccess }) {
@@ -35,7 +37,7 @@ export default function Login({ onSuccess }) {
     setLoading(true);
 
     try {
-      // 1) login user-token (tenantId null)
+      // 1) login -> user-token (tenantId null)
       const res = await login(email, password);
 
       if (!res?.token || !res?.user) {
@@ -43,15 +45,22 @@ export default function Login({ onSuccess }) {
         throw new Error("Login succeeded but token/user missing.");
       }
 
-      // store user-token first (needed for /auth/tenants or /select-tenant)
+      // Store user-token + base user (needed to fetch tenants)
       setToken(res.token);
       setStoredUser(res.user);
+      onSuccess?.(res.user);
 
       // 2) tenants
       const tenants = await resolveTenantsFromLogin(res);
       if (!tenants.length) throw new Error("No tenants found for this user.");
 
-      // 3) pick a tenant (auto first)
+      // ✅ If user belongs to MULTIPLE tenants, force selection UI
+      if (tenants.length > 1) {
+        navigate("/select-tenant", { state: { tenants, from }, replace: true });
+        return;
+      }
+
+      // ✅ If only 1 tenant, auto-select
       const chosen = tenants[0];
       const sel = await selectTenantApi(chosen.id);
 
@@ -60,27 +69,18 @@ export default function Login({ onSuccess }) {
         throw new Error("Tenant selection failed (missing token/tenantId).");
       }
 
-      // ✅ store tenant scoped auth
       setToken(sel.token);
       setTenantId(sel.tenantId);
 
-      // ✅ build app user object (tenant aware)
+      const base = getStoredUser() || res.user || {};
       const u = {
-        ...res.user,
+        ...base,
         tenantId: sel.tenantId,
-        tenantRole: sel.role, // owner/admin/staff
+        tenantRole: sel.role,
       };
 
       setStoredUser(u);
       onSuccess?.(u);
-
-      // Debug (optional)
-      console.log("selectTenant response:", sel);
-      console.log("stored tenantId:", localStorage.getItem("tenantId"));
-      console.log(
-        "decoded token tenantId:",
-        JSON.parse(atob(sel.token.split(".")[1])).tenantId
-      );
 
       navigate(from, { replace: true });
     } catch (err) {
@@ -95,7 +95,7 @@ export default function Login({ onSuccess }) {
     <div style={styles.page}>
       <div style={styles.card}>
         <h1 style={styles.title}>Login</h1>
-        <p style={styles.subtitle}>Sign in, then auto-select your tenant.</p>
+        <p style={styles.subtitle}>Sign in to your account.</p>
 
         {error ? (
           <div style={styles.errorBox} role="alert">
@@ -137,7 +137,7 @@ export default function Login({ onSuccess }) {
             </div>
           </label>
 
-          <button style={styles.primaryBtn} disabled={loading}>
+          <button style={styles.primaryBtn} disabled={loading} type="submit">
             {loading ? "Signing in..." : "Sign In"}
           </button>
         </form>

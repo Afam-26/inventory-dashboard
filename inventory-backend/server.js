@@ -26,6 +26,9 @@ import usersRoutes from "./routes/users.js";
 import tenantsRouter from "./routes/tenants.js";
 import healthRoutes from "./routes/health.js";
 import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
+import invitesRouter from "./routes/invites.js";
+
+
 
 const app = express();
 
@@ -126,6 +129,9 @@ app.use("/api/audit", auditRoutes);
 app.use("/api/users", usersRoutes);
 app.use("/api/tenants", tenantsRouter);
 app.use("/api/health", healthRoutes);
+app.use("/api/invites", invitesRouter);
+
+
 
 // start scheduler once
 scheduleDailySnapshots(db, { hourUtc: 0, minuteUtc: 5 });

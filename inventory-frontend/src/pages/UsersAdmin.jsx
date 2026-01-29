@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { createUser, getUsers, updateUserRoleById } from "../services/api";
+import { createUser, getUsers, updateUserRoleById, inviteUserToTenant } from "../services/api";
+
 
 export default function UsersAdmin({ user }) {
   // ✅ owner OR admin can access
@@ -22,6 +23,9 @@ export default function UsersAdmin({ user }) {
     setToasts((t) => [...t, { id, type, message }]);
     window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
   }
+
+  const [inviteForm, setInviteForm] = useState({ email: "", role: "staff" });
+  const [inviting, setInviting] = useState(false);
 
   const [createForm, setCreateForm] = useState({
     full_name: "",
@@ -53,6 +57,31 @@ export default function UsersAdmin({ user }) {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
+
+  async function handleInvite(e) {
+  e.preventDefault();
+  setPageErr("");
+
+  const payload = {
+    email: inviteForm.email.trim().toLowerCase(),
+    role: inviteForm.role,
+  };
+
+  if (!payload.email) return toast("error", "Email is required");
+
+  setInviting(true);
+  try {
+    const res = await inviteUserToTenant(payload);
+    toast("success", res?.mode === "invited" ? "Invite sent" : "User added to tenant");
+    setInviteForm({ email: "", role: "staff" });
+    await load();
+    } catch (e2) {
+      toast("error", e2?.message || "Invite failed");
+    } finally {
+      setInviting(false);
+    }
+  }
+
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -313,6 +342,50 @@ export default function UsersAdmin({ user }) {
           {loading ? "Refreshing..." : "Refresh"}
         </button>
       </div>
+
+      {/* Invite user */}
+<div
+  style={{
+    marginTop: 14,
+    marginBottom: 16,
+    padding: 14,
+    border: "1px solid #e5e7eb",
+    borderRadius: 12,
+    background: "#fff",
+  }}
+>
+  <h3 style={{ marginTop: 0 }}>Invite user to this tenant</h3>
+
+  <form onSubmit={handleInvite} style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+    <input
+      className="input"
+      placeholder="Email"
+      value={inviteForm.email}
+      onChange={(e) => setInviteForm((p) => ({ ...p, email: e.target.value }))}
+      style={{ minWidth: 260 }}
+    />
+
+    <select
+      className="input"
+      value={inviteForm.role}
+      onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value }))}
+      style={{ maxWidth: 200 }}
+    >
+      <option value="staff">staff</option>
+      <option value="admin">admin</option>
+      <option value="owner">owner</option>
+    </select>
+
+    <button className="btn" type="submit" disabled={inviting}>
+      {inviting ? "Inviting..." : "Send invite"}
+    </button>
+      </form>
+
+      <p style={{ marginTop: 10, color: "#6b7280", fontSize: 13 }}>
+        This sends an invite email and the user can accept to join this tenant.
+      </p>
+    </div>
+
 
       {/* Create user */}
       <div

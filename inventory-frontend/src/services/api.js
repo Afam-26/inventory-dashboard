@@ -312,7 +312,6 @@ export async function acceptInviteApi(payload) {
  * ============================
  */
 export async function inviteUserToTenant(payload) {
-  // calls /api/tenants/current/invite
   return baseFetch(
     `${API_BASE}/tenants/current/invite`,
     {
@@ -325,7 +324,6 @@ export async function inviteUserToTenant(payload) {
 }
 
 export async function acceptInvite(payload) {
-  // calls /api/invites/accept (no auth required)
   return baseFetch(
     `${API_BASE}/invites/accept`,
     {
@@ -336,7 +334,6 @@ export async function acceptInvite(payload) {
     { useTenantHeader: false, useCookie: false }
   );
 }
-
 
 /**
  * ============================
@@ -356,6 +353,7 @@ export async function getCategories() {
   return baseFetch(`${API_BASE}/categories`, {}, { useAuth: true });
 }
 
+// Your current function name:
 export async function addCategory(name) {
   return baseFetch(
     `${API_BASE}/categories`,
@@ -368,8 +366,20 @@ export async function addCategory(name) {
   );
 }
 
+// ✅ Backward-compatible alias so Categories.jsx can import createCategory
+export const createCategory = addCategory;
+
 export async function deleteCategory(id) {
   return baseFetch(`${API_BASE}/categories/${id}`, { method: "DELETE" }, { useAuth: true });
+}
+
+// ✅ Use baseFetch so tenant header + error codes are consistent
+export async function getDeletedCategories() {
+  return baseFetch(`${API_BASE}/categories/deleted`, {}, { useAuth: true });
+}
+
+export async function restoreCategory(id) {
+  return baseFetch(`${API_BASE}/categories/${id}/restore`, { method: "POST" }, { useAuth: true });
 }
 
 /**

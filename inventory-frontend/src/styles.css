@@ -34,3 +34,384 @@ h1 {
   border: 1px solid #e5e7eb;
   border-radius: 8px;
 }
+
+/* ===========================
+   Landing page styles (LP)
+   Matches your dashboard 100%
+   =========================== */
+
+.lp-container {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.lp-muted { color: #6b7280; }
+.lp-small { font-size: 12px; }
+
+/* Buttons: use your .btn, extend outline */
+.lp-btn-outline {
+  background: white;
+  color: #111827;
+  border: 1px solid #e5e7eb;
+}
+
+.lp-btn-outline:hover { background: #f9fafb; }
+
+.lp-full { width: 100%; }
+
+/* Topbar */
+.lp-topbar {
+  background: #ffffff;
+  border-bottom: 1px solid #e5e7eb;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+.lp-topbar-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lp-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.lp-rolePill {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #111827;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.lp-topbar-nav {
+  display: none;
+  gap: 18px;
+}
+
+.lp-topbar-nav a {
+  color: #6b7280;
+  text-decoration: none;
+  font-size: 14px;
+}
+.lp-topbar-nav a:hover { color: #111827; }
+
+.lp-topbar-actions {
+  display: none;
+  gap: 10px;
+  align-items: center;
+}
+
+.lp-mobileMenuBtn { display: inline-flex; }
+
+@media (min-width: 768px) {
+  .lp-topbar-nav { display: flex; }
+  .lp-topbar-actions { display: flex; }
+  .lp-mobileMenuBtn { display: none; }
+}
+
+/* Mobile menu */
+.lp-mobileMenu {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 16px 12px 16px;
+}
+.lp-mobileMenu a {
+  display: block;
+  padding: 10px 8px;
+  border-radius: 8px;
+  color: #111827;
+  text-decoration: none;
+}
+.lp-mobileMenu a:hover { background: #f3f4f6; }
+
+.lp-mobileMenuActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.lp-hidden { display: none; }
+
+/* Hero */
+.lp-heroWrap { background: #f9fafb; }
+
+.lp-heroGrid {
+  display: grid;
+  gap: 18px;
+}
+
+@media (min-width: 768px) {
+  .lp-heroGrid {
+    grid-template-columns: 280px 1fr;
+    align-items: start;
+    gap: 18px;
+    padding: 28px 0;
+  }
+}
+
+.lp-sidebarPreview {
+  background: #0b1220;
+  color: white;
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+  height: fit-content;
+}
+
+.lp-sidebarTitle {
+  font-size: 28px;
+  font-weight: 800;
+  margin-top: 6px;
+  margin-bottom: 14px;
+}
+
+.lp-sidebarLinks { display: grid; gap: 10px; }
+
+.lp-sidebarLink {
+  color: rgba(255,255,255,0.88);
+  font-size: 14px;
+}
+.lp-sidebarLink.lp-active { font-weight: 700; color: #ffffff; }
+
+.lp-sidebarNote {
+  margin-top: 16px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 12px;
+}
+.lp-sidebarNoteTitle { font-weight: 700; font-size: 13px; }
+.lp-sidebarNoteText { color: rgba(255,255,255,0.75); font-size: 12px; margin-top: 6px; }
+
+.lp-heroRight { padding: 18px 0; }
+
+.lp-heroTitle {
+  font-size: 44px;
+  font-weight: 800;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.lp-heroSub {
+  margin-top: 10px;
+  color: #6b7280;
+  font-size: 16px;
+  line-height: 1.6;
+  max-width: 60ch;
+}
+
+.lp-heroActions {
+  margin-top: 14px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* KPI grid */
+.lp-kpiGrid {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+@media (min-width: 768px) {
+  .lp-kpiGrid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Card text inside KPI */
+.lp-cardTitle { font-weight: 700; font-size: 18px; }
+.lp-cardValue { margin-top: 18px; font-size: 20px; font-weight: 700; }
+
+/* Trust pills */
+.lp-trustRow {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.lp-trustPill {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #374151;
+}
+
+/* Sections */
+.lp-section {
+  padding: 44px 0;
+}
+
+.lp-sectionTightTop { padding-top: 0; }
+
+.lp-sectionTitle {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.lp-sectionSub {
+  margin-top: 10px;
+  color: #6b7280;
+}
+.lp-noMargin { margin: 0; }
+.lp-subTight { margin-top: 8px; }
+
+/* Card grids */
+.lp-cardsGrid {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+@media (min-width: 768px) {
+  .lp-cardsGrid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.lp-featureTitle { font-weight: 800; font-size: 16px; }
+.lp-featureText { margin-top: 8px; color: #6b7280; font-size: 14px; line-height: 1.6; }
+
+.lp-cardWide { padding: 22px; }
+
+/* How */
+.lp-howGrid {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+@media (min-width: 768px) {
+  .lp-howGrid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.lp-howItem {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 14px;
+}
+.lp-howNum {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #111827;
+  color: white;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+}
+.lp-howTitle { font-weight: 800; }
+.lp-howText { color: #6b7280; font-size: 14px; margin-top: 4px; }
+
+/* Pricing */
+.lp-priceGrid {
+  margin-top: 18px;
+  display: grid;
+  gap: 14px;
+}
+@media (min-width: 768px) {
+  .lp-priceGrid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.lp-priceCard { padding: 20px; }
+
+.lp-priceTop { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.lp-priceName { font-weight: 800; font-size: 16px; }
+.lp-priceTag {
+  font-size: 12px;
+  color: #374151;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.lp-priceTag.lp-primary {
+  color: white;
+  background: #111827;
+  border-color: #111827;
+}
+
+.lp-priceValue { font-size: 36px; font-weight: 900; margin-top: 12px; }
+.lp-priceSmall { color: #6b7280; font-size: 13px; margin-top: 2px; }
+.lp-priceList { margin: 14px 0 16px 18px; color: #374151; }
+.lp-priceList li { margin: 6px 0; }
+
+.lp-featured { outline: 2px solid rgba(17,24,39,0.12); }
+
+.lp-note { margin-top: 12px; font-size: 13px; }
+
+/* Contact */
+.lp-contactGrid {
+  display: grid;
+  gap: 16px;
+}
+@media (min-width: 768px) {
+  .lp-contactGrid { grid-template-columns: 1fr 1fr; align-items: start; gap: 18px; }
+}
+
+.lp-form { display: grid; gap: 10px; }
+.lp-formGrid2 { display: grid; gap: 10px; }
+@media (min-width: 640px) {
+  .lp-formGrid2 { grid-template-columns: 1fr 1fr; }
+}
+
+/* Footer */
+.lp-footer {
+  border-top: 1px solid #e5e7eb;
+  background: #ffffff;
+}
+.lp-footerInner {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 18px 0;
+}
+.lp-footerLinks { display: flex; gap: 14px; }
+.lp-footerLinks a {
+  color: #6b7280;
+  text-decoration: none;
+  font-size: 14px;
+}
+.lp-footerLinks a:hover { color: #111827; }
+
+.lp-link {
+  color: #111827;
+  font-size: 14px;
+  text-decoration: underline;
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
+.lp-linkBtn {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-left: 8px;
+  color: #111827;
+  font-size: 14px;
+  text-decoration: underline;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.lp-linkBtn:hover { opacity: 0.8; }

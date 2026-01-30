@@ -5,12 +5,13 @@ import {
   updateStock,
   getMovements,
   downloadStockCsv,
-  getProductByCode,
+  getProductBySku, // ✅ use SKU OR barcode lookup
 } from "../services/api";
 
 export default function Stock({ user }) {
-  const isAdmin = ["admin", "owner"].includes(String(user?.role || "").toLowerCase());
-
+  // ✅ multi-tenant role aware (tenantRole wins)
+  const role = String(user?.tenantRole || user?.role || "").toLowerCase();
+  const isAdmin = ["admin", "owner"].includes(role);
 
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
@@ -78,22 +79,22 @@ export default function Stock({ user }) {
         Q.stop();
       }
     } catch {
-      // Scanner may already be stopped – safe to ignore
+      // safe ignore
     }
   }
 
   async function handleDetectedSku(skuRaw) {
-    const sku = String(skuRaw || "").trim();
-    if (!sku) return;
+    const code = String(skuRaw || "").trim();
+    if (!code) return;
 
     // prevent repeated rapid triggers
-    if (sku === lastScan) return;
-    setLastScan(sku);
+    if (code === lastScan) return;
+    setLastScan(code);
 
     setScanError("");
     try {
-      const found = await getProductByCode(sku);
-
+      // ✅ matches SKU OR barcode through backend /products/by-sku/:code
+      const found = await getProductBySku(code);
 
       setForm((prev) => ({
         ...prev,
@@ -103,7 +104,7 @@ export default function Stock({ user }) {
       setScannerOpen(false);
       stopScanner();
     } catch (e) {
-      setScanError(e.message || "Not found");
+      setScanError(e?.message || "Not found");
     }
   }
 
@@ -159,13 +160,24 @@ export default function Stock({ user }) {
 
   // ---------------------------
   // Load products once
+  // ✅ Your API returns: { products: [...] }
   // ---------------------------
   async function loadProductsOnly() {
     try {
-      const p = await getProducts("");
-      setProducts(Array.isArray(p) ? p : []);
+      const res = await getProducts("");
+
+      // ✅ normalize to array, supports either array OR { products: [...] }
+      const list = Array.isArray(res)
+        ? res
+        : Array.isArray(res?.products)
+        ? res.products
+        : [];
+
+      setProducts(list);
     } catch (e) {
-      setError(e.message || "Failed to load products");
+      console.error("Failed to load products:", e);
+      setProducts([]);
+      setError(e?.message || "Failed to load products");
     }
   }
 
@@ -177,13 +189,11 @@ export default function Stock({ user }) {
 
     try {
       const m = await getMovements(params);
-      // ignore if an even newer request finished later
       if (myReq !== movementsReqId.current) return;
-
       setMovements(Array.isArray(m) ? m : []);
     } catch (e) {
       if (myReq !== movementsReqId.current) return;
-      setError(e.message || "Failed to load movements");
+      setError(e?.message || "Failed to load movements");
       setMovements([]);
     }
   }
@@ -194,10 +204,7 @@ export default function Stock({ user }) {
       setLoading(true);
       setError("");
       try {
-        await Promise.all([
-          loadProductsOnly(),
-          loadMovementsServer({ limit: 200 }),
-        ]);
+        await Promise.all([loadProductsOnly(), loadMovementsServer({ limit: 200 })]);
       } finally {
         setLoading(false);
       }
@@ -207,8 +214,6 @@ export default function Stock({ user }) {
 
   // When filters change, re-fetch movements from server (debounced search)
   useEffect(() => {
-    // Don’t block typing; just fetch in background while keeping UI responsive
-    // We still show busy state only for export/submit, not for filter fetch.
     setError("");
 
     loadMovementsServer({
@@ -216,7 +221,7 @@ export default function Stock({ user }) {
       type: filters.type,
       from: filters.from,
       to: filters.to,
-      limit: 500, // more rows for better filtering UX
+      limit: 500,
     });
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -251,7 +256,7 @@ export default function Stock({ user }) {
 
       setForm({ product_id: "", type: "IN", quantity: 1, reason: "" });
 
-      // refresh products (for updated stock counts) + movements with current filters
+      // refresh products + movements with current filters
       await Promise.all([
         loadProductsOnly(),
         loadMovementsServer({
@@ -263,7 +268,7 @@ export default function Stock({ user }) {
         }),
       ]);
     } catch (e2) {
-      setError(e2.message || "Update stock failed");
+      setError(e2?.message || "Update stock failed");
     } finally {
       setSubmitting(false);
     }
@@ -280,13 +285,12 @@ export default function Stock({ user }) {
         to: String(filters.to || "").trim(),
       });
     } catch (e) {
-      setError(e.message || "Export failed");
+      setError(e?.message || "Export failed");
     } finally {
       setExporting(false);
     }
   }
 
-  // Server already filtered results; keep as-is
   const filteredMovements = useMemo(() => movements || [], [movements]);
 
   return (
@@ -373,7 +377,7 @@ export default function Stock({ user }) {
           style={{
             display: "grid",
             gap: 10,
-            maxWidth: 600,
+            maxWidth: 700,
             marginTop: 14,
             marginBottom: 20,
             opacity: busy ? 0.9 : 1,
@@ -388,7 +392,7 @@ export default function Stock({ user }) {
             <option value="">Select product</option>
             {products.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} (Stock: {p.quantity ?? 0})
+                {p.name} — {p.sku || "-"} {p.barcode ? `• ${p.barcode}` : ""} (Stock: {p.quantity ?? 0})
               </option>
             ))}
           </select>
@@ -413,7 +417,7 @@ export default function Stock({ user }) {
               placeholder="Quantity"
               disabled={busy}
             />
-          </div>       
+          </div>
 
           <input
             className="input"

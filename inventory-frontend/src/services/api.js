@@ -93,10 +93,10 @@ function makeApiError(message, code, status) {
 /**
  * ============================
  * Base Fetch Helper
+ * - useAuth: adds Authorization header
+ * - useCookie: includes refresh cookie
+ * - useTenantHeader: adds x-tenant-id (when selected)
  * ============================
- * - useAuth: adds Authorization
- * - useCookie: sends refresh cookie
- * - useTenantHeader: adds x-tenant-id if tenant is selected
  */
 async function baseFetch(
   url,
@@ -121,7 +121,7 @@ async function baseFetch(
 
   let res = await doFetch(url);
 
-  // ✅ If 304 happens, force a fresh GET with cache-busting
+  // If 304 happens, force a fresh GET with cache-busting
   if (res.status === 304) {
     const sep = url.includes("?") ? "&" : "?";
     res = await doFetch(`${url}${sep}_ts=${Date.now()}`);
@@ -134,7 +134,7 @@ async function baseFetch(
   if (!res.ok) {
     const msg = data?.message || "Request failed";
 
-    // ✅ Normalize "No tenant selected" into a code
+    // Normalize "No tenant selected"
     if (
       String(msg).toLowerCase().includes("tenant") &&
       String(msg).toLowerCase().includes("selected")
@@ -142,7 +142,7 @@ async function baseFetch(
       throw makeApiError(msg, "TENANT_REQUIRED", res.status);
     }
 
-    throw makeApiError(msg, "API_ERROR", res.status);
+    throw makeApiError(msg, data?.code || "API_ERROR", res.status);
   }
 
   return data ?? {};
@@ -164,19 +164,32 @@ export async function login(email, password) {
     { useCookie: true, useTenantHeader: false }
   );
 
-  // store token + user
   if (data?.token) setToken(data.token);
   if (data?.user) setStoredUser(data.user);
-
-  // IMPORTANT: do NOT setTenantId here (login returns user-token)
   return data; // { token, user, tenants }
+}
+
+export async function register(payload) {
+  const data = await baseFetch(
+    `${API_BASE}/auth/register`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    { useCookie: true, useTenantHeader: false }
+  );
+
+  if (data?.token) setToken(data.token);
+  if (data?.user) setStoredUser(data.user);
+  return data;
 }
 
 export async function refresh() {
   const data = await baseFetch(
     `${API_BASE}/auth/refresh`,
     { method: "POST" },
-    { useCookie: true } // includes tenant header automatically if tenantId exists
+    { useCookie: true }
   );
 
   if (data?.token) setToken(data.token);
@@ -191,11 +204,9 @@ export async function logoutApi() {
     { useCookie: true }
   );
 
-  // Clear local state
   setToken("");
   setTenantId(null);
   setStoredUser(null);
-
   return data;
 }
 
@@ -246,71 +257,12 @@ export async function selectTenantApi(tenantId) {
   if (data?.token) setToken(data.token);
   if (data?.tenantId) setTenantId(data.tenantId);
 
-  // also update stored user role info (optional)
   const u = getStoredUser();
   if (u) setStoredUser({ ...u, tenantRole: data?.role });
 
   return data; // { token, tenantId, role }
 }
 
-export async function createTenantApi(payload) {
-  return baseFetch(
-    `${API_BASE}/tenants`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-    { useAuth: true, useTenantHeader: false }
-  );
-}
-
-export async function getCurrentTenantApi() {
-  return baseFetch(`${API_BASE}/tenants/current`, {}, { useAuth: true });
-}
-
-export async function updateTenantBrandingApi(payload) {
-  return baseFetch(
-    `${API_BASE}/tenants/current/branding`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-    { useAuth: true }
-  );
-}
-
-export async function inviteUserApi(payload) {
-  return baseFetch(
-    `${API_BASE}/tenants/current/invite`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-    { useAuth: true }
-  );
-}
-
-export async function acceptInviteApi(payload) {
-  // payload: { email, token, full_name, password }
-  return baseFetch(
-    `${API_BASE}/invites/accept`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-    { useTenantHeader: false }
-  );
-}
-
-/**
- * ============================
- * TENANT INVITES (NEW)
- * ============================
- */
 export async function inviteUserToTenant(payload) {
   return baseFetch(
     `${API_BASE}/tenants/current/invite`,
@@ -320,18 +272,6 @@ export async function inviteUserToTenant(payload) {
       body: JSON.stringify(payload),
     },
     { useAuth: true }
-  );
-}
-
-export async function acceptInvite(payload) {
-  return baseFetch(
-    `${API_BASE}/invites/accept`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-    { useTenantHeader: false, useCookie: false }
   );
 }
 
@@ -353,7 +293,6 @@ export async function getCategories() {
   return baseFetch(`${API_BASE}/categories`, {}, { useAuth: true });
 }
 
-// Your current function name:
 export async function addCategory(name) {
   return baseFetch(
     `${API_BASE}/categories`,
@@ -366,14 +305,10 @@ export async function addCategory(name) {
   );
 }
 
-// ✅ Backward-compatible alias so Categories.jsx can import createCategory
-export const createCategory = addCategory;
-
 export async function deleteCategory(id) {
   return baseFetch(`${API_BASE}/categories/${id}`, { method: "DELETE" }, { useAuth: true });
 }
 
-// ✅ Use baseFetch so tenant header + error codes are consistent
 export async function getDeletedCategories() {
   return baseFetch(`${API_BASE}/categories/deleted`, {}, { useAuth: true });
 }
@@ -393,13 +328,7 @@ export async function getProducts(search = "") {
     ? `${API_BASE}/products?search=${encodeURIComponent(q)}`
     : `${API_BASE}/products`;
 
-  const data = await baseFetch(url, {}, { useAuth: true });
-
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.items)) return data.items;
-  if (Array.isArray(data?.products)) return data.products;
-
-  return [];
+  return baseFetch(url, {}, { useAuth: true });
 }
 
 export async function addProduct(payload) {
@@ -430,20 +359,38 @@ export async function deleteProduct(id) {
   return baseFetch(`${API_BASE}/products/${id}`, { method: "DELETE" }, { useAuth: true });
 }
 
-export async function getProductBySku(sku) {
+// ✅ Used by Stock.jsx scanner — now matches SKU OR barcode via backend /by-sku route
+export async function getProductBySku(skuOrBarcode) {
+  const code = String(skuOrBarcode || "").trim();
+  if (!code) throw new Error("SKU is required");
+
   return baseFetch(
-    `${API_BASE}/products/by-sku/${encodeURIComponent(String(sku || "").trim())}`,
+    `${API_BASE}/products/by-sku/${encodeURIComponent(code)}`,
     {},
     { useAuth: true }
   );
 }
 
+// Optional (if you want to use /by-code later)
+export async function getProductByCode(code) {
+  const clean = String(code || "").trim();
+  if (!clean) throw new Error("Code is required");
+
+  return baseFetch(
+    `${API_BASE}/products/by-code/${encodeURIComponent(clean)}`,
+    {},
+    { useAuth: true }
+  );
+}
+
+// CSV export
 export async function fetchProductsCsvBlob() {
   const res = await fetch(`${API_BASE}/products/export.csv`, {
     headers: {
       ...authHeaders(),
       ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}),
     },
+    cache: "no-store",
   });
 
   if (!res.ok) {
@@ -465,18 +412,6 @@ export async function downloadProductsCsv() {
   a.remove();
 
   URL.revokeObjectURL(url);
-}
-
-export async function importProductsCsvText(csvText) {
-  return baseFetch(
-    `${API_BASE}/products/import`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ csvText }),
-    },
-    { useAuth: true }
-  );
 }
 
 export async function importProductsRows(rows, { createMissingCategories = true } = {}) {
@@ -542,6 +477,7 @@ export async function fetchStockCsvBlob(params = {}) {
         ...authHeaders(),
         ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}),
       },
+      cache: "no-store",
     }
   );
 
@@ -549,6 +485,7 @@ export async function fetchStockCsvBlob(params = {}) {
     const text = await res.text();
     throw new Error(text || "Stock CSV export failed");
   }
+
   return await res.blob();
 }
 
@@ -568,12 +505,11 @@ export async function downloadStockCsv(params = {}) {
 
 /**
  * ============================
- * USERS (Admin)
+ * USERS (Admin screen)
  * ============================
  */
 export async function getUsers() {
   const data = await baseFetch(`${API_BASE}/users`, {}, { useAuth: true });
-
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.users)) return data.users;
   return [];
@@ -609,7 +545,7 @@ export async function removeUserFromTenant(id) {
 
 /**
  * ============================
- * AUDIT LOGS (Admin)
+ * AUDIT LOGS
  * ============================
  */
 export async function getAuditLogs(params = {}) {
@@ -624,11 +560,12 @@ export async function getAuditLogs(params = {}) {
     { useAuth: true }
   );
 
+  // supports either { logs, total, page, limit } or raw arrays (older versions)
   return {
     page: Number(data?.page || 1),
     limit: Number(data?.limit || 50),
     total: Number(data?.total || 0),
-    logs: Array.isArray(data?.logs) ? data.logs : [],
+    logs: Array.isArray(data?.logs) ? data.logs : Array.isArray(data) ? data : [],
   };
 }
 
@@ -643,12 +580,14 @@ export async function fetchAuditCsvBlob(params = {}) {
       ...authHeaders(),
       ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}),
     },
+    cache: "no-store",
   });
 
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || "CSV export failed");
   }
+
   return await res.blob();
 }
 
@@ -666,14 +605,91 @@ export async function downloadAuditCsv(params = {}) {
   URL.revokeObjectURL(url);
 }
 
-export async function getAuditStats(days = 30) {
-  return baseFetch(`${API_BASE}/audit/stats?days=${Number(days)}`, {}, { useAuth: true });
+/**
+ * ============================
+ * BILLING
+ * ============================
+ */
+
+// Always return: { plans: [...], stripeEnabled: boolean }
+export async function getPlans() {
+  const data = await baseFetch(`${API_BASE}/billing/plans`, {}, { useAuth: true });
+
+  // If backend returns { plans, stripeEnabled }
+  if (data && typeof data === "object" && Array.isArray(data.plans)) {
+    return {
+      plans: data.plans,
+      stripeEnabled: Boolean(data.stripeEnabled),
+    };
+  }
+
+  // Backward compatibility: if some old backend returned an array directly
+  if (Array.isArray(data)) {
+    return {
+      plans: data,
+      stripeEnabled: false,
+    };
+  }
+
+  // Fallback safe
+  return { plans: [], stripeEnabled: false };
 }
 
-export async function getAuditReport(days = 7) {
-  return baseFetch(`${API_BASE}/audit/report?days=${Number(days)}`, {}, { useAuth: true });
+export async function getCurrentPlan() {
+  const data = await baseFetch(`${API_BASE}/billing/current`, {}, { useAuth: true });
+
+  // normalize a little (safe defaults)
+  return {
+    tenantId: data?.tenantId ?? null,
+    planKey: data?.planKey ?? "starter",
+    planName: data?.planName ?? "Starter",
+    priceLabel: data?.priceLabel ?? "",
+    stripe: {
+      enabled: Boolean(data?.stripe?.enabled),
+      customerId: data?.stripe?.customerId ?? null,
+      subscriptionId: data?.stripe?.subscriptionId ?? null,
+      status: data?.stripe?.status ?? null,
+      currentPeriodEnd: data?.stripe?.currentPeriodEnd ?? null,
+    },
+    usage: data?.usage ?? null,
+  };
 }
 
-export async function getAuditVerify({ limit = 20000 } = {}) {
-  return baseFetch(`${API_BASE}/admin/audit/verify?limit=${Number(limit)}`, {}, { useAuth: true });
+export async function updateCurrentPlan(planKey) {
+  return baseFetch(
+    `${API_BASE}/billing/change-plan`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ planKey }),
+    },
+    { useAuth: true }
+  );
 }
+
+/**
+ * ============================
+ * STRIPE
+ * ============================
+ */
+
+export async function startStripeCheckout({ priceId, planKey }) {
+  return baseFetch(
+    `${API_BASE}/billing/stripe/checkout`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ priceId, planKey }),
+    },
+    { useAuth: true }
+  );
+}
+
+export async function openStripePortal() {
+  return baseFetch(
+    `${API_BASE}/billing/stripe/portal`,
+    { method: "POST" },
+    { useAuth: true }
+  );
+}
+

@@ -114,7 +114,9 @@ function guessMapping(headers) {
 }
 
 export default function Products({ user }) {
-  const isAdmin = user?.role === "admin";
+  const role = String(user?.tenantRole || user?.role || "").toLowerCase();
+  const isAdmin = role === "admin" || role === "owner";
+
 
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);

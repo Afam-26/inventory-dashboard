@@ -1,5 +1,7 @@
 // server.js (top of file)
 import dotenv from "dotenv";
+dotenv.config();
+
 import { fileURLToPath } from "url";
 import path from "path";
 
@@ -27,6 +29,8 @@ import tenantsRouter from "./routes/tenants.js";
 import healthRoutes from "./routes/health.js";
 import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
 import invitesRouter from "./routes/invites.js";
+import billingRoutes from "./routes/billing.js";
+import billingRouter, { billingWebhookHandler } from "./routes/billing.js";
 
 
 
@@ -130,8 +134,20 @@ app.use("/api/users", usersRoutes);
 app.use("/api/tenants", tenantsRouter);
 app.use("/api/health", healthRoutes);
 app.use("/api/invites", invitesRouter);
+app.use("/api/billing", billingRoutes);
 
+// Normal JSON for everything else:
+app.use(express.json());
 
+// Stripe webhook must be raw BEFORE json parser for this route
+app.post(
+  "/api/billing/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  billingWebhookHandler
+);
+
+// Billing router
+app.use("/api/billing", billingRouter);
 
 // start scheduler once
 scheduleDailySnapshots(db, { hourUtc: 0, minuteUtc: 5 });

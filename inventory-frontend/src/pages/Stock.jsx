@@ -5,7 +5,7 @@ import {
   updateStock,
   getMovements,
   downloadStockCsv,
-  getProductBySku,
+  getProductByCode,
 } from "../services/api";
 
 export default function Stock({ user }) {
@@ -92,7 +92,8 @@ export default function Stock({ user }) {
 
     setScanError("");
     try {
-      const found = await getProductBySku(sku);
+      const found = await getProductByCode(sku);
+
 
       setForm((prev) => ({
         ...prev,

@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   getCategories,
-  createCategory,
+  addCategory,
   deleteCategory,
   getDeletedCategories,
   restoreCategory,
@@ -17,13 +17,20 @@ export default function Categories({ user }) {
   const [deletedRows, setDeletedRows] = useState([]);
 
   const [loading, setLoading] = useState(true);
+
+  // generic page error (red box)
   const [pageErr, setPageErr] = useState("");
+
+  // plan limit banner (separate from generic errors)
+  const [planErr, setPlanErr] = useState(null); // { planKey, limit, current, message } | null
 
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
 
   const [query, setQuery] = useState("");
   const [busyId, setBusyId] = useState(null);
+
+  const trimmedName = String(name || "").trim();
 
   const filteredActive = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -44,16 +51,16 @@ export default function Categories({ user }) {
 
   async function loadDeleted() {
     const rows = await getDeletedCategories();
-    // backend returns array rows
     setDeletedRows(Array.isArray(rows) ? rows : []);
   }
 
   async function load() {
     setLoading(true);
     setPageErr("");
+    setPlanErr(null);
     try {
       await loadActive();
-      if (isAdmin) await loadDeleted(); // only admins can access deleted endpoint
+      if (isAdmin) await loadDeleted();
     } catch (e) {
       setPageErr(e?.message || "Failed to load categories");
     } finally {
@@ -66,20 +73,46 @@ export default function Categories({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  function handleApiError(e, fallbackMsg) {
+    // if your api.js uses makeApiError(message, code, status)
+    const status = e?.status;
+    const code = e?.code;
+
+    // Plan limit (from backend)
+    // backend sends: status 402, { code: "PLAN_LIMIT", planKey, limit, current, message }
+    if (status === 402 || code === "PLAN_LIMIT") {
+      setPlanErr({
+        planKey: e?.planKey,
+        limit: e?.limit,
+        current: e?.current,
+        message: e?.message || "Plan limit reached.",
+      });
+      return;
+    }
+
+    // Duplicate
+    if (status === 409) {
+      setPageErr(e?.message || "Category already exists");
+      return;
+    }
+
+    setPageErr(e?.message || fallbackMsg || "Something went wrong");
+  }
+
   async function handleCreate(e) {
     e.preventDefault();
     setPageErr("");
+    setPlanErr(null);
 
-    const trimmed = String(name || "").trim();
-    if (!trimmed) return;
+    if (!trimmedName) return;
 
     setCreating(true);
     try {
-      await createCategory(trimmed);
+      await addCategory(trimmedName);
       setName("");
       await loadActive();
     } catch (e2) {
-      setPageErr(e2?.message || "Failed to create category");
+      handleApiError(e2, "Failed to create category");
     } finally {
       setCreating(false);
     }
@@ -88,13 +121,14 @@ export default function Categories({ user }) {
   async function handleDelete(id) {
     if (!isAdmin) return;
     setPageErr("");
+    setPlanErr(null);
     setBusyId(id);
     try {
       await deleteCategory(id);
       await loadActive();
-      await loadDeleted(); // refresh deleted list
+      if (isAdmin) await loadDeleted();
     } catch (e) {
-      setPageErr(e?.message || "Failed to delete category");
+      handleApiError(e, "Failed to delete category");
     } finally {
       setBusyId(null);
     }
@@ -103,17 +137,24 @@ export default function Categories({ user }) {
   async function handleRestore(id) {
     if (!isAdmin) return;
     setPageErr("");
+    setPlanErr(null);
     setBusyId(id);
     try {
       await restoreCategory(id);
       await loadActive();
-      await loadDeleted();
-      setTab("active"); // nice UX: go back to active after restoring
+      if (isAdmin) await loadDeleted();
+      setTab("active");
     } catch (e) {
-      setPageErr(e?.message || "Failed to restore category");
+      handleApiError(e, "Failed to restore category");
     } finally {
       setBusyId(null);
     }
+  }
+
+  function switchTab(next) {
+    setTab(next);
+    setPageErr("");
+    setPlanErr(null);
   }
 
   return (
@@ -135,7 +176,7 @@ export default function Categories({ user }) {
       <div style={{ display: "flex", gap: 8, marginTop: 12, marginBottom: 12 }}>
         <button
           className="btn"
-          onClick={() => setTab("active")}
+          onClick={() => switchTab("active")}
           style={{
             background: tab === "active" ? "#111827" : "transparent",
             color: tab === "active" ? "#fff" : "inherit",
@@ -147,7 +188,7 @@ export default function Categories({ user }) {
 
         <button
           className="btn"
-          onClick={() => setTab("deleted")}
+          onClick={() => switchTab("deleted")}
           disabled={!isAdmin}
           title={!isAdmin ? "Admin/Owner only" : ""}
           style={{
@@ -161,7 +202,33 @@ export default function Categories({ user }) {
         </button>
       </div>
 
-      {pageErr && (
+      {/* Plan limit banner */}
+      {planErr ? (
+        <div
+          style={{
+            background: "#fff7ed",
+            border: "1px solid #fed7aa",
+            borderRadius: 12,
+            padding: 12,
+            marginBottom: 12,
+            color: "#9a3412",
+          }}
+        >
+          <b>Plan limit reached.</b>{" "}
+          <span>
+            {planErr.message}
+            {planErr.planKey ? ` (Plan: ${String(planErr.planKey).toUpperCase()})` : ""}
+            {Number.isFinite(planErr.limit) ? ` Limit: ${planErr.limit}.` : ""}
+            {Number.isFinite(planErr.current) ? ` Current: ${planErr.current}.` : ""}
+          </span>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#7c2d12" }}>
+            Upgrade on the Billing page to increase limits.
+          </div>
+        </div>
+      ) : null}
+
+      {/* Page error */}
+      {pageErr ? (
         <div
           style={{
             background: "#fef2f2",
@@ -174,7 +241,7 @@ export default function Categories({ user }) {
         >
           {pageErr}
         </div>
-      )}
+      ) : null}
 
       {/* Create (admin/owner only) */}
       {isAdmin && tab === "active" && (
@@ -196,7 +263,7 @@ export default function Categories({ user }) {
               onChange={(e) => setName(e.target.value)}
               style={{ maxWidth: 420 }}
             />
-            <button className="btn" type="submit" disabled={creating}>
+            <button className="btn" type="submit" disabled={creating || !trimmedName}>
               {creating ? "Creating..." : "Add"}
             </button>
           </form>
@@ -305,7 +372,6 @@ export default function Categories({ user }) {
         </table>
       </div>
 
-      {/* Permission hint */}
       {!isAdmin && (
         <div style={{ marginTop: 10, color: "#6b7280", fontSize: 12 }}>
           You can view active categories. Only Admin/Owner can create/delete/restore.

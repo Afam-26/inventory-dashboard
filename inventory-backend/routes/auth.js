@@ -13,6 +13,159 @@ const router = express.Router();
 const isProd = process.env.NODE_ENV === "production";
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
 
+function signToken(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
+}
+
+function makeSlug(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
+
+// ✅ SIGNUP: creates user + tenant + membership, returns TENANT token (so app works immediately)
+router.post("/register", async (req, res) => {
+  const full_name = String(req.body?.full_name || "").trim();
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  const tenantName = String(req.body?.tenantName || "").trim();
+  const planKey = String(req.body?.planKey || "starter").trim().toLowerCase();
+
+  if (!full_name) return res.status(400).json({ message: "Full name is required" });
+  if (!email) return res.status(400).json({ message: "Email is required" });
+  if (!password || password.length < 8) {
+    return res.status(400).json({ message: "Password must be at least 8 characters" });
+  }
+  if (!tenantName) return res.status(400).json({ message: "Workspace name is required" });
+  if (!["starter", "pro", "business"].includes(planKey)) {
+    return res.status(400).json({ message: "Invalid plan" });
+  }
+
+  // Railway has enum('admin','staff') for users.role.
+  // Local has varchar. Use "admin" so it works in BOTH.
+  const globalUserRole = "admin";
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // 1) Prevent duplicate email
+    const [[exists]] = await conn.query("SELECT id FROM users WHERE email=? LIMIT 1", [email]);
+    if (exists?.id) {
+      await conn.rollback();
+      return res.status(409).json({ message: "Email already exists" });
+    }
+
+    // 2) Insert user (supports Railway users.is_active and local without it)
+    const hashed = await bcrypt.hash(password, 10);
+
+    const [isActiveCols] = await conn.query("SHOW COLUMNS FROM users LIKE 'is_active'");
+    const hasIsActive = (isActiveCols || []).length > 0;
+
+    let uRes;
+    if (hasIsActive) {
+      // Railway schema
+      [uRes] = await conn.query(
+        `
+        INSERT INTO users (email, password_hash, role, full_name, is_active, created_at)
+        VALUES (?, ?, ?, ?, 1, NOW())
+        `,
+        [email, hashed, globalUserRole, full_name]
+      );
+    } else {
+      // Local schema
+      [uRes] = await conn.query(
+        `
+        INSERT INTO users (email, password_hash, role, full_name, created_at)
+        VALUES (?, ?, ?, ?, NOW())
+        `,
+        [email, hashed, globalUserRole, full_name]
+      );
+    }
+
+    const userId = uRes.insertId;
+
+    // 3) Create tenant (slug best-effort unique)
+    let slug = makeSlug(tenantName);
+    if (!slug) slug = `workspace-${userId}`;
+
+    // if slug already exists, append random suffix
+    const [[slugHit]] = await conn.query("SELECT id FROM tenants WHERE slug=? LIMIT 1", [slug]);
+    if (slugHit?.id) slug = `${slug}-${String(Date.now()).slice(-6)}`;
+
+    const [tRes] = await conn.query(
+      `
+      INSERT INTO tenants (name, slug, plan_key, status, created_at)
+      VALUES (?, ?, ?, 'active', NOW())
+      `,
+      [tenantName, slug, planKey]
+    );
+
+    const tenantId = tRes.insertId;
+
+    // 4) Add membership (real permissions live here)
+    await conn.query(
+      `
+      INSERT INTO tenant_members (tenant_id, user_id, role, status, created_at)
+      VALUES (?, ?, 'owner', 'active', NOW())
+      `,
+      [tenantId, userId]
+    );
+
+    await conn.commit();
+
+    // ✅ Return a TENANT token so the app doesn't say "No tenant selected"
+    const token = signTenantToken({
+      id: userId,
+      email,
+      tenantId,
+      tenantRole: "owner",
+    });
+
+    const tenants = [{ id: tenantId, name: tenantName, slug, role: "owner" }];
+
+    // audit best-effort
+    try {
+      await logAudit(
+        {
+          ...req,
+          user: { id: userId, email },
+          tenantId,
+        },
+        {
+          action: "SIGNUP",
+          entity_type: "auth",
+          entity_id: userId,
+          details: { tenantId, tenantName, planKey },
+          user_id: userId,
+          user_email: email,
+          severity: SEVERITY.INFO,
+        }
+      );
+    } catch {}
+
+    return res.status(201).json({
+      token,
+      tenantId,
+      role: "owner",
+      user: { id: userId, email, role: globalUserRole, full_name },
+      tenants,
+    });
+  } catch (e) {
+    try {
+      await conn.rollback();
+    } catch {}
+    console.error("REGISTER ERROR:", e);
+    return res.status(500).json({ message: "Database error" });
+  } finally {
+    conn.release();
+  }
+});
+
+
 function signUserToken(user) {
   // user-token (tenant not selected yet)
   return jwt.sign(

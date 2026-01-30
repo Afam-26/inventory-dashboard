@@ -24,6 +24,8 @@ export default function Sidebar({ user }) {
             <Link to="/stock" style={linkStyle}>Stock In / Out</Link>
             <Link to="/users" style={linkStyle}>Users</Link>
             <Link to="/audit-dashboard" style={linkStyle}>Audit Dashboard</Link>
+            <Link to="/billing" style={linkStyle}>Billing</Link>
+
           </>
         )}
 

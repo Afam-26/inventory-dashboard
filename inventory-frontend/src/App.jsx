@@ -18,6 +18,8 @@ import AuditLogs from "./pages/AuditLogs";
 import UsersAdmin from "./pages/UsersAdmin";
 import AuditDashboard from "./pages/AuditDashboard";
 import SelectTenant from "./pages/SelectTenant";
+import Signup from "./pages/Signup";
+import Billing from "./pages/Billing";
 
 import { getStoredUser, setToken, setStoredUser, setTenantId } from "./services/api";
 
@@ -62,6 +64,8 @@ export default function App() {
             )
           }
         />
+        <Route path="/signup" element={<Signup />} />
+
 
         <Route
           path="/select-tenant"
@@ -76,6 +80,7 @@ export default function App() {
 
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/signup" element={<Signup onSuccess={(u) => setUser(u)} />} />
 
         {/* =========================
             Protected app
@@ -163,10 +168,18 @@ export default function App() {
                             <UsersAdmin user={user} />
                           </RequireAdmin>
                         }
-                      />
+                      />                   
 
                       {/* Logs page accessible to everyone */}
                       <Route path="/audit" element={<AuditLogs user={user} />} />
+                      <Route
+                        path="/billing"
+                        element={
+                          <RequireAdmin user={user}>
+                            <Billing user={user} />
+                          </RequireAdmin>
+                        }
+                      />
 
                       <Route path="/unauthorized" element={<Unauthorized />} />
                       <Route path="*" element={<Navigate to="/" replace />} />

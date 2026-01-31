@@ -1,5 +1,5 @@
 // src/pages/Landing.jsx
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { getStoredUser, getTenantId } from "../services/api";
 
@@ -8,9 +8,9 @@ const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/
 async function safeJson(res) {
   try {
     return await res.json();
-  } catch (e) {
+  } catch (err) {
     // eslint-disable-next-line no-console
-    console.warn("safeJson parse failed:", e);
+    console.warn("safeJson parse failed:", err);
     return null;
   }
 }
@@ -31,26 +31,28 @@ export default function Landing() {
   const [contactOk, setContactOk] = useState(false);
 
   // ✅ SAFE: read storage fresh each render
+  const token = localStorage.getItem("token") || "";
   const user = getStoredUser();
   const tenantId = getTenantId();
-  const token = localStorage.getItem("token") || "";
 
   // ✅ IMPORTANT: “logged in” must mean token + user
   const isAuthed = Boolean(token) && Boolean(user);
+  const hasTenant = Boolean(tenantId);
 
-  const needsLogin = !isAuthed;
-  const needsTenant = isAuthed && !tenantId;
+  // ✅ compute redirect target without conditional hooks
+  const redirectTarget = useMemo(() => {
+    if (!isAuthed) return null;
+    return hasTenant ? "/dashboard" : "/select-tenant";
+  }, [isAuthed, hasTenant]);
 
   // ✅ Auto-redirect only when truly authenticated
-  if (!needsLogin) {
-    return needsTenant ? (
-      <Navigate to="/select-tenant" replace />
-    ) : (
-      <Navigate to="/dashboard" replace />
-    );
+  if (redirectTarget) {
+    return <Navigate to={redirectTarget} replace />;
   }
 
-  const closeMenu = () => setMenuOpen(false);
+  function closeMenu() {
+    setMenuOpen(false);
+  }
 
   function setContactField(key, value) {
     setContact((p) => ({ ...p, [key]: value }));
@@ -91,20 +93,8 @@ export default function Landing() {
     } catch (err) {
       const msg = err?.message || "Unable to send request.";
       setContactError(msg);
-
-      // ✅ fallback mailto (still works if endpoint not ready)
-      const mailto = `mailto:admin@store.com?subject=${encodeURIComponent(
-        "Request access"
-      )}&body=${encodeURIComponent(
-        `Name: ${name}\nEmail: ${email}\nCompany: ${company}\n\nMessage:\n${message}`
-      )}`;
-
-      try {
-        window.open(mailto, "_blank");
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn("mailto fallback blocked:", e);
-      }
+      // eslint-disable-next-line no-console
+      console.warn("Request access failed:", err);
     } finally {
       setContactLoading(false);
     }
@@ -127,7 +117,6 @@ export default function Landing() {
             <a href="#contact">Contact</a>
           </nav>
 
-          {/* ✅ Make these black by using .btn */}
           <div className="lp-topbar-actions">
             <a className="btn" href="#pricing">
               See pricing

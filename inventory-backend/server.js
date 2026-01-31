@@ -31,6 +31,7 @@ import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
 import invitesRouter from "./routes/invites.js";
 import billingRoutes from "./routes/billing.js";
 import billingRouter, { billingWebhookHandler } from "./routes/billing.js";
+import publicRoutes from "./routes/public.js";
 
 
 
@@ -135,6 +136,7 @@ app.use("/api/tenants", tenantsRouter);
 app.use("/api/health", healthRoutes);
 app.use("/api/invites", invitesRouter);
 app.use("/api/billing", billingRoutes);
+app.use("/api/public", publicRoutes);
 
 // Normal JSON for everything else:
 app.use(express.json());

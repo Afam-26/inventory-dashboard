@@ -16,23 +16,35 @@ export const SEVERITY = Object.freeze({
   CRITICAL: 3,
 });
 
-function requireEnv(name) {
-  const v = process.env[name];
-  if (!v) throw new Error(`${name} is not set`);
-  return v;
-}
-
 /**
  * ✅ Normalize emails into an array
  */
 function normalizeEmailList(input) {
   if (Array.isArray(input)) {
-    return input.flat().map((x) => String(x || "").trim()).filter(Boolean);
+    return input
+      .flat()
+      .map((x) => String(x || "").trim())
+      .filter(Boolean);
   }
   const s = String(input || "").trim();
   if (!s) return [];
   if (s.includes(",")) return s.split(",").map((x) => x.trim()).filter(Boolean);
   return [s];
+}
+
+/**
+ * ✅ Resend "to" validator:
+ * - allows "email@example.com"
+ * - allows "Name <email@example.com>"
+ */
+function isValidResendTo(value) {
+  const s = String(value || "").trim();
+  if (!s) return false;
+
+  const plain = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const named = /^.+<\s*[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+\s*>$/;
+
+  return plain.test(s) || named.test(s);
 }
 
 /**
@@ -198,16 +210,13 @@ export async function logAudit(req, entry, options = {}) {
   let lockName = null;
 
   const run = async () => {
-    // createdAtIso should be unique per attempt (helps if we retry after deadlock)
     const createdAtIso = new Date().toISOString();
 
     try {
       if (conn) await conn.beginTransaction();
 
-      // advisory lock to serialize chain per tenant
       lockName = await acquireTenantAuditLock(db, tenantId, 2);
 
-      // 🔒 lock latest row for this tenant
       const [lastRows] = await db.query(
         `
         SELECT row_hash
@@ -222,12 +231,10 @@ export async function logAudit(req, entry, options = {}) {
 
       const prevHash = lastRows?.[0]?.row_hash ?? null;
 
-      // ✅ Resolve actor (fixes user/email showing as "-")
       const resolvedUserId = entry.user_id ?? req?.user?.id ?? null;
 
       let resolvedUserEmail = entry.user_email ?? req?.user?.email ?? null;
 
-      // If we still don't have email but we have userId, look it up (best-effort)
       if (!resolvedUserEmail && resolvedUserId) {
         try {
           const [[u]] = await db.query("SELECT email FROM users WHERE id=? LIMIT 1", [
@@ -291,7 +298,6 @@ export async function logAudit(req, entry, options = {}) {
       }
       throw e;
     } finally {
-      // release lock outside of transaction too
       try {
         await releaseTenantAuditLock(db, lockName);
       } catch {}
@@ -325,10 +331,12 @@ export async function getAdminAlertTargets(db, severity) {
       WHERE u.role = 'admin'
       `
     );
+
     return rows.filter((r) => Number(severity) >= Number(r.min_severity));
   } catch (e) {
+    // fallback env var if DB query fails
     const emailTo = process.env.ALERT_EMAIL_TO;
-    const fallbackEmails = normalizeEmailList(emailTo);
+    const fallbackEmails = normalizeEmailList(emailTo).filter(isValidResendTo);
 
     if (fallbackEmails.length) {
       return fallbackEmails.map((email) => ({
@@ -346,7 +354,7 @@ export async function getAdminAlertTargets(db, severity) {
 }
 
 /**
- * Alerts never throw
+ * ✅ Alerts never throw (but now they log full debug)
  */
 export async function sendSecurityAlert(db, alert) {
   const severity = alert?.severity ?? SEVERITY.WARN;
@@ -359,25 +367,46 @@ export async function sendSecurityAlert(db, alert) {
     targets = [];
   }
 
-  const emailRecipients = targets
+  // Build recipient list
+  const rawRecipients = targets
     .filter((t) => Number(t.email_enabled) === 1)
     .map((t) => t?.email)
-    .flatMap((e) => normalizeEmailList(e))
+    .flatMap((x) => normalizeEmailList(x))
+    .map((x) => String(x || "").trim())
     .filter(Boolean);
+
+  const invalidRecipients = rawRecipients.filter((x) => !isValidResendTo(x));
+  const emailRecipients = rawRecipients.filter(isValidResendTo);
 
   const shouldSlack = targets.some((t) => Number(t.slack_enabled) === 1);
 
+  if (invalidRecipients.length) {
+    console.error("SECURITY ALERT EMAIL INVALID RECIPIENTS:", invalidRecipients);
+  }
+
   if (emailRecipients.length > 0 && (alert?.html || alert?.text)) {
     try {
+      console.log("SECURITY ALERT EMAIL: sending", {
+        toCount: emailRecipients.length,
+        subject: alert.subject ?? "Security Alert",
+      });
+
       await sendEmail({
-        to: emailRecipients,
+        to: emailRecipients, // ✅ always array
         subject: alert.subject ?? "Security Alert",
         html: alert.html,
         text: alert.text,
       });
+
+      console.log("SECURITY ALERT EMAIL: sent OK");
     } catch (e) {
       console.error("SECURITY ALERT EMAIL ERROR:", e?.message || e);
     }
+  } else {
+    console.log("SECURITY ALERT EMAIL: skipped", {
+      emailRecipients: emailRecipients.length,
+      hasBody: Boolean(alert?.html || alert?.text),
+    });
   }
 
   if (shouldSlack && (alert?.text || alert?.subject || alert?.blocks)) {
@@ -389,6 +418,81 @@ export async function sendSecurityAlert(db, alert) {
     } catch (e) {
       console.error("SECURITY ALERT SLACK ERROR:", e?.message || e);
     }
+  }
+}
+
+/**
+ * ✅ Request-access alert helper (call this from /public/request-access route)
+ * This sends an email to:
+ * - admins (if available), otherwise
+ * - ALERT_EMAIL_TO env fallback
+ */
+export async function sendRequestAccessAlert(db, payload) {
+  const safe = {
+    name: String(payload?.name || "").trim(),
+    email: String(payload?.email || "").trim(),
+    company: String(payload?.company || "").trim(),
+    message: String(payload?.message || "").trim(),
+  };
+
+  const subject = `REQUEST ACCESS: ${safe.company || "New request"}`;
+  const text =
+    `A user requested access:\n\n` +
+    `Name: ${safe.name}\n` +
+    `Email: ${safe.email}\n` +
+    `Company: ${safe.company}\n\n` +
+    `Message:\n${safe.message || "-"}\n`;
+
+  const html =
+    `<div style="font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;">` +
+    `<h2 style="margin:0 0 10px;">Request Access</h2>` +
+    `<div><b>Name:</b> ${escapeHtml(safe.name)}</div>` +
+    `<div><b>Email:</b> ${escapeHtml(safe.email)}</div>` +
+    `<div><b>Company:</b> ${escapeHtml(safe.company)}</div>` +
+    `<div style="margin-top:12px;"><b>Message:</b></div>` +
+    `<div style="white-space:pre-wrap; padding:10px; border:1px solid rgba(0,0,0,.12); border-radius:10px;">${escapeHtml(
+      safe.message || "-"
+    )}</div>` +
+    `</div>`;
+
+  // Prefer admin targets, but allow fallback if DB broken.
+  let targets = [];
+  try {
+    targets = await getAdminAlertTargets(db || defaultDb, SEVERITY.INFO);
+  } catch {
+    targets = [];
+  }
+
+  let recipients = targets
+    .map((t) => t?.email)
+    .flatMap((x) => normalizeEmailList(x))
+    .map((x) => String(x || "").trim())
+    .filter(isValidResendTo);
+
+  // Fallback to env var
+  if (!recipients.length) {
+    recipients = normalizeEmailList(process.env.ALERT_EMAIL_TO).filter(isValidResendTo);
+  }
+
+  if (!recipients.length) {
+    console.error("REQUEST ACCESS EMAIL ERROR: No valid recipients. Set ALERT_EMAIL_TO.");
+    return { ok: false, reason: "no_recipients" };
+  }
+
+  try {
+    console.log("REQUEST ACCESS EMAIL: sending", {
+      toCount: recipients.length,
+      subject,
+      recipients,
+    });
+
+    await sendEmail({ to: recipients, subject, html, text });
+
+    console.log("REQUEST ACCESS EMAIL: sent OK");
+    return { ok: true };
+  } catch (e) {
+    console.error("REQUEST ACCESS EMAIL ERROR:", e?.message || e);
+    return { ok: false, reason: e?.message || "send_failed" };
   }
 }
 
@@ -535,4 +639,15 @@ export async function verifyAuditChain(db, { limit = 20000, tenantId = null } = 
     lastCreatedAtIso: rows[rows.length - 1]?.created_at_iso ?? null,
     lastRowHash: rows[rows.length - 1]?.row_hash ?? null,
   };
+}
+
+/**
+ * tiny html escape helper for request-access email
+ */
+function escapeHtml(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }

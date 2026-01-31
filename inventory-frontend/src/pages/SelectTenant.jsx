@@ -1,13 +1,24 @@
-import React, { useEffect, useState } from "react";
+// src/pages/SelectTenant.jsx
+import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { getMyTenants, selectTenantApi, setTenantId, setToken, setStoredUser, getStoredUser } from "../services/api";
+import {
+  getMyTenants,
+  selectTenantApi,
+  setTenantId,
+  setToken,
+  setStoredUser,
+  getStoredUser,
+} from "../services/api";
 
 export default function SelectTenant({ onSuccess }) {
-  const nav = useNavigate();
-  const loc = useLocation();
+  const navigate = useNavigate();
+  const location = useLocation();
 
-  const from = loc.state?.from || "/";
-  const [tenants, setTenants] = useState(Array.isArray(loc.state?.tenants) ? loc.state.tenants : []);
+  const from = useMemo(() => location.state?.from || "/dashboard", [location.state]);
+
+  const [tenants, setTenants] = useState(
+    Array.isArray(location.state?.tenants) ? location.state.tenants : []
+  );
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
@@ -15,10 +26,8 @@ export default function SelectTenant({ onSuccess }) {
     let mounted = true;
 
     async function load() {
-      setTenants((current) => {
-        if (current.length) return current;
-        return current;
-      });
+      // if tenants were passed via state, keep them
+      if (Array.isArray(tenants) && tenants.length) return;
 
       try {
         const t = await getMyTenants();
@@ -31,26 +40,35 @@ export default function SelectTenant({ onSuccess }) {
     }
 
     load();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function pick(id) {
     setErr("");
     setLoading(true);
+
     try {
       const sel = await selectTenantApi(id);
       if (!sel?.token || !sel?.tenantId) throw new Error("Tenant selection failed.");
 
+      // ✅ ensure storage is fully updated BEFORE navigation
       setToken(sel.token);
       setTenantId(sel.tenantId);
 
       const base = getStoredUser() || {};
-      const u = { ...base, tenantId: sel.tenantId, tenantRole: sel.role };
+      const u = {
+        ...base,
+        tenantId: sel.tenantId,
+        tenantRole: sel.role,
+      };
+
       setStoredUser(u);
       onSuccess?.(u);
 
-      nav(from, { replace: true });
+      navigate(from, { replace: true });
     } catch (e) {
       setErr(e?.message || "Failed to select tenant");
     } finally {
@@ -64,7 +82,15 @@ export default function SelectTenant({ onSuccess }) {
       <p style={{ color: "#6b7280" }}>Choose which workspace to use.</p>
 
       {err ? (
-        <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 12, padding: 12, color: "#991b1b" }}>
+        <div
+          style={{
+            background: "#fef2f2",
+            border: "1px solid #fecaca",
+            borderRadius: 12,
+            padding: 12,
+            color: "#991b1b",
+          }}
+        >
           {err}
         </div>
       ) : null}
@@ -81,7 +107,16 @@ export default function SelectTenant({ onSuccess }) {
             <span>
               <b>{t.name}</b> <span style={{ color: "#6b7280" }}>({t.slug})</span>
             </span>
-            <span style={{ fontSize: 12, padding: "3px 8px", borderRadius: 999, background: "#111827", color: "#fff" }}>
+
+            <span
+              style={{
+                fontSize: 12,
+                padding: "3px 8px",
+                borderRadius: 999,
+                background: "#111827",
+                color: "#fff",
+              }}
+            >
               {String(t.role || "").toUpperCase()}
             </span>
           </button>

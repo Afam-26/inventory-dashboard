@@ -1,8 +1,7 @@
 // src/App.jsx
-import { Routes, Route, Navigate, Outlet } from "react-router-dom";
-import { useMemo, useState } from "react";
+import { Routes, Route, Navigate, Outlet, useLocation } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
 
-import Sidebar from "./components/Sidebar";
 import RequireAdmin from "./components/RequireAdmin";
 
 import Login from "./pages/Login";
@@ -22,151 +21,135 @@ import Signup from "./pages/Signup";
 import Billing from "./pages/Billing";
 import Landing from "./pages/Landing";
 
-import {
-  getStoredUser,
-  setToken,
-  setStoredUser,
-  setTenantId,
-  getTenantId,
-  logoutApi,
-} from "./services/api";
+import AppLayout from "./layouts/AppLayout";
+
+import { getStoredUser, getTenantId } from "./services/api";
+import { savePostLoginRedirect, peekPostLoginRedirect } from "./utils/authRedirect";
 
 /**
- * ✅ Proper Router Refactor (single Routes tree)
- * - Public routes: Landing, Login, Signup, Forgot/Reset, SelectTenant
- * - Protected layout: Sidebar + TopBar + Outlet
- * - Protected pages: Dashboard, Products, Categories, Stock, Users, Audit, Billing, etc.
- *
- * Auth logic:
- * - no user => must login
- * - user exists but no tenantId => must select tenant
+ * ✅ Public landing + private app layout split
+ * ✅ Landing is INDEX route (so it never matches /login)
+ * ✅ FIX: Use effectiveUser from storage to avoid role flash after tenant select
+ * ✅ FIX: No side-effects during render
  */
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
 
-  const needsLogin = !user;
-  const needsTenant = !!user && !getTenantId(); // ✅ use stored tenantId
+  // ✅ Use freshest possible user to prevent 1-render stale role issues
+  const effectiveUser = user || getStoredUser();
+
+  // ✅ Always treat auth as token + user
+  const token = localStorage.getItem("token") || "";
+  const isAuthed = Boolean(token) && Boolean(effectiveUser);
+
+  // ✅ Tenant selected = stored tenantId
+  const tenantId = getTenantId();
+  const hasTenant = Boolean(tenantId);
+
+  // Optional: keep state synced if storage changed elsewhere
+  useEffect(() => {
+    if (!user && effectiveUser) setUser(effectiveUser);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, tenantId]);
 
   return (
     <Routes>
       {/* =========================
-          Public routes
+          PUBLIC AREA
          ========================= */}
-      <Route path="/" element={<Landing />} />
+      <Route element={<PublicLayout />}>
+        {/* ✅ Landing ONLY matches "/" */}
+        <Route index element={<Landing />} />
 
-      <Route
-        path="/login"
-        element={
-          needsLogin ? (
-            <Login onSuccess={(u) => setUser(u)} />
-          ) : needsTenant ? (
-            <Navigate to="/select-tenant" replace />
-          ) : (
-            <Navigate to="/dashboard" replace />
-          )
-        }
-      />
+        <Route
+          path="login"
+          element={
+            !isAuthed ? (
+              <Login onSuccess={(u) => setUser(u)} />
+            ) : !hasTenant ? (
+              <Navigate to="/select-tenant" replace />
+            ) : (
+              <Navigate to={peekPostLoginRedirect("/dashboard")} replace />
+            )
+          }
+        />
 
-      <Route
-        path="/signup"
-        element={
-          needsLogin ? (
-            <Signup onSuccess={(u) => setUser(u)} />
-          ) : needsTenant ? (
-            <Navigate to="/select-tenant" replace />
-          ) : (
-            <Navigate to="/dashboard" replace />
-          )
-        }
-      />
+        <Route path="signup" element={<Signup />} />
+        <Route path="forgot-password" element={<ForgotPassword />} />
+        <Route path="reset-password" element={<ResetPassword />} />
 
-      <Route path="/forgot-password" element={<ForgotPassword />} />
-      <Route path="/reset-password" element={<ResetPassword />} />
-
-      <Route
-        path="/select-tenant"
-        element={
-          needsLogin ? (
-            <Navigate to="/login" replace />
-          ) : (
-            <SelectTenant onSuccess={(u) => setUser(u)} />
-          )
-        }
-      />
+        <Route
+          path="select-tenant"
+          element={
+            !isAuthed ? (
+              <Navigate to="/login" replace />
+            ) : (
+              <SelectTenant onSuccess={(u) => setUser(u)} />
+            )
+          }
+        />
+      </Route>
 
       {/* =========================
-          Protected routes (layout)
+          PRIVATE APP AREA
          ========================= */}
-      <Route
-        element={
-          needsLogin ? (
-            <Navigate to="/login" replace />
-          ) : needsTenant ? (
-            <Navigate to="/select-tenant" replace />
-          ) : (
-            <ProtectedLayout user={user} setUser={setUser} />
-          )
-        }
-      >
-        <Route path="/dashboard" element={<Dashboard user={user} />} />
-        <Route path="/products" element={<Products user={user} />} />
+      <Route element={<RequireAuth isAuthed={isAuthed} hasTenant={hasTenant} />}>
+        {/* App layout wrapper */}
+        <Route element={<AppLayout user={effectiveUser} setUser={setUser} />}>
+          <Route path="/dashboard" element={<Dashboard user={effectiveUser} />} />
+          <Route path="/products" element={<Products user={effectiveUser} />} />
+          <Route path="/audit" element={<AuditLogs user={effectiveUser} />} />
 
-        {/* Logs page accessible to everyone (once authenticated) */}
-        <Route path="/audit" element={<AuditLogs user={user} />} />
+          <Route
+            path="/categories"
+            element={
+              <RequireAdmin user={effectiveUser}>
+                <Categories user={effectiveUser} />
+              </RequireAdmin>
+            }
+          />
 
-        {/* Admin/Owner-only pages */}
-        <Route
-          path="/categories"
-          element={
-            <RequireAdmin user={user}>
-              <Categories user={user} />
-            </RequireAdmin>
-          }
-        />
+          <Route
+            path="/audit-dashboard"
+            element={
+              <RequireAdmin user={effectiveUser}>
+                <AuditDashboard user={effectiveUser} />
+              </RequireAdmin>
+            }
+          />
 
-        <Route
-          path="/audit-dashboard"
-          element={
-            <RequireAdmin user={user}>
-              <AuditDashboard user={user} />
-            </RequireAdmin>
-          }
-        />
+          <Route
+            path="/stock"
+            element={
+              <RequireAdmin user={effectiveUser}>
+                <Stock user={effectiveUser} />
+              </RequireAdmin>
+            }
+          />
 
-        <Route
-          path="/stock"
-          element={
-            <RequireAdmin user={user}>
-              <Stock user={user} />
-            </RequireAdmin>
-          }
-        />
+          <Route
+            path="/users"
+            element={
+              <RequireAdmin user={effectiveUser}>
+                <UsersAdmin user={effectiveUser} />
+              </RequireAdmin>
+            }
+          />
 
-        <Route
-          path="/users"
-          element={
-            <RequireAdmin user={user}>
-              <UsersAdmin user={user} />
-            </RequireAdmin>
-          }
-        />
+          <Route
+            path="/billing"
+            element={
+              <RequireAdmin user={effectiveUser}>
+                <Billing user={effectiveUser} />
+              </RequireAdmin>
+            }
+          />
 
-        <Route
-          path="/billing"
-          element={
-            <RequireAdmin user={user}>
-              <Billing user={user} />
-            </RequireAdmin>
-          }
-        />
+          <Route path="/unauthorized" element={<Unauthorized />} />
 
-        <Route path="/unauthorized" element={<Unauthorized />} />
-
-        {/* Default authenticated route */}
-        <Route path="/app" element={<Navigate to="/dashboard" replace />} />
-
-        {/* Catch-all inside protected area */}
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          {/* Private catch-all */}
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Route>
       </Route>
 
       {/* Global catch-all */}
@@ -175,77 +158,41 @@ export default function App() {
   );
 }
 
+/** Public layout wrapper */
+function PublicLayout() {
+  return <Outlet />;
+}
+
 /**
- * Protected layout wrapper:
- * - Top bar with role badge + logout
- * - Sidebar
- * - Outlet where protected pages render
+ * ✅ Auth guard component
+ * ✅ IMPORTANT: save redirect only in useEffect (no render side-effects)
  */
-function ProtectedLayout({ user, setUser }) {  
+function RequireAuth({ isAuthed, hasTenant }) {
+  const location = useLocation();
 
-  const uiRole = useMemo(
-    () => String(user?.tenantRole || user?.role || "").toLowerCase(),
-    [user]
-  );
-  const isAdmin = uiRole === "admin" || uiRole === "owner";
+  const currentPath = useMemo(() => {
+    return location.pathname + (location.search || "");
+  }, [location.pathname, location.search]);
 
-  async function logout() {
-      try {
-        await logoutApi(); // ✅ clears refresh cookie + localStorage
-      } catch {
-        // even if API fails, still clear local state and exit
-        setToken("");
-        setStoredUser(null);
-        setTenantId(null);
-      }
+  useEffect(() => {
+    const isPublic =
+      currentPath === "/" ||
+      currentPath.startsWith("/login") ||
+      currentPath.startsWith("/signup") ||
+      currentPath.startsWith("/forgot-password") ||
+      currentPath.startsWith("/reset-password") ||
+      currentPath.startsWith("/select-tenant");
 
-      setUser(null);
+    if (!isPublic) savePostLoginRedirect(currentPath);
+  }, [currentPath]);
 
-      // ✅ hard reset guarantees landing renders cleanly
-      window.location.replace("/");
-    }
+  if (!isAuthed) {
+    return <Navigate to="/login" replace state={{ from: currentPath }} />;
+  }
 
+  if (!hasTenant) {
+    return <Navigate to="/select-tenant" replace state={{ from: currentPath }} />;
+  }
 
-  return (
-    <div>
-      {/* Top bar */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          padding: 10,
-          alignItems: "center",
-        }}
-      >
-        <p style={{ margin: 0 }}>
-          Logged in as{" "}
-          <span
-            style={{
-              padding: "4px 10px",
-              borderRadius: 999,
-              background: isAdmin ? "#111827" : "#2563eb",
-              color: "#fff",
-              fontWeight: 600,
-              fontSize: 12,
-              textTransform: "uppercase",
-            }}
-          >
-            {uiRole || "user"}
-          </span>
-        </p>
-
-        <button className="btn" onClick={logout}>
-          Logout
-        </button>
-      </div>
-
-      <div style={{ display: "flex", minHeight: "100vh" }}>
-        <Sidebar user={user} />
-
-        <main style={{ flex: 1, padding: 20 }}>
-          <Outlet />
-        </main>
-      </div>
-    </div>
-  );
+  return <Outlet />;
 }

@@ -146,6 +146,26 @@ app.post(
   billingWebhookHandler
 );
 
+// server.js (or your routes file)
+app.post("/api/public/request-access", async (req, res) => {
+  try {
+    const { name, email, company, message } = req.body || {};
+
+    if (!name || !email) {
+      return res.status(400).json({ message: "Name and email are required." });
+    }
+
+    // TODO: save to DB OR send email/slack
+    // For now: just log it
+    console.log("REQUEST ACCESS:", { name, email, company, message });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ message: "Server error." });
+  }
+});
+
+
 // Billing router
 app.use("/api/billing", billingRouter);
 

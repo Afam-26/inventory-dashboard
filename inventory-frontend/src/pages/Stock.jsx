@@ -5,11 +5,11 @@ import {
   updateStock,
   getMovements,
   downloadStockCsv,
-  getProductBySku, // ✅ use SKU OR barcode lookup
+  getProductBySku, // SKU OR barcode lookup
 } from "../services/api";
 
 export default function Stock({ user }) {
-  // ✅ multi-tenant role aware (tenantRole wins)
+  // multi-tenant role aware (tenantRole wins)
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = ["admin", "owner"].includes(role);
 
@@ -35,7 +35,7 @@ export default function Stock({ user }) {
     reason: "",
   });
 
-  // ✅ Filters UI (for table + export + server query)
+  // Filters UI (for table + export + server query)
   const [filters, setFilters] = useState({
     search: "",
     type: "", // "", "IN", "OUT"
@@ -78,33 +78,28 @@ export default function Stock({ user }) {
         Q.offDetected();
         Q.stop();
       }
-    } catch {
-      // safe ignore
+    } catch (err) {
+      // ignore (scanner might already be stopped)
+      void err;
     }
   }
 
-  async function handleDetectedSku(skuRaw) {
-    const code = String(skuRaw || "").trim();
+  async function handleDetectedSku(codeRaw) {
+    const code = String(codeRaw || "").trim();
     if (!code) return;
 
-    // prevent repeated rapid triggers
     if (code === lastScan) return;
     setLastScan(code);
 
     setScanError("");
     try {
-      // ✅ matches SKU OR barcode through backend /products/by-sku/:code
       const found = await getProductBySku(code);
-
-      setForm((prev) => ({
-        ...prev,
-        product_id: String(found.id),
-      }));
+      setForm((prev) => ({ ...prev, product_id: String(found.id) }));
 
       setScannerOpen(false);
       stopScanner();
-    } catch (e) {
-      setScanError(e?.message || "Not found");
+    } catch (err) {
+      setScanError(err?.message || "Not found");
     }
   }
 
@@ -116,7 +111,9 @@ export default function Stock({ user }) {
 
     const Q = window.Quagga;
     if (!Q) {
-      setScanError("Scanner library not loaded (Quagga). Check index.html script tag.");
+      setScanError(
+        "Scanner library not loaded (Quagga). Check index.html script tag."
+      );
       return;
     }
 
@@ -139,9 +136,9 @@ export default function Stock({ user }) {
         },
         locate: true,
       },
-      (err) => {
-        if (err) {
-          setScanError(err.message || "Failed to start camera");
+      (initErr) => {
+        if (initErr) {
+          setScanError(initErr.message || "Failed to start camera");
           return;
         }
 
@@ -159,14 +156,13 @@ export default function Stock({ user }) {
   }, [scannerOpen]);
 
   // ---------------------------
-  // Load products once
-  // ✅ Your API returns: { products: [...] }
+  // Load products
+  // Your API returns: { products: [...] }
   // ---------------------------
   async function loadProductsOnly() {
     try {
       const res = await getProducts("");
 
-      // ✅ normalize to array, supports either array OR { products: [...] }
       const list = Array.isArray(res)
         ? res
         : Array.isArray(res?.products)
@@ -174,27 +170,37 @@ export default function Stock({ user }) {
         : [];
 
       setProducts(list);
-    } catch (e) {
-      console.error("Failed to load products:", e);
+    } catch (err) {
       setProducts([]);
-      setError(e?.message || "Failed to load products");
+      setError(err?.message || "Failed to load products");
     }
   }
 
   // ---------------------------
   // Load movements (server-side filters)
+  // Your API returns: { movements: [...] }
   // ---------------------------
   async function loadMovementsServer(params) {
     const myReq = ++movementsReqId.current;
 
     try {
-      const m = await getMovements(params);
+      const res = await getMovements(params);
+
       if (myReq !== movementsReqId.current) return;
-      setMovements(Array.isArray(m) ? m : []);
-    } catch (e) {
+
+      // getMovements() in your api.js already normalizes to an array,
+      // but we keep this extra safe:
+      const list = Array.isArray(res)
+        ? res
+        : Array.isArray(res?.movements)
+        ? res.movements
+        : [];
+
+      setMovements(list);
+    } catch (err) {
       if (myReq !== movementsReqId.current) return;
-      setError(e?.message || "Failed to load movements");
       setMovements([]);
+      setError(err?.message || "Failed to load movements");
     }
   }
 
@@ -204,7 +210,10 @@ export default function Stock({ user }) {
       setLoading(true);
       setError("");
       try {
-        await Promise.all([loadProductsOnly(), loadMovementsServer({ limit: 200 })]);
+        await Promise.all([
+          loadProductsOnly(),
+          loadMovementsServer({ limit: 200 }),
+        ]);
       } finally {
         setLoading(false);
       }
@@ -212,7 +221,7 @@ export default function Stock({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // When filters change, re-fetch movements from server (debounced search)
+  // When filters change, re-fetch movements (debounced search)
   useEffect(() => {
     setError("");
 
@@ -243,7 +252,8 @@ export default function Stock({ user }) {
     const qty = Number(form.quantity);
 
     if (!pid) return setError("Select a product");
-    if (!Number.isFinite(qty) || qty <= 0) return setError("Quantity must be greater than 0");
+    if (!Number.isFinite(qty) || qty <= 0)
+      return setError("Quantity must be greater than 0");
 
     setSubmitting(true);
     try {
@@ -256,7 +266,6 @@ export default function Stock({ user }) {
 
       setForm({ product_id: "", type: "IN", quantity: 1, reason: "" });
 
-      // refresh products + movements with current filters
       await Promise.all([
         loadProductsOnly(),
         loadMovementsServer({
@@ -267,8 +276,8 @@ export default function Stock({ user }) {
           limit: 500,
         }),
       ]);
-    } catch (e2) {
-      setError(e2?.message || "Update stock failed");
+    } catch (err) {
+      setError(err?.message || "Update stock failed");
     } finally {
       setSubmitting(false);
     }
@@ -284,8 +293,8 @@ export default function Stock({ user }) {
         from: String(filters.from || "").trim(),
         to: String(filters.to || "").trim(),
       });
-    } catch (e) {
-      setError(e?.message || "Export failed");
+    } catch (err) {
+      setError(err?.message || "Export failed");
     } finally {
       setExporting(false);
     }
@@ -296,7 +305,14 @@ export default function Stock({ user }) {
   return (
     <div>
       {/* Header row with Export CSV */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
         <div>
           <h1 style={{ margin: 0 }}>Stock In / Out</h1>
           <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
@@ -309,7 +325,7 @@ export default function Stock({ user }) {
         </button>
       </div>
 
-      {/* ✅ Filters UI */}
+      {/* Filters UI */}
       <div
         style={{
           marginTop: 12,
@@ -321,7 +337,14 @@ export default function Stock({ user }) {
           gap: 10,
         }}
       >
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 10,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
           <input
             className="input"
             placeholder="Search (product, SKU, reason)"
@@ -367,7 +390,9 @@ export default function Stock({ user }) {
           </button>
         </div>
 
-        <div style={{ fontSize: 12, color: "#6b7280" }}>Export uses these filters too.</div>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>
+          Export uses these filters too.
+        </div>
       </div>
 
       {/* ADMIN FORM */}
@@ -392,7 +417,8 @@ export default function Stock({ user }) {
             <option value="">Select product</option>
             {products.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} — {p.sku || "-"} {p.barcode ? `• ${p.barcode}` : ""} (Stock: {p.quantity ?? 0})
+                {p.name} — {p.sku || "-"} {p.barcode ? `• ${p.barcode}` : ""}{" "}
+                (Stock: {p.quantity ?? 0})
               </option>
             ))}
           </select>
@@ -432,10 +458,17 @@ export default function Stock({ user }) {
           </button>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button className="btn" type="button" onClick={() => setScannerOpen(true)} disabled={busy}>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => setScannerOpen(true)}
+              disabled={busy}
+            >
               Scan barcode
             </button>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>(Tip: works best on phone camera)</div>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>
+              (Tip: works best on phone camera)
+            </div>
           </div>
         </form>
       )}
@@ -474,7 +507,14 @@ export default function Stock({ user }) {
             }}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
               <div>
                 <div style={{ fontWeight: 900 }}>Scan Barcode</div>
                 <div style={{ fontSize: 12, color: "#6b7280" }}>
@@ -494,7 +534,11 @@ export default function Stock({ user }) {
               </button>
             </div>
 
-            {scanError && <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{scanError}</div>}
+            {scanError ? (
+              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>
+                {scanError}
+              </div>
+            ) : null}
 
             <div
               id="barcode-scanner"
@@ -518,7 +562,11 @@ export default function Stock({ user }) {
       {/* MOVEMENTS TABLE */}
       <h2 style={{ marginTop: 10 }}>Recent Movements</h2>
 
-      <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
+      <table
+        border="1"
+        cellPadding="10"
+        style={{ width: "100%", borderCollapse: "collapse" }}
+      >
         <thead style={{ background: "#f3f4f6" }}>
           <tr>
             <th>Product</th>

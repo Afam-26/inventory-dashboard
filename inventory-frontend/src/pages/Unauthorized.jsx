@@ -25,7 +25,7 @@ export default function Unauthorized() {
           <button className="btn" onClick={() => navigate(-1)} style={styles.btn}>
             Go back
           </button>
-          <Link className="btn" to="/" style={{ ...styles.btn, textDecoration: "none" }}>
+          <Link className="btn" to="/dashboard" style={{ ...styles.btn, textDecoration: "none" }}>
             Dashboard
           </Link>
         </div>

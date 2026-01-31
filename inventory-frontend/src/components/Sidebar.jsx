@@ -2,8 +2,9 @@ import { Link } from "react-router-dom";
 
 export default function Sidebar({ user }) {
   // ✅ Treat owner as admin
-  const role = String(user?.tenantRole || user?.role || "").toLowerCase();
-  const isAdmin = role === "admin" || role === "owner";
+  const uiRole = String(user?.tenantRole || user?.role || "").toLowerCase();
+  const isAdmin = uiRole === "admin" || uiRole === "owner";
+
 
   const linkStyle = { color: "#fff", textDecoration: "none" };
 
@@ -12,7 +13,7 @@ export default function Sidebar({ user }) {
       <h2>Inventory</h2>
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <Link to="/" style={linkStyle}>Dashboard</Link>
+        <Link to="/dashboard" style={linkStyle}>Dashboard</Link>
 
         {/* ✅ Anyone logged in */}
         <Link to="/products" style={linkStyle}>Products</Link>

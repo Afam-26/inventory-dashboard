@@ -1,6 +1,6 @@
 // src/pages/Login.jsx
-import React, { useState } from "react";
-import { useNavigate, useLocation, Link } from "react-router-dom";
+import React, { useMemo, useState } from "react";
+import { useLocation, useNavigate, Link } from "react-router-dom";
 
 import {
   login,
@@ -12,10 +12,36 @@ import {
   getStoredUser,
 } from "../services/api";
 
+import { consumePostLoginRedirect } from "../utils/authRedirect";
+
+function normalizeRedirectPath(path) {
+  const p = String(path || "").trim();
+  if (!p) return "/dashboard";
+
+  // avoid looping back into auth pages
+  const deny = ["/login", "/signup", "/select-tenant", "/forgot-password", "/reset-password"];
+  if (deny.some((x) => p === x || p.startsWith(x + "?"))) return "/dashboard";
+
+  // must be app internal
+  if (!p.startsWith("/")) return "/dashboard";
+
+  return p;
+}
+
 export default function Login({ onSuccess }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const from = location.state?.from || "/";
+
+  const from = useMemo(() => {
+    // 1) prefer route state (when guard redirects to login)
+    const stateFrom = String(location.state?.from || "").trim();
+
+    // 2) otherwise consume saved redirect
+    const savedFrom = consumePostLoginRedirect("/dashboard");
+
+    return normalizeRedirectPath(stateFrom || savedFrom || "/dashboard");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [email, setEmail] = useState("admin@store.com");
   const [password, setPassword] = useState("admin123");
@@ -31,7 +57,7 @@ export default function Login({ onSuccess }) {
     return Array.isArray(t?.tenants) ? t.tenants : [];
   }
 
-  const handleSubmit = async (e) => {
+  async function handleSubmit(e) {
     e.preventDefault();
     setError("");
     setLoading(true);
@@ -45,22 +71,22 @@ export default function Login({ onSuccess }) {
         throw new Error("Login succeeded but token/user missing.");
       }
 
-      // Store user-token + base user (needed to fetch tenants)
+      // Store base token + base user first (so getMyTenants works)
       setToken(res.token);
       setStoredUser(res.user);
       onSuccess?.(res.user);
 
-      // 2) tenants
+      // 2) fetch tenants
       const tenants = await resolveTenantsFromLogin(res);
       if (!tenants.length) throw new Error("No tenants found for this user.");
 
-      // ✅ If user belongs to MULTIPLE tenants, force selection UI
+      // Multi-tenant: pick
       if (tenants.length > 1) {
         navigate("/select-tenant", { state: { tenants, from }, replace: true });
         return;
       }
 
-      // ✅ If only 1 tenant, auto-select
+      // Single tenant: auto-select
       const chosen = tenants[0];
       const sel = await selectTenantApi(chosen.id);
 
@@ -76,20 +102,20 @@ export default function Login({ onSuccess }) {
       const u = {
         ...base,
         tenantId: sel.tenantId,
-        tenantRole: sel.role,
+        tenantRole: String(sel.role || sel.tenantRole || "").toLowerCase(),
       };
 
       setStoredUser(u);
       onSuccess?.(u);
 
-      navigate(from, { replace: true });
+      // ✅ HARD redirect: prevents role/route flash and stale app state issues
+      window.location.replace(from);
     } catch (err) {
       const msg = err?.message || "Unable to sign in. Please try again.";
       setError(msg);
-    } finally {
       setLoading(false);
     }
-  };
+  }
 
   return (
     <div style={styles.page}>

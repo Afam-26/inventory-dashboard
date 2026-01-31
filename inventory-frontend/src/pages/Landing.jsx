@@ -3,18 +3,45 @@ import { useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { getStoredUser, getTenantId } from "../services/api";
 
+const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
+
+async function safeJson(res) {
+  try {
+    return await res.json();
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn("safeJson parse failed:", e);
+    return null;
+  }
+}
+
 export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
   const year = new Date().getFullYear();
 
-  // ✅ SAFE: read storage fresh each render (avoids stale auth/tenant data)
+  // ✅ Contact form state
+  const [contact, setContact] = useState({
+    name: "",
+    email: "",
+    company: "",
+    message: "",
+  });
+  const [contactLoading, setContactLoading] = useState(false);
+  const [contactError, setContactError] = useState("");
+  const [contactOk, setContactOk] = useState(false);
+
+  // ✅ SAFE: read storage fresh each render
   const user = getStoredUser();
   const tenantId = getTenantId();
+  const token = localStorage.getItem("token") || "";
 
-  const needsLogin = !user;
-  const needsTenant = !!user && !tenantId;
+  // ✅ IMPORTANT: “logged in” must mean token + user
+  const isAuthed = Boolean(token) && Boolean(user);
 
-  // ✅ Auto-redirect when logged in
+  const needsLogin = !isAuthed;
+  const needsTenant = isAuthed && !tenantId;
+
+  // ✅ Auto-redirect only when truly authenticated
   if (!needsLogin) {
     return needsTenant ? (
       <Navigate to="/select-tenant" replace />
@@ -23,9 +50,65 @@ export default function Landing() {
     );
   }
 
-  // If we're here: not logged in => show landing page
-  const primaryCta = { label: "Sign in", to: "/login" };
   const closeMenu = () => setMenuOpen(false);
+
+  function setContactField(key, value) {
+    setContact((p) => ({ ...p, [key]: value }));
+  }
+
+  async function submitRequestAccess(e) {
+    e.preventDefault();
+    setContactError("");
+    setContactOk(false);
+
+    const name = String(contact.name || "").trim();
+    const email = String(contact.email || "").trim();
+    const company = String(contact.company || "").trim();
+    const message = String(contact.message || "").trim();
+
+    if (!name) return setContactError("Full name is required.");
+    if (!email) return setContactError("Email is required.");
+    if (!email.includes("@")) return setContactError("Enter a valid email.");
+
+    setContactLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/public/request-access`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ name, email, company, message }),
+      });
+
+      const data = await safeJson(res);
+
+      if (!res.ok) {
+        throw new Error(data?.message || "Request failed. Please try again.");
+      }
+
+      setContactOk(true);
+      setContact({ name: "", email: "", company: "", message: "" });
+    } catch (err) {
+      const msg = err?.message || "Unable to send request.";
+      setContactError(msg);
+
+      // ✅ fallback mailto (still works if endpoint not ready)
+      const mailto = `mailto:admin@store.com?subject=${encodeURIComponent(
+        "Request access"
+      )}&body=${encodeURIComponent(
+        `Name: ${name}\nEmail: ${email}\nCompany: ${company}\n\nMessage:\n${message}`
+      )}`;
+
+      try {
+        window.open(mailto, "_blank");
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("mailto fallback blocked:", e);
+      }
+    } finally {
+      setContactLoading(false);
+    }
+  }
 
   return (
     <>
@@ -44,16 +127,17 @@ export default function Landing() {
             <a href="#contact">Contact</a>
           </nav>
 
+          {/* ✅ Make these black by using .btn */}
           <div className="lp-topbar-actions">
-            <a className="btn lp-btn-outline" href="#pricing">
+            <a className="btn" href="#pricing">
               See pricing
             </a>
 
-            <Link className="btn" to={primaryCta.to}>
-              {primaryCta.label}
+            <Link className="btn" to="/login">
+              Sign in
             </Link>
 
-            <Link className="lp-link" to="/signup">
+            <Link className="btn" to="/signup">
               Create account
             </Link>
           </div>
@@ -84,13 +168,15 @@ export default function Landing() {
           </a>
 
           <div className="lp-mobileMenuActions">
-            <a className="btn lp-btn-outline" href="#pricing" onClick={closeMenu}>
+            <a className="btn" href="#pricing" onClick={closeMenu}>
               See pricing
             </a>
-            <Link className="btn" to={primaryCta.to} onClick={closeMenu}>
-              {primaryCta.label}
+
+            <Link className="btn" to="/login" onClick={closeMenu}>
+              Sign in
             </Link>
-            <Link className="btn lp-btn-outline" to="/signup" onClick={closeMenu}>
+
+            <Link className="btn" to="/signup" onClick={closeMenu}>
               Create account
             </Link>
           </div>
@@ -101,7 +187,6 @@ export default function Landing() {
       <section className="lp-heroWrap">
         <div className="lp-container">
           <div className="lp-heroGrid">
-            {/* Sidebar preview */}
             <aside className="lp-sidebarPreview">
               <div className="lp-sidebarTitle">Inventory</div>
 
@@ -124,12 +209,11 @@ export default function Landing() {
               </div>
             </aside>
 
-            {/* Hero content */}
             <div className="lp-heroRight">
               <h1 className="lp-heroTitle">One dashboard. Total control.</h1>
               <p className="lp-heroSub">
-                Track products, stock, users, and multiple tenants in one clean system.
-                No spreadsheets. No confusion.
+                Track products, stock, users, and multiple tenants in one clean system. No
+                spreadsheets. No confusion.
               </p>
 
               <div className="lp-heroActions">
@@ -323,20 +407,62 @@ export default function Landing() {
                 </div>
               </div>
 
-              <form className="lp-form" onSubmit={(e) => e.preventDefault()}>
+              <form className="lp-form" onSubmit={submitRequestAccess}>
+                {contactError ? (
+                  <div style={{ color: "#991b1b", fontSize: 12, marginBottom: 8 }}>
+                    {contactError}
+                  </div>
+                ) : null}
+
+                {contactOk ? (
+                  <div style={{ color: "#065f46", fontSize: 12, marginBottom: 8 }}>
+                    ✅ Request sent. We’ll reach out shortly.
+                  </div>
+                ) : null}
+
                 <div className="lp-formGrid2">
-                  <input className="input" type="text" placeholder="Full name" />
-                  <input className="input" type="email" placeholder="Email" />
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="Full name"
+                    value={contact.name}
+                    onChange={(e) => setContactField("name", e.target.value)}
+                    disabled={contactLoading}
+                    required
+                  />
+                  <input
+                    className="input"
+                    type="email"
+                    placeholder="Email"
+                    value={contact.email}
+                    onChange={(e) => setContactField("email", e.target.value)}
+                    disabled={contactLoading}
+                    required
+                  />
                 </div>
-                <input className="input" type="text" placeholder="Company / Store name" />
+
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="Company / Store name"
+                  value={contact.company}
+                  onChange={(e) => setContactField("company", e.target.value)}
+                  disabled={contactLoading}
+                />
+
                 <textarea
                   className="input"
                   rows={4}
                   placeholder="What are you managing? (products, stock, stores, users...)"
+                  value={contact.message}
+                  onChange={(e) => setContactField("message", e.target.value)}
+                  disabled={contactLoading}
                 />
-                <button className="btn" type="button">
-                  Request access
+
+                <button className="btn" type="submit" disabled={contactLoading}>
+                  {contactLoading ? "Sending..." : "Request access"}
                 </button>
+
                 <div className="lp-muted lp-small">No spam. Just onboarding help.</div>
               </form>
             </div>

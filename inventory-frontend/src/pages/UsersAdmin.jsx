@@ -1,10 +1,23 @@
+// src/pages/UsersAdmin.jsx
 import { useEffect, useMemo, useState } from "react";
-import { createUser, getUsers, updateUserRoleById, inviteUserToTenant } from "../services/api";
-
+import {
+  createUser,
+  getUsers,
+  updateUserRoleById,
+  inviteUserToTenant,
+} from "../services/api";
 
 export default function UsersAdmin({ user }) {
-  // ✅ owner OR admin can access
-  const isAdmin = ["admin", "owner"].includes(String(user?.role || "").toLowerCase());
+  // tenantRole wins, then role
+  const uiRole = useMemo(
+    () => String(user?.tenantRole || user?.role || "").toLowerCase(),
+    [user]
+  );
+
+  const isAdmin = uiRole === "admin" || uiRole === "owner";
+
+  // ✅ prevent “flash access denied” during role hydration after tenant select/login
+  const [authReady, setAuthReady] = useState(false);
 
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -21,7 +34,10 @@ export default function UsersAdmin({ user }) {
   function toast(type, message) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setToasts((t) => [...t, { id, type, message }]);
-    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
+    window.setTimeout(
+      () => setToasts((t) => t.filter((x) => x.id !== id)),
+      3500
+    );
   }
 
   const [inviteForm, setInviteForm] = useState({ email: "", role: "staff" });
@@ -35,17 +51,23 @@ export default function UsersAdmin({ user }) {
   });
   const [creating, setCreating] = useState(false);
 
+  useEffect(() => {
+    // allow 1 tick for tenantRole to hydrate into App state after selectTenant/login
+    const t = window.setTimeout(() => setAuthReady(true), 0);
+    return () => window.clearTimeout(t);
+  }, [uiRole]);
+
   async function load() {
     setLoading(true);
     setPageErr("");
-    try {
-      const data = await getUsers();
 
-      // ✅ backend returns { users: [...] }
-      const list = Array.isArray(data?.users) ? data.users : Array.isArray(data) ? data : [];
-      setRows(list);
+    try {
+      // ✅ api.js getUsers() returns an ARRAY already
+      const list = await getUsers();
+      setRows(Array.isArray(list) ? list : []);
       setRowErrors({});
     } catch (e) {
+      setRows([]);
       setPageErr(e?.message || "Failed to load users");
     } finally {
       setLoading(false);
@@ -59,22 +81,25 @@ export default function UsersAdmin({ user }) {
   }, [isAdmin]);
 
   async function handleInvite(e) {
-  e.preventDefault();
-  setPageErr("");
+    e.preventDefault();
+    setPageErr("");
 
-  const payload = {
-    email: inviteForm.email.trim().toLowerCase(),
-    role: inviteForm.role,
-  };
+    const payload = {
+      email: inviteForm.email.trim().toLowerCase(),
+      role: inviteForm.role,
+    };
 
-  if (!payload.email) return toast("error", "Email is required");
+    if (!payload.email) return toast("error", "Email is required");
 
-  setInviting(true);
-  try {
-    const res = await inviteUserToTenant(payload);
-    toast("success", res?.mode === "invited" ? "Invite sent" : "User added to tenant");
-    setInviteForm({ email: "", role: "staff" });
-    await load();
+    setInviting(true);
+    try {
+      const res = await inviteUserToTenant(payload);
+      toast(
+        "success",
+        res?.mode === "invited" ? "Invite sent" : "User added to tenant"
+      );
+      setInviteForm({ email: "", role: "staff" });
+      await load();
     } catch (e2) {
       toast("error", e2?.message || "Invite failed");
     } finally {
@@ -82,22 +107,34 @@ export default function UsersAdmin({ user }) {
     }
   }
 
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return rows;
+
     return rows.filter((u) => {
       const email = String(u.email || "").toLowerCase();
       const name = String(u.full_name || "").toLowerCase();
-      const role = String(u.role || "").toLowerCase();
-      return email.includes(q) || name.includes(q) || role.includes(q) || String(u.id).includes(q);
+
+      // ✅ display/logic role (tenantRole first)
+      const roleText = String(u.tenantRole || u.role || "").toLowerCase();
+
+      return (
+        email.includes(q) ||
+        name.includes(q) ||
+        roleText.includes(q) ||
+        String(u.id).includes(q)
+      );
     });
   }, [rows, query]);
 
+  function getRoleForRow(u) {
+    return String(u.tenantRole || u.role || "staff").toLowerCase();
+  }
+
   function canChangeRole(targetUser, nextRole) {
-    // ✅ protect self from losing admin/owner access
     const me = Number(targetUser.id) === Number(user?.id);
     const next = String(nextRole || "").toLowerCase();
+
     if (me && !["admin", "owner"].includes(next)) {
       return { ok: false, reason: "You cannot remove your own admin/owner access." };
     }
@@ -107,17 +144,18 @@ export default function UsersAdmin({ user }) {
   function requestChangeRole(targetUser, nextRole) {
     setRowErrors((prev) => ({ ...prev, [targetUser.id]: "" }));
 
-    const prevRole = targetUser.role;
-    if (String(prevRole) === String(nextRole)) return;
+    const prevRole = getRoleForRow(targetUser);
+    const next = String(nextRole || "").toLowerCase();
+    if (prevRole === next) return;
 
-    const check = canChangeRole(targetUser, nextRole);
+    const check = canChangeRole(targetUser, next);
     if (!check.ok) {
       toast("error", check.reason);
       setRowErrors((prev) => ({ ...prev, [targetUser.id]: check.reason }));
       return;
     }
 
-    setConfirm({ target: targetUser, prevRole, nextRole });
+    setConfirm({ target: targetUser, prevRole, nextRole: next });
   }
 
   async function confirmChangeRole() {
@@ -131,7 +169,16 @@ export default function UsersAdmin({ user }) {
     setSavingId(target.id);
     setRowErrors((prev) => ({ ...prev, [target.id]: "" }));
 
-    setRows((prev) => prev.map((u) => (u.id === target.id ? { ...u, role: nextRole } : u)));
+    // optimistic UI update (update tenantRole if present; otherwise update role)
+    setRows((prev) =>
+      prev.map((u) =>
+        u.id === target.id
+          ? u.tenantRole !== undefined
+            ? { ...u, tenantRole: nextRole }
+            : { ...u, role: nextRole }
+          : u
+      )
+    );
 
     try {
       const res = await updateUserRoleById(target.id, nextRole);
@@ -142,8 +189,19 @@ export default function UsersAdmin({ user }) {
       }));
 
       toast("success", res?.message || `Updated ${target.email} to ${nextRole}`);
+      await load(); // ✅ sync with backend truth
     } catch (e) {
-      setRows((prev) => prev.map((u) => (u.id === target.id ? { ...u, role: prevRole } : u)));
+      // revert
+      setRows((prev) =>
+        prev.map((u) =>
+          u.id === target.id
+            ? u.tenantRole !== undefined
+              ? { ...u, tenantRole: prevRole }
+              : { ...u, role: prevRole }
+            : u
+        )
+      );
+
       const msg = e?.message || "Failed to update role";
       setRowErrors((prev) => ({ ...prev, [target.id]: msg }));
       toast("error", msg);
@@ -173,9 +231,17 @@ export default function UsersAdmin({ user }) {
     setSavingId(userId);
     setRowErrors((prev) => ({ ...prev, [userId]: "" }));
 
-    const currentRole = target.role;
+    const currentRole = getRoleForRow(target);
 
-    setRows((prev) => prev.map((u) => (u.id === userId ? { ...u, role: info.prevRole } : u)));
+    setRows((prev) =>
+      prev.map((u) =>
+        u.id === userId
+          ? u.tenantRole !== undefined
+            ? { ...u, tenantRole: info.prevRole }
+            : { ...u, role: info.prevRole }
+          : u
+      )
+    );
 
     try {
       const res = await updateUserRoleById(userId, info.prevRole);
@@ -187,8 +253,18 @@ export default function UsersAdmin({ user }) {
       });
 
       toast("success", res?.message || `Reverted role to ${info.prevRole}`);
+      await load();
     } catch (e) {
-      setRows((prev) => prev.map((u) => (u.id === userId ? { ...u, role: currentRole } : u)));
+      setRows((prev) =>
+        prev.map((u) =>
+          u.id === userId
+            ? u.tenantRole !== undefined
+              ? { ...u, tenantRole: currentRole }
+              : { ...u, role: currentRole }
+            : u
+        )
+      );
+
       const msg = e?.message || "Undo failed";
       setRowErrors((prev) => ({ ...prev, [userId]: msg }));
       toast("error", msg);
@@ -225,6 +301,16 @@ export default function UsersAdmin({ user }) {
     } finally {
       setCreating(false);
     }
+  }
+
+  // ✅ prevent flash denial before tenantRole is available in state
+  if (!authReady) {
+    return (
+      <div style={{ maxWidth: 900 }}>
+        <h1>Users</h1>
+        <p style={{ color: "#6b7280" }}>Loading access…</p>
+      </div>
+    );
   }
 
   if (!isAdmin) {
@@ -310,7 +396,9 @@ export default function UsersAdmin({ user }) {
             >
               <div style={{ fontWeight: 700 }}>
                 {confirm.target.full_name || "—"}{" "}
-                <span style={{ fontWeight: 400, color: "#6b7280" }}>(ID: {confirm.target.id})</span>
+                <span style={{ fontWeight: 400, color: "#6b7280" }}>
+                  (ID: {confirm.target.id})
+                </span>
               </div>
               <div style={{ color: "#374151" }}>{confirm.target.email}</div>
               <div style={{ marginTop: 8, fontSize: 13, color: "#6b7280" }}>
@@ -334,7 +422,7 @@ export default function UsersAdmin({ user }) {
         <div>
           <h1 style={{ marginBottom: 6 }}>User Management</h1>
           <p style={{ marginTop: 0, color: "#6b7280" }}>
-            Create staff/admin users and manage roles. Changes are audited.
+            Create users, invite users to tenant, and manage per-tenant roles.
           </p>
         </div>
 
@@ -344,48 +432,50 @@ export default function UsersAdmin({ user }) {
       </div>
 
       {/* Invite user */}
-<div
-  style={{
-    marginTop: 14,
-    marginBottom: 16,
-    padding: 14,
-    border: "1px solid #e5e7eb",
-    borderRadius: 12,
-    background: "#fff",
-  }}
->
-  <h3 style={{ marginTop: 0 }}>Invite user to this tenant</h3>
+      <div
+        style={{
+          marginTop: 14,
+          marginBottom: 16,
+          padding: 14,
+          border: "1px solid #e5e7eb",
+          borderRadius: 12,
+          background: "#fff",
+        }}
+      >
+        <h3 style={{ marginTop: 0 }}>Invite user to this tenant</h3>
 
-  <form onSubmit={handleInvite} style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-    <input
-      className="input"
-      placeholder="Email"
-      value={inviteForm.email}
-      onChange={(e) => setInviteForm((p) => ({ ...p, email: e.target.value }))}
-      style={{ minWidth: 260 }}
-    />
+        <form
+          onSubmit={handleInvite}
+          style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}
+        >
+          <input
+            className="input"
+            placeholder="Email"
+            value={inviteForm.email}
+            onChange={(e) => setInviteForm((p) => ({ ...p, email: e.target.value }))}
+            style={{ minWidth: 260 }}
+          />
 
-    <select
-      className="input"
-      value={inviteForm.role}
-      onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value }))}
-      style={{ maxWidth: 200 }}
-    >
-      <option value="staff">staff</option>
-      <option value="admin">admin</option>
-      <option value="owner">owner</option>
-    </select>
+          <select
+            className="input"
+            value={inviteForm.role}
+            onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value }))}
+            style={{ maxWidth: 200 }}
+          >
+            <option value="staff">staff</option>
+            <option value="admin">admin</option>
+            <option value="owner">owner</option>
+          </select>
 
-    <button className="btn" type="submit" disabled={inviting}>
-      {inviting ? "Inviting..." : "Send invite"}
-    </button>
-      </form>
+          <button className="btn" type="submit" disabled={inviting}>
+            {inviting ? "Inviting..." : "Send invite"}
+          </button>
+        </form>
 
-      <p style={{ marginTop: 10, color: "#6b7280", fontSize: 13 }}>
-        This sends an invite email and the user can accept to join this tenant.
-      </p>
-    </div>
-
+        <p style={{ marginTop: 10, color: "#6b7280", fontSize: 13 }}>
+          Invited users will join this tenant with the selected role.
+        </p>
+      </div>
 
       {/* Create user */}
       <div
@@ -480,7 +570,7 @@ export default function UsersAdmin({ user }) {
               <th align="left">ID</th>
               <th align="left">Name</th>
               <th align="left">Email</th>
-              <th align="left">Role</th>
+              <th align="left">Role (tenant)</th>
               <th align="left">Created</th>
               <th align="left">Actions</th>
             </tr>
@@ -497,10 +587,12 @@ export default function UsersAdmin({ user }) {
 
             {!loading &&
               filtered.map((u) => {
-                const isMe = u.id === user?.id;
+                const isMe = Number(u.id) === Number(user?.id);
                 const isSaving = savingId === u.id;
                 const inlineErr = rowErrors[u.id];
                 const canUndo = !!undoMap[u.id];
+
+                const currentRole = getRoleForRow(u);
 
                 return (
                   <tr key={u.id}>
@@ -512,7 +604,7 @@ export default function UsersAdmin({ user }) {
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <select
                           className="input"
-                          value={u.role}
+                          value={currentRole}
                           disabled={isSaving}
                           onChange={(e) => requestChangeRole(u, e.target.value)}
                           style={{ minWidth: 140 }}
@@ -536,11 +628,15 @@ export default function UsersAdmin({ user }) {
                           </span>
                         )}
 
-                        {isSaving && <span style={{ fontSize: 12, color: "#6b7280" }}>Saving...</span>}
+                        {isSaving && (
+                          <span style={{ fontSize: 12, color: "#6b7280" }}>Saving...</span>
+                        )}
                       </div>
 
                       {inlineErr ? (
-                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div>
+                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>
+                          {inlineErr}
+                        </div>
                       ) : null}
                     </td>
 
@@ -565,7 +661,9 @@ export default function UsersAdmin({ user }) {
                       {canUndo && (
                         <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
                           Last change: <b>{undoMap[u.id].newRole}</b>{" "}
-                          <span style={{ opacity: 0.8 }}>(undo → {undoMap[u.id].prevRole})</span>
+                          <span style={{ opacity: 0.8 }}>
+                            (undo → {undoMap[u.id].prevRole})
+                          </span>
                         </div>
                       )}
                     </td>

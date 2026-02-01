@@ -1,5 +1,5 @@
 // src/pages/Landing.jsx
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { getStoredUser, getTenantId } from "../services/api";
 
@@ -8,9 +8,7 @@ const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/
 async function safeJson(res) {
   try {
     return await res.json();
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn("safeJson parse failed:", err);
+  } catch {
     return null;
   }
 }
@@ -19,35 +17,32 @@ export default function Landing() {
   const [menuOpen, setMenuOpen] = useState(false);
   const year = new Date().getFullYear();
 
-  // ✅ Contact form state
+  // ✅ Contact form state (+ honeypot: website)
   const [contact, setContact] = useState({
     name: "",
     email: "",
     company: "",
     message: "",
+    website: "", // honeypot (should stay empty)
   });
+
   const [contactLoading, setContactLoading] = useState(false);
   const [contactError, setContactError] = useState("");
   const [contactOk, setContactOk] = useState(false);
 
   // ✅ SAFE: read storage fresh each render
-  const token = localStorage.getItem("token") || "";
   const user = getStoredUser();
   const tenantId = getTenantId();
+  const token = localStorage.getItem("token") || "";
 
-  // ✅ IMPORTANT: “logged in” must mean token + user
+  // ✅ “logged in” must mean token + user
   const isAuthed = Boolean(token) && Boolean(user);
-  const hasTenant = Boolean(tenantId);
-
-  // ✅ compute redirect target without conditional hooks
-  const redirectTarget = useMemo(() => {
-    if (!isAuthed) return null;
-    return hasTenant ? "/dashboard" : "/select-tenant";
-  }, [isAuthed, hasTenant]);
+  const needsLogin = !isAuthed;
+  const needsTenant = isAuthed && !tenantId;
 
   // ✅ Auto-redirect only when truly authenticated
-  if (redirectTarget) {
-    return <Navigate to={redirectTarget} replace />;
+  if (!needsLogin) {
+    return needsTenant ? <Navigate to="/select-tenant" replace /> : <Navigate to="/dashboard" replace />;
   }
 
   function closeMenu() {
@@ -67,6 +62,7 @@ export default function Landing() {
     const email = String(contact.email || "").trim();
     const company = String(contact.company || "").trim();
     const message = String(contact.message || "").trim();
+    const website = String(contact.website || "").trim(); // honeypot
 
     if (!name) return setContactError("Full name is required.");
     if (!email) return setContactError("Email is required.");
@@ -79,7 +75,7 @@ export default function Landing() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify({ name, email, company, message }),
+        body: JSON.stringify({ name, email, company, message, website }),
       });
 
       const data = await safeJson(res);
@@ -89,12 +85,27 @@ export default function Landing() {
       }
 
       setContactOk(true);
-      setContact({ name: "", email: "", company: "", message: "" });
+      setContact({
+        name: "",
+        email: "",
+        company: "",
+        message: "",
+        website: "",
+      });
     } catch (err) {
       const msg = err?.message || "Unable to send request.";
       setContactError(msg);
-      // eslint-disable-next-line no-console
-      console.warn("Request access failed:", err);
+
+      // optional fallback mailto (only if you still want it)
+      const mailto = `mailto:admin@store.com?subject=${encodeURIComponent("Request access")}&body=${encodeURIComponent(
+        `Name: ${name}\nEmail: ${email}\nCompany: ${company}\n\nMessage:\n${message}`
+      )}`;
+
+      try {
+        window.open(mailto, "_blank");
+      } catch {
+        // ignore
+      }
     } finally {
       setContactLoading(false);
     }
@@ -121,11 +132,9 @@ export default function Landing() {
             <a className="btn" href="#pricing">
               See pricing
             </a>
-
             <Link className="btn" to="/login">
               Sign in
             </Link>
-
             <Link className="btn" to="/signup">
               Create account
             </Link>
@@ -160,11 +169,9 @@ export default function Landing() {
             <a className="btn" href="#pricing" onClick={closeMenu}>
               See pricing
             </a>
-
             <Link className="btn" to="/login" onClick={closeMenu}>
               Sign in
             </Link>
-
             <Link className="btn" to="/signup" onClick={closeMenu}>
               Create account
             </Link>
@@ -192,17 +199,14 @@ export default function Landing() {
 
               <div className="lp-sidebarNote">
                 <div className="lp-sidebarNoteTitle">Painless control</div>
-                <div className="lp-sidebarNoteText">
-                  Multi-tenant • roles • audit trails — built in.
-                </div>
+                <div className="lp-sidebarNoteText">Multi-tenant • roles • audit trails — built in.</div>
               </div>
             </aside>
 
             <div className="lp-heroRight">
               <h1 className="lp-heroTitle">One dashboard. Total control.</h1>
               <p className="lp-heroSub">
-                Track products, stock, users, and multiple tenants in one clean system. No
-                spreadsheets. No confusion.
+                Track products, stock, users, and multiple tenants in one clean system. No spreadsheets. No confusion.
               </p>
 
               <div className="lp-heroActions">
@@ -385,9 +389,7 @@ export default function Landing() {
             <div className="lp-contactGrid">
               <div>
                 <h2 className="lp-sectionTitle lp-noMargin">Ready to launch?</h2>
-                <p className="lp-sectionSub lp-subTight">
-                  Get set up fast. Clean roles, clean tenants, clean inventory.
-                </p>
+                <p className="lp-sectionSub lp-subTight">Get set up fast. Clean roles, clean tenants, clean inventory.</p>
 
                 <div className="lp-trustRow" style={{ marginTop: 14 }}>
                   <span className="lp-trustPill">Responsive UI</span>
@@ -398,9 +400,7 @@ export default function Landing() {
 
               <form className="lp-form" onSubmit={submitRequestAccess}>
                 {contactError ? (
-                  <div style={{ color: "#991b1b", fontSize: 12, marginBottom: 8 }}>
-                    {contactError}
-                  </div>
+                  <div style={{ color: "#991b1b", fontSize: 12, marginBottom: 8 }}>{contactError}</div>
                 ) : null}
 
                 {contactOk ? (
@@ -408,6 +408,17 @@ export default function Landing() {
                     ✅ Request sent. We’ll reach out shortly.
                   </div>
                 ) : null}
+
+                {/* Honeypot (hidden) */}
+                <input
+                  type="text"
+                  value={contact.website}
+                  onChange={(e) => setContactField("website", e.target.value)}
+                  autoComplete="off"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  style={{ position: "absolute", left: "-9999px", top: "-9999px" }}
+                />
 
                 <div className="lp-formGrid2">
                   <input

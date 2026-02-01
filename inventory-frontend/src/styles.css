@@ -420,7 +420,9 @@ h1 {
 html.page-exit body .lp-root {
   animation: lpExit 450ms ease forwards;
   transform-origin: 50% 50%;
+  opacity: 1;
 }
+
 
 @keyframes lpExit {
   from {

@@ -77,7 +77,7 @@ export default function SelectTenant({ onSuccess }) {
   }
 
   return (
-    <div style={{ maxWidth: 720, padding: 18 }}>
+    <div className="page-enter" style={{ maxWidth: 720, padding: 18 }}>
       <h1>Select Tenant</h1>
       <p style={{ color: "#6b7280" }}>Choose which workspace to use.</p>
 

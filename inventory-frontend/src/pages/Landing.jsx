@@ -1,7 +1,9 @@
 // src/pages/Landing.jsx
 import { useState } from "react";
-import { Link, Navigate } from "react-router-dom";
+import { Link, Navigate, useNavigate  } from "react-router-dom";
 import { getStoredUser, getTenantId } from "../services/api";
+import { startPageExit } from "../utils/pageTransition";
+
 
 const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
 
@@ -14,6 +16,7 @@ async function safeJson(res) {
 }
 
 export default function Landing() {
+  const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const year = new Date().getFullYear();
 
@@ -47,6 +50,19 @@ export default function Landing() {
 
   function closeMenu() {
     setMenuOpen(false);
+  }
+
+   function exitTo(path) {
+    // close menu so it doesn't flash during animation
+    setMenuOpen(false);
+
+    // trigger exit animation
+    const ms = 450;
+    startPageExit({ ms });
+
+    window.setTimeout(() => {
+      navigate(path);
+    }, ms);
   }
 
   function setContactField(key, value) {
@@ -112,7 +128,7 @@ export default function Landing() {
   }
 
   return (
-    <>
+    <div className="lp-root">
       {/* Top bar */}
       <header className="lp-topbar">
         <div className="lp-topbar-inner">
@@ -132,12 +148,13 @@ export default function Landing() {
             <a className="btn" href="#pricing">
               See pricing
             </a>
-            <Link className="btn" to="/login">
+            <button className="btn" type="button" onClick={() => exitTo("/login")}>
               Sign in
-            </Link>
-            <Link className="btn" to="/signup">
+            </button>
+
+            <button className="btn" type="button" onClick={() => exitTo("/signup")}>
               Create account
-            </Link>
+            </button>
           </div>
 
           <button
@@ -169,12 +186,13 @@ export default function Landing() {
             <a className="btn" href="#pricing" onClick={closeMenu}>
               See pricing
             </a>
-            <Link className="btn" to="/login" onClick={closeMenu}>
+            <button className="btn" type="button" onClick={() => exitTo("/login")}>
               Sign in
-            </Link>
-            <Link className="btn" to="/signup" onClick={closeMenu}>
+            </button>
+
+            <button className="btn" type="button" onClick={() => exitTo("/signup")}>
               Create account
-            </Link>
+            </button>
           </div>
         </div>
       </header>
@@ -210,10 +228,10 @@ export default function Landing() {
               </p>
 
               <div className="lp-heroActions">
-                <a className="btn" href="#contact">
-                  Start free
-                </a>
-                <a className="btn lp-btn-outline" href="#features">
+               <button className="btn" type="button" onClick={() => exitTo("/signup")}>
+                Start free
+              </button>
+                <a className="btn" href="#features">
                   See features
                 </a>
               </div>
@@ -482,6 +500,6 @@ export default function Landing() {
           </div>
         </div>
       </footer>
-    </>
+    </div>
   );
 }

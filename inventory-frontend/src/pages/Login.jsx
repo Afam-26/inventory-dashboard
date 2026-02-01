@@ -117,8 +117,8 @@ export default function Login({ onSuccess }) {
     }
   }
 
-  return (
-    <div style={styles.page}>
+return (
+  <div className="page-enter" style={styles.page}>
       <div style={styles.card}>
         <h1 style={styles.title}>Login</h1>
         <p style={styles.subtitle}>Sign in to your account.</p>

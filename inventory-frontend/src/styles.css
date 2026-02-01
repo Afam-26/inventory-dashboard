@@ -415,3 +415,42 @@ h1 {
   white-space: nowrap;
 }
 .lp-linkBtn:hover { opacity: 0.8; }
+
+/* Landing exit animation */
+html.page-exit body .lp-root {
+  animation: lpExit 450ms ease forwards;
+  transform-origin: 50% 50%;
+}
+
+@keyframes lpExit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.98);
+    filter: blur(6px);
+  }
+}
+
+/* App enter animation */
+.page-enter {
+  animation: pageEnter 420ms ease both;
+}
+
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+

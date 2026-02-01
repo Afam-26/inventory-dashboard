@@ -134,7 +134,7 @@ export default function Signup() {
   };
 
   return (
-    <div style={bg}>
+    <div className="page-enter" style={bg}>
       <div style={{ width: 1040, maxWidth: "100%" }}>
         <div style={{ color: "#fff", marginBottom: 10 }}>
           <div style={{ fontSize: 28, fontWeight: 900, letterSpacing: -0.4 }}>Create your workspace</div>

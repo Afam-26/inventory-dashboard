@@ -1,6 +1,7 @@
 // src/App.jsx
 import { Routes, Route, Navigate, Outlet, useLocation } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
+import { consumePageExit } from "./utils/pageTransition";
 
 import RequireAdmin from "./components/RequireAdmin";
 
@@ -49,10 +50,14 @@ export default function App() {
   // Optional: keep state synced if storage changed elsewhere
   useEffect(() => {
     if (!user && effectiveUser) setUser(effectiveUser);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps    
   }, [token, tenantId]);
 
-  return (
+  useEffect(() => {
+  consumePageExit(); // removes html.page-exit if ever left behind
+  }, []);
+
+  return (    
     <Routes>
       {/* =========================
           PUBLIC AREA
@@ -154,7 +159,7 @@ export default function App() {
 
       {/* Global catch-all */}
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    </Routes>   
   );
 }
 

@@ -1,39 +1,24 @@
 // src/pages/AuditDashboard.jsx
 import { useEffect, useMemo, useState } from "react";
 
-/**
- * API base
- */
 const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
 
-/**
- * Helpers
- */
 function getToken() {
   return localStorage.getItem("token") || "";
 }
-
 function getTenantId() {
   const t = localStorage.getItem("tenantId");
   const n = Number(t);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
-
 function authHeaders(extra = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-    ...extra,
-  };
-
+  const headers = { "Content-Type": "application/json", ...extra };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-
   const tenantId = getTenantId();
   if (tenantId) headers["x-tenant-id"] = String(tenantId);
-
   return headers;
 }
-
 async function safeJson(res) {
   if (res.status === 204 || res.status === 304) return null;
   try {
@@ -42,11 +27,6 @@ async function safeJson(res) {
     return null;
   }
 }
-
-/**
- * Fetch JSON with fallback:
- * tries /api/audit/* first, and if 404 tries /api/admin/audit/*
- */
 async function fetchJsonAudit(path) {
   const primary = `${API_BASE}/audit${path}`;
   const fallback = `${API_BASE}/admin/audit${path}`;
@@ -79,9 +59,6 @@ async function fetchJsonAudit(path) {
   return (await safeJson(res)) ?? {};
 }
 
-/**
- * Fetch CSV blob with fallback
- */
 async function fetchBlobAudit(path) {
   const primary = `${API_BASE}/audit${path}`;
   const fallback = `${API_BASE}/admin/audit${path}`;
@@ -122,7 +99,7 @@ function fmtDate(iso) {
 
 function Card({ title, right, children }) {
   return (
-    <div style={styles.card}>
+    <div className="card">
       <div style={styles.cardHeaderRow}>
         <div style={styles.cardTitle}>{title}</div>
         {right ? <div>{right}</div> : null}
@@ -134,10 +111,10 @@ function Card({ title, right, children }) {
 
 function Kpi({ label, value, sub }) {
   return (
-    <div style={styles.kpi}>
-      <div style={styles.kpiLabel}>{label}</div>
-      <div style={styles.kpiValue}>{value ?? "—"}</div>
-      {sub ? <div style={styles.mutedSm}>{sub}</div> : null}
+    <div className="card">
+      <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 900, marginTop: 6 }}>{value ?? "—"}</div>
+      {sub ? <div style={{ fontSize: 12, color: "#6b7280" }}>{sub}</div> : null}
     </div>
   );
 }
@@ -146,16 +123,16 @@ function BarChart({ data }) {
   const max = Math.max(1, ...(data || []).map((d) => Number(d.count || 0)));
 
   return (
-    <div style={styles.card}>
+    <div className="card">
       <div style={styles.cardHeaderRow}>
         <div style={styles.cardTitle}>Events per day</div>
-        <div style={styles.mutedSm}>
+        <div style={{ fontSize: 12, color: "#6b7280" }}>
           Max/day: <b>{max}</b>
         </div>
       </div>
 
       {!data || data.length === 0 ? (
-        <div style={styles.empty}>No daily data for this range.</div>
+        <div style={{ color: "#6b7280", fontSize: 13 }}>No daily data for this range.</div>
       ) : (
         <div
           style={{
@@ -170,10 +147,7 @@ function BarChart({ data }) {
           {data.map((d) => {
             const h = Math.round((Number(d.count || 0) / max) * 120);
             return (
-              <div
-                key={d.day}
-                style={{ width: 18, display: "flex", flexDirection: "column", alignItems: "center" }}
-              >
+              <div key={d.day} style={{ width: 18, display: "flex", flexDirection: "column", alignItems: "center" }}>
                 <div
                   title={`${d.day}: ${d.count}`}
                   style={{
@@ -206,7 +180,7 @@ function BarChart({ data }) {
 
 function Table({ columns, rows, emptyText = "No data" }) {
   return (
-    <div style={{ overflowX: "auto" }}>
+    <div className="tableWrap">
       <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead style={{ background: "#f3f4f6" }}>
           <tr>
@@ -228,9 +202,7 @@ function Table({ columns, rows, emptyText = "No data" }) {
             rows.map((r, idx) => (
               <tr key={r.id ?? `${idx}`}>
                 {columns.map((c) => (
-                  <td key={c.key}>
-                    {typeof c.render === "function" ? c.render(r) : r[c.key]}
-                  </td>
+                  <td key={c.key}>{typeof c.render === "function" ? c.render(r) : r[c.key]}</td>
                 ))}
               </tr>
             ))
@@ -242,34 +214,21 @@ function Table({ columns, rows, emptyText = "No data" }) {
 }
 
 export default function AuditDashboard({ user }) {
-  // tenant role from token selection is "owner/admin/staff"
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = role === "owner" || role === "admin";
 
-  // ---------------------------
-  // Stats
-  // ---------------------------
   const [days, setDays] = useState(30);
   const [stats, setStats] = useState(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [statsErr, setStatsErr] = useState("");
 
-  // ---------------------------
-  // Verify
-  // ---------------------------
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [verifyResult, setVerifyResult] = useState(null);
 
-  // ---------------------------
-  // Report
-  // ---------------------------
   const [reportDays, setReportDays] = useState(7);
   const [report, setReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
 
-  // ---------------------------
-  // Load stats
-  // ---------------------------
   useEffect(() => {
     if (!isAdmin) return;
 
@@ -333,7 +292,6 @@ export default function AuditDashboard({ user }) {
     try {
       setVerifyLoading(true);
       setVerifyResult(null);
-
       const r = await fetchJsonAudit(`/verify?limit=20000`);
       setVerifyResult(r);
     } catch (e) {
@@ -362,7 +320,7 @@ export default function AuditDashboard({ user }) {
 
   if (!isAdmin) {
     return (
-      <div style={{ maxWidth: 1100 }}>
+      <div>
         <h1>Audit Dashboard</h1>
         <p>You do not have access to this page.</p>
       </div>
@@ -370,51 +328,41 @@ export default function AuditDashboard({ user }) {
   }
 
   return (
-    <div style={{ maxWidth: 1100 }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: 12 }}>
+    <div className="auditdash-page">
+      <div className="page-head">
         <div>
           <h1 style={{ marginBottom: 6 }}>Audit Dashboard</h1>
           <div style={{ color: "#6b7280" }}>Stats, exports, integrity checks, and SOC-style summaries.</div>
         </div>
       </div>
 
-      {/* Sticky toolbar */}
-      <div style={styles.stickyBar}>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <select
-            className="input"
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
-            style={{ width: 160 }}
-          >
-            <option value={7}>Last 7 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={90}>Last 90 days</option>
-            <option value={180}>Last 180 days</option>
-          </select>
+      <div className="auditdash-sticky">
+        <select className="input" value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ width: 160 }}>
+          <option value={7}>Last 7 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+          <option value={180}>Last 180 days</option>
+        </select>
 
-          <button className="btn" onClick={downloadCsv}>
-            Export CSV
-          </button>
+        <button className="btn" onClick={downloadCsv}>
+          Export CSV
+        </button>
 
-          <button className="btn" onClick={verifyIntegrity} disabled={verifyLoading}>
-            {verifyLoading ? "Verifying..." : "Verify integrity"}
-          </button>
+        <button className="btn" onClick={verifyIntegrity} disabled={verifyLoading}>
+          {verifyLoading ? "Verifying..." : "Verify integrity"}
+        </button>
 
-          {verifyResult && (
-            <span style={verifyResult.ok ? styles.pillOk : styles.pillBad}>
-              {verifyResult.ok
-                ? `OK (checked ${verifyResult.checked}${verifyResult.startId ? `, startId ${verifyResult.startId}` : ""})`
-                : `BROKEN${verifyResult.brokenAtId ? ` at id ${verifyResult.brokenAtId}` : ""}: ${
-                    verifyResult.reason || "unknown"
-                  }`}
-            </span>
-          )}
-        </div>
+        {verifyResult && (
+          <span style={verifyResult.ok ? styles.pillOk : styles.pillBad}>
+            {verifyResult.ok
+              ? `OK (checked ${verifyResult.checked}${verifyResult.startId ? `, startId ${verifyResult.startId}` : ""})`
+              : `BROKEN${verifyResult.brokenAtId ? ` at id ${verifyResult.brokenAtId}` : ""}: ${
+                  verifyResult.reason || "unknown"
+                }`}
+          </span>
+        )}
       </div>
 
-      {/* Stats error */}
       {statsErr && (
         <div style={styles.errorBox}>
           <div style={{ fontWeight: 800, marginBottom: 6 }}>Audit stats failed</div>
@@ -422,22 +370,21 @@ export default function AuditDashboard({ user }) {
         </div>
       )}
 
-      {/* KPI row */}
       {statsLoading ? (
         <div style={{ marginTop: 16 }}>Loading stats...</div>
       ) : stats ? (
         <>
-          <div style={styles.kpiGrid}>
+          <div className="auditdash-kpis">
             <Kpi label="Total events" value={totalEvents} sub={`Range: last ${days} days`} />
             <Kpi label="Logins" value={loginCount} />
             <Kpi label="Failed logins" value={loginFailedCount} />
             <Kpi label="Role changes" value={roleChangeCount} sub="(derived from action names)" />
           </div>
 
-          <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "2fr 1fr" }}>
+          <div className="auditdash-grid2">
             <BarChart data={byDay} />
 
-            <Card title="Top users" right={<span style={styles.mutedSm}>Most active</span>}>
+            <Card title="Top users" right={<span style={{ fontSize: 12, color: "#6b7280" }}>Most active</span>}>
               {topUsers.length ? (
                 <ol style={{ margin: 0, paddingLeft: 18 }}>
                   {topUsers.map((u) => (
@@ -447,7 +394,7 @@ export default function AuditDashboard({ user }) {
                   ))}
                 </ol>
               ) : (
-                <div style={styles.empty}>No data</div>
+                <div style={{ color: "#6b7280", fontSize: 13 }}>No data</div>
               )}
             </Card>
 
@@ -461,7 +408,7 @@ export default function AuditDashboard({ user }) {
                   ))}
                 </ol>
               ) : (
-                <div style={styles.empty}>No data</div>
+                <div style={{ color: "#6b7280", fontSize: 13 }}>No data</div>
               )}
             </Card>
 
@@ -475,7 +422,7 @@ export default function AuditDashboard({ user }) {
                   ))}
                 </ol>
               ) : (
-                <div style={styles.empty}>No data</div>
+                <div style={{ color: "#6b7280", fontSize: 13 }}>No data</div>
               )}
             </Card>
           </div>
@@ -486,17 +433,8 @@ export default function AuditDashboard({ user }) {
         </div>
       )}
 
-      {/* SOC Report */}
-      <div style={{ marginTop: 16, ...styles.card }}>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 10,
-            alignItems: "center",
-            flexWrap: "wrap",
-          }}
-        >
+      <div className="card" style={{ marginTop: 16 }}>
+        <div className="auditdash-reportHead">
           <div>
             <div style={{ fontWeight: 800 }}>SOC-style Audit Report</div>
             <div style={{ color: "#6b7280", fontSize: 13 }}>
@@ -504,13 +442,8 @@ export default function AuditDashboard({ user }) {
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <select
-              className="input"
-              value={reportDays}
-              onChange={(e) => setReportDays(Number(e.target.value))}
-              style={{ width: 140 }}
-            >
+          <div className="auditdash-reportActions">
+            <select className="input" value={reportDays} onChange={(e) => setReportDays(Number(e.target.value))} style={{ width: 140 }}>
               <option value={1}>1 day</option>
               <option value={7}>7 days</option>
               <option value={14}>14 days</option>
@@ -533,15 +466,15 @@ export default function AuditDashboard({ user }) {
               Generated: <b>{fmtDate(report.generated_at)}</b> • Window: <b>{report.window_days} days</b>
             </div>
 
-            <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(4, 1fr)" }}>
+            <div className="auditdash-kpis">
               <Card title="Total events">{report?.summary?.total_events ?? "—"}</Card>
               <Card title="Logins">{report?.summary?.logins ?? "—"}</Card>
               <Card title="Failed logins">{report?.summary?.failed_logins ?? "—"}</Card>
               <Card title="Role changes">{report?.summary?.role_changes ?? "—"}</Card>
             </div>
 
-            <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "1fr 1fr" }}>
-              <div style={styles.card}>
+            <div className="auditdash-grid2">
+              <div className="card">
                 <div style={styles.cardHeaderRow}>
                   <div style={styles.cardTitle}>Failed logins by email (Top 10)</div>
                 </div>
@@ -555,7 +488,7 @@ export default function AuditDashboard({ user }) {
                 />
               </div>
 
-              <div style={styles.card}>
+              <div className="card">
                 <div style={styles.cardHeaderRow}>
                   <div style={styles.cardTitle}>Failed logins by IP (Top 10)</div>
                 </div>
@@ -570,11 +503,11 @@ export default function AuditDashboard({ user }) {
               </div>
             </div>
 
-            <div style={{ marginTop: 12, display: "grid", gap: 12, gridTemplateColumns: "1fr" }}>
-              <div style={styles.card}>
+            <div style={{ marginTop: 12 }}>
+              <div className="card">
                 <div style={styles.cardHeaderRow}>
                   <div style={styles.cardTitle}>After-hours logins (Latest 25)</div>
-                  <div style={styles.mutedSm}>Total: {(report?.findings?.after_hours_logins || []).length}</div>
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>Total: {(report?.findings?.after_hours_logins || []).length}</div>
                 </div>
                 <Table
                   columns={[
@@ -589,10 +522,10 @@ export default function AuditDashboard({ user }) {
                 />
               </div>
 
-              <div style={styles.card}>
+              <div className="card" style={{ marginTop: 12 }}>
                 <div style={styles.cardHeaderRow}>
                   <div style={styles.cardTitle}>Destructive events (Latest 25)</div>
-                  <div style={styles.mutedSm}>Total: {(report?.findings?.destructive_events || []).length}</div>
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>Total: {(report?.findings?.destructive_events || []).length}</div>
                 </div>
                 <Table
                   columns={[
@@ -624,24 +557,15 @@ export default function AuditDashboard({ user }) {
 }
 
 const styles = {
-  card: {
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: 14,
-    background: "#fff",
-    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-  },
   cardHeaderRow: {
     display: "flex",
     justifyContent: "space-between",
     gap: 10,
     alignItems: "baseline",
     marginBottom: 10,
+    flexWrap: "wrap",
   },
   cardTitle: { fontWeight: 800 },
-  mutedSm: { fontSize: 12, color: "#6b7280" },
-  empty: { color: "#6b7280", fontSize: 13 },
-
   errorBox: {
     marginTop: 12,
     padding: 12,
@@ -650,35 +574,6 @@ const styles = {
     border: "1px solid #fecaca",
     color: "#991b1b",
   },
-
-  stickyBar: {
-    position: "sticky",
-    top: 10,
-    zIndex: 5,
-    marginTop: 12,
-    padding: 10,
-    borderRadius: 14,
-    background: "rgba(255,255,255,0.92)",
-    border: "1px solid #e5e7eb",
-    backdropFilter: "blur(10px)",
-  },
-
-  kpiGrid: {
-    marginTop: 12,
-    display: "grid",
-    gap: 12,
-    gridTemplateColumns: "repeat(4, 1fr)",
-  },
-  kpi: {
-    border: "1px solid #e5e7eb",
-    borderRadius: 14,
-    padding: 14,
-    background: "#fff",
-    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-  },
-  kpiLabel: { fontSize: 12, color: "#6b7280", fontWeight: 700 },
-  kpiValue: { fontSize: 26, fontWeight: 900, marginTop: 6 },
-
   pillOk: {
     display: "inline-flex",
     alignItems: "center",
@@ -701,7 +596,6 @@ const styles = {
     fontSize: 12,
     fontWeight: 700,
   },
-
   pre: {
     margin: 0,
     fontSize: 12,

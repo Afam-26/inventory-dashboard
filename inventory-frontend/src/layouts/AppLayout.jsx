@@ -15,48 +15,27 @@ export default function AppLayout({ user, setUser }) {
   const isAdmin = uiRole === "admin" || uiRole === "owner";
 
   async function logout() {
-    // ✅ always clear local state FIRST (prevents UI flash / stale guard logic)
     clearPostLoginRedirect();
     setToken("");
     setStoredUser(null);
     setTenantId(null);
     setUser(null);
 
-    // best-effort server logout
     try {
       await logoutApi();
     } catch {
-      // ignore — local state already cleared
+      // ignore
     }
 
-    // ✅ hard reset
     window.location.replace("/");
   }
 
   return (
     <div className="app-shell">
-      {/* Top bar (APP ONLY) */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          padding: 10,
-          alignItems: "center",
-        }}
-      >
-        <p style={{ margin: 0 }}>
+      <div className="app-topbar">
+        <p className="app-topbar-left">
           Logged in as{" "}
-          <span
-            style={{
-              padding: "4px 10px",
-              borderRadius: 999,
-              background: isAdmin ? "#111827" : "#2563eb",
-              color: "#fff",
-              fontWeight: 600,
-              fontSize: 12,
-              textTransform: "uppercase",
-            }}
-          >
+          <span className={`app-rolePill ${isAdmin ? "admin" : "staff"}`}>
             {uiRole || "user"}
           </span>
         </p>
@@ -66,10 +45,12 @@ export default function AppLayout({ user, setUser }) {
         </button>
       </div>
 
-      <div style={{ display: "flex", minHeight: "100vh" }}>
+      <div className="app-body">
         <Sidebar user={user} />
-        <main style={{ flex: 1, padding: 20 }}>
-          <Outlet />
+        <main className="app-main">
+          <div className="page-enter">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

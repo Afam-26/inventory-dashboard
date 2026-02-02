@@ -113,11 +113,6 @@ function guessMapping(headers) {
   };
 }
 
-function n0(v) {
-  const num = Number(v);
-  return Number.isFinite(num) ? num : 0;
-}
-
 export default function Products({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = role === "admin" || role === "owner";
@@ -128,26 +123,17 @@ export default function Products({ user }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // disable per-row buttons while saving/deleting
   const [savingId, setSavingId] = useState(null);
-
-  // per-row error messages
   const [rowErrors, setRowErrors] = useState({}); // { [productId]: string }
 
-  // Search
   const [search, setSearch] = useState("");
 
-  // edit
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(null);
 
-  // delete confirm
   const [confirmDelete, setConfirmDelete] = useState(null);
-
-  // undo delete
   const [undo, setUndo] = useState(null);
 
-  // create form (admin only)
   const [form, setForm] = useState({
     name: "",
     sku: "",
@@ -160,7 +146,7 @@ export default function Products({ user }) {
   });
 
   /* ============================
-     Barcode scanner (Stock.jsx pattern)
+     Barcode scanner (Quagga global)
   ============================ */
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scanError, setScanError] = useState("");
@@ -181,16 +167,11 @@ export default function Products({ user }) {
   async function handleDetectedCode(codeRaw) {
     const code = String(codeRaw || "").trim();
     if (!code) return;
-
     if (code === lastScan) return;
     setLastScan(code);
-    setScanError("");
 
-    setForm((prev) => ({
-      ...prev,
-      barcode: code,
-      // sku: prev.sku || code,
-    }));
+    setScanError("");
+    setForm((prev) => ({ ...prev, barcode: code }));
 
     setScannerOpen(false);
     stopScanner();
@@ -216,14 +197,7 @@ export default function Products({ user }) {
           constraints: { facingMode: "environment" },
         },
         decoder: {
-          readers: [
-            "ean_reader",
-            "ean_8_reader",
-            "upc_reader",
-            "upc_e_reader",
-            "code_128_reader",
-            "code_39_reader",
-          ],
+          readers: ["ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_128_reader", "code_39_reader"],
         },
         locate: true,
       },
@@ -264,7 +238,6 @@ export default function Products({ user }) {
   });
 
   const [createMissingCategories, setCreateMissingCategories] = useState(true);
-
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState({ done: 0, total: 0 });
   const [importMsg, setImportMsg] = useState("");
@@ -274,10 +247,13 @@ export default function Products({ user }) {
   async function loadAll(searchQuery = "") {
     setLoading(true);
     setError("");
+
     try {
       const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
+
       const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
       setProducts(list);
+
       const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
       setCategories(cats);
     } catch (e2) {
@@ -308,24 +284,18 @@ export default function Products({ user }) {
     e.preventDefault();
     setError("");
 
-    const payload = {
-      name: String(form.name || "").trim(),
-      sku: String(form.sku || "").trim() || null,
-      barcode: String(form.barcode || "").trim() || null,
-      category_id: form.category_id ? Number(form.category_id) : null,
-      quantity: n0(form.quantity),
-      cost_price: n0(form.cost_price),
-      selling_price: n0(form.selling_price),
-      reorder_level: n0(form.reorder_level),
-    };
-
-    if (!payload.name) {
-      setError("Product name is required.");
-      return;
-    }
-
     try {
-      await addProduct(payload);
+      await addProduct({
+        ...form,
+        name: String(form.name || "").trim(),
+        sku: String(form.sku || "").trim() || null,
+        barcode: String(form.barcode || "").trim() || null,
+        category_id: form.category_id ? Number(form.category_id) : null,
+        quantity: Number(form.quantity) || 0,
+        cost_price: Number(form.cost_price) || 0,
+        selling_price: Number(form.selling_price) || 0,
+        reorder_level: Number(form.reorder_level) || 0,
+      });
 
       setForm({
         name: "",
@@ -375,19 +345,11 @@ export default function Products({ user }) {
         name: String(editForm.name || "").trim(),
         sku: String(editForm.sku || "").trim() || null,
         barcode: String(editForm.barcode || "").trim() || null,
-        category_id:
-          editForm.category_id === "" || editForm.category_id == null
-            ? null
-            : Number(editForm.category_id),
-        cost_price: n0(editForm.cost_price),
-        selling_price: n0(editForm.selling_price),
-        reorder_level: n0(editForm.reorder_level),
+        category_id: editForm.category_id === "" || editForm.category_id == null ? null : Number(editForm.category_id),
+        cost_price: Number(editForm.cost_price) || 0,
+        selling_price: Number(editForm.selling_price) || 0,
+        reorder_level: Number(editForm.reorder_level) || 0,
       };
-
-      if (!payload.name) {
-        setRowErrors((prev) => ({ ...prev, [id]: "Name is required." }));
-        return;
-      }
 
       await updateProduct(id, payload);
       await loadAll(search);
@@ -446,6 +408,7 @@ export default function Products({ user }) {
 
   async function undoDelete() {
     if (!undo) return;
+
     setError("");
     try {
       await addProduct(undo.payload);
@@ -465,9 +428,6 @@ export default function Products({ user }) {
     }
   }
 
-  /* ============================
-     CSV Import: choose file
-  ============================ */
   async function onChooseCsv(file) {
     if (!file) return;
 
@@ -479,7 +439,6 @@ export default function Products({ user }) {
     try {
       const text = await file.text();
       const parsed = parseCsv(text);
-
       if (parsed.length < 2) throw new Error("CSV must include header + at least 1 data row.");
 
       const headers = parsed[0].map((h) => String(h ?? "").trim());
@@ -593,7 +552,6 @@ export default function Products({ user }) {
     }
 
     return { ok: issues.length === 0, issues, counts: { total, bad } };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [csvRows, mapping]);
 
   const previewRows = useMemo(() => {
@@ -601,7 +559,6 @@ export default function Products({ user }) {
       line: i + 2,
       obj: buildRowObject(r),
     }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [csvRows, mapping]);
 
   function makePayloadFromObj(obj) {
@@ -614,11 +571,7 @@ export default function Products({ user }) {
       cost_price: mapping.cost_price >= 0 ? Number(obj.cost_price) || 0 : 0,
       selling_price: mapping.selling_price >= 0 ? Number(obj.selling_price) || 0 : 0,
       reorder_level:
-        mapping.reorder_level >= 0
-          ? obj.reorder_level === ""
-            ? 10
-            : Number(obj.reorder_level) || 0
-          : 10,
+        mapping.reorder_level >= 0 ? (obj.reorder_level === "" ? 10 : Number(obj.reorder_level) || 0) : 10,
     };
   }
 
@@ -719,9 +672,7 @@ export default function Products({ user }) {
     const lines = [header.join(",")];
 
     for (const r of combined) {
-      lines.push(
-        [csvEscape(r.source), csvEscape(r.line), csvEscape(r.sku), csvEscape(r.message)].join(",")
-      );
+      lines.push([csvEscape(r.source), csvEscape(r.line), csvEscape(r.sku), csvEscape(r.message)].join(","));
     }
 
     downloadTextFile("products_import_errors.csv", lines.join("\n"), "text/csv;charset=utf-8");
@@ -749,92 +700,21 @@ export default function Products({ user }) {
   };
 
   return (
-    <div style={{ width: "100%", maxWidth: 1100 }}>
-      {/* Responsive helper CSS (local to this page) */}
-      <style>{`
-        .prod-toolbar {
-          display:flex;
-          justify-content:space-between;
-          align-items:flex-end;
-          gap:12px;
-          flex-wrap:wrap;
-        }
-        .prod-toolbar-right {
-          display:flex;
-          gap:10px;
-          align-items:center;
-          flex-wrap:wrap;
-          width:100%;
-        }
-        .prod-search {
-          width:100%;
-          min-width:0 !important;
-        }
-
-        @media (min-width: 740px) {
-          .prod-toolbar-right { width:auto; }
-          .prod-search { width:320px; }
-        }
-
-        .prod-import-grid {
-          display:grid;
-          grid-template-columns: 1fr;
-          gap:10px;
-        }
-        @media (min-width: 860px) {
-          .prod-import-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        }
-
-        .prod-create-grid {
-          display:grid;
-          grid-template-columns: 1fr;
-          gap:10px;
-        }
-        @media (min-width: 860px) {
-          .prod-create-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        }
-        @media (min-width: 1060px) {
-          .prod-create-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-        }
-
-        .prod-actions {
-          display:flex;
-          gap:10px;
-          align-items:center;
-          flex-wrap:wrap;
-        }
-
-        .prod-table-wrap { overflow-x:auto; width:100%; }
-        .prod-table { width:100%; border-collapse:collapse; min-width: 980px; }
-        @media (max-width: 900px) {
-          .prod-table { min-width: 900px; }
-        }
-      `}</style>
-
-      <div className="prod-toolbar">
+    <div className="products-page">
+      <div className="products-header">
         <div>
-          <h1 style={{ marginBottom: 6 }}>Products</h1>
+          <h1 className="products-title">Products</h1>
+
           {!isAdmin && (
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 10px",
-                borderRadius: 999,
-                background: "#111827",
-                color: "#fff",
-                fontSize: 12,
-              }}
-            >
+            <div className="products-pill">
               Read-only (Staff)
             </div>
           )}
         </div>
 
-        <div className="prod-toolbar-right">
+        <div className="products-actions">
           <input
-            className="input prod-search"
+            className="input"
             placeholder="Search (name, SKU, category)"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -846,18 +726,11 @@ export default function Products({ user }) {
           </button>
 
           {isAdmin && (
-            <label
-              className="btn"
-              style={{
-                cursor: anyBusy ? "not-allowed" : "pointer",
-                opacity: anyBusy ? 0.7 : 1,
-              }}
-            >
+            <label className="btn products-fileBtn">
               Choose CSV
               <input
                 type="file"
                 accept=".csv,text/csv"
-                style={{ display: "none" }}
                 disabled={anyBusy}
                 onChange={(e) => {
                   const f = e.target.files?.[0];
@@ -881,16 +754,8 @@ export default function Products({ user }) {
 
       {/* CSV Import Panel (admin only) */}
       {isAdmin && (
-        <div
-          style={{
-            marginTop: 14,
-            border: "1px solid #e5e7eb",
-            borderRadius: 12,
-            padding: 12,
-            background: "#f9fafb",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div className="products-import card" style={{ background: "#f9fafb" }}>
+          <div className="products-importTop">
             <div>
               <div style={{ fontWeight: 800 }}>CSV Import</div>
               <div style={{ color: "#6b7280", fontSize: 12 }}>
@@ -898,8 +763,8 @@ export default function Products({ user }) {
               </div>
             </div>
 
-            <div className="prod-actions">
-              <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 12 }}>
+            <div className="products-importActions">
+              <label className="products-check">
                 <input
                   type="checkbox"
                   checked={createMissingCategories}
@@ -924,7 +789,6 @@ export default function Products({ user }) {
             </div>
           </div>
 
-          {/* Progress bar */}
           {importing && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, color: "#374151", marginBottom: 6 }}>
@@ -945,12 +809,11 @@ export default function Products({ user }) {
             </div>
           )}
 
-          {/* Column mapping */}
           {csvHeaders.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Column Mapping</div>
 
-              <div className="prod-import-grid">
+              <div className="products-mapping">
                 {[
                   ["name", "Name (required)"],
                   ["sku", "SKU (required)"],
@@ -961,14 +824,13 @@ export default function Products({ user }) {
                   ["selling_price", "Selling Price"],
                   ["reorder_level", "Reorder Level"],
                 ].map(([key, label]) => (
-                  <div key={key} style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
-                    <div style={{ width: 170, fontSize: 12, color: "#374151" }}>{label}</div>
+                  <div key={key} className="products-mapRow">
+                    <div className="products-mapLabel">{label}</div>
                     <select
                       className="input"
                       value={mapping[key]}
                       disabled={anyBusy}
                       onChange={(e) => setMapping((m) => ({ ...m, [key]: Number(e.target.value) }))}
-                      style={{ minWidth: 0 }}
                     >
                       <option value={-1}>— Not mapped —</option>
                       {csvHeaders.map((h, idx) => (
@@ -994,15 +856,10 @@ export default function Products({ user }) {
                 )}
               </div>
 
-              {/* Preview */}
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Preview (first {previewCount} rows)</div>
-                <div style={{ overflowX: "auto" }}>
-                  <table
-                    border="1"
-                    cellPadding="8"
-                    style={{ width: "100%", borderCollapse: "collapse", background: "#fff", minWidth: 900 }}
-                  >
+                <div className="products-tableWrap">
+                  <table border="1" cellPadding="8" style={{ width: "100%", borderCollapse: "collapse", background: "#fff" }}>
                     <thead style={{ background: "#f3f4f6" }}>
                       <tr>
                         <th>Line</th>
@@ -1040,35 +897,33 @@ export default function Products({ user }) {
                     </tbody>
                   </table>
                 </div>
-
-                {validation.issues.length > 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontWeight: 700, marginBottom: 6, color: "#b45309" }}>
-                      Validation issues (first 10)
-                    </div>
-                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#92400e" }}>
-                      {validation.issues.slice(0, 10).map((x, i) => (
-                        <li key={i}>
-                          Line {x.line} {x.sku ? `(SKU: ${x.sku})` : ""}: {x.message}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                {importErrors.length > 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontWeight: 700, marginBottom: 6, color: "#991b1b" }}>Import errors (first 10)</div>
-                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#991b1b" }}>
-                      {importErrors.slice(0, 10).map((x, i) => (
-                        <li key={i}>
-                          Line {x.line} {x.sku ? `(SKU: ${x.sku})` : ""}: {x.message}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
               </div>
+
+              {validation.issues.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#b45309" }}>Validation issues (first 10)</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#92400e" }}>
+                    {validation.issues.slice(0, 10).map((x, i) => (
+                      <li key={i}>
+                        Line {x.line} {x.sku ? `(SKU: ${x.sku})` : ""}: {x.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {importErrors.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#991b1b" }}>Import errors (first 10)</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#991b1b" }}>
+                    {importErrors.slice(0, 10).map((x, i) => (
+                      <li key={i}>
+                        Line {x.line} {x.sku ? `(SKU: ${x.sku})` : ""}: {x.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1076,8 +931,8 @@ export default function Products({ user }) {
 
       {/* Admin create form */}
       {isAdmin && (
-        <form onSubmit={handleCreate} style={{ marginTop: 14 }}>
-          <div className="prod-create-grid">
+        <form onSubmit={handleCreate} className="products-create card">
+          <div className="products-formGrid">
             <input
               className="input"
               placeholder="Product name *"
@@ -1153,28 +1008,21 @@ export default function Products({ user }) {
             />
           </div>
 
-          {/* Buttons row */}
-          <div className="prod-actions" style={{ marginTop: 10 }}>
-            <button
-              className="btn"
-              type="submit"
-              disabled={anyBusy}
-              style={{ padding: "10px 14px", fontSize: 12, width: "fit-content" }}
-            >
+          <div className="products-createActions">
+            <button className="btn products-smallBtn" type="submit" disabled={anyBusy}>
               Add Product
             </button>
 
             <button
-              className="btn"
+              className="btn products-smallBtn"
               type="button"
               disabled={anyBusy}
               onClick={() => setScannerOpen(true)}
-              style={{ padding: "10px 14px", fontSize: 12, width: "fit-content" }}
             >
               Scan barcode
             </button>
 
-            <div style={{ fontSize: 12, color: "#6b7280" }}>(Tip: works best on phone camera)</div>
+            <div className="products-tip">(Tip: works best on phone camera)</div>
           </div>
         </form>
       )}
@@ -1271,7 +1119,7 @@ export default function Products({ user }) {
               <div style={{ color: "#6b7280" }}>Barcode: {confirmDelete.barcode || "-"}</div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
               <button className="btn" onClick={() => setConfirmDelete(null)} disabled={savingId != null}>
                 Cancel
               </button>
@@ -1287,9 +1135,8 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* Products table */}
-      <div className="prod-table-wrap" style={{ marginTop: 14 }}>
-        <table border="1" cellPadding="10" className="prod-table">
+      <div className="products-tableWrap" style={{ marginTop: 14 }}>
+        <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead style={{ background: "#f3f4f6" }}>
             <tr>
               <th>Name</th>
@@ -1377,8 +1224,8 @@ export default function Products({ user }) {
                   <td>{p.reorder_level}</td>
 
                   {isAdmin && (
-                    <td style={{ minWidth: 260 }}>
-                      <div className="prod-actions">
+                    <td style={{ minWidth: 240 }}>
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                         {!isEditing ? (
                           <button className="btn" onClick={() => startEdit(p)} disabled={anyBusy}>
                             Edit

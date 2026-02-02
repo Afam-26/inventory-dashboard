@@ -1,22 +1,11 @@
 // src/pages/UsersAdmin.jsx
 import { useEffect, useMemo, useState } from "react";
-import {
-  createUser,
-  getUsers,
-  updateUserRoleById,
-  inviteUserToTenant,
-} from "../services/api";
+import { createUser, getUsers, updateUserRoleById, inviteUserToTenant } from "../services/api";
 
 export default function UsersAdmin({ user }) {
-  // tenantRole wins, then role
-  const uiRole = useMemo(
-    () => String(user?.tenantRole || user?.role || "").toLowerCase(),
-    [user]
-  );
-
+  const uiRole = useMemo(() => String(user?.tenantRole || user?.role || "").toLowerCase(), [user]);
   const isAdmin = uiRole === "admin" || uiRole === "owner";
 
-  // ✅ prevent “flash access denied” during role hydration after tenant select/login
   const [authReady, setAuthReady] = useState(false);
 
   const [rows, setRows] = useState([]);
@@ -34,10 +23,7 @@ export default function UsersAdmin({ user }) {
   function toast(type, message) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setToasts((t) => [...t, { id, type, message }]);
-    window.setTimeout(
-      () => setToasts((t) => t.filter((x) => x.id !== id)),
-      3500
-    );
+    window.setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3500);
   }
 
   const [inviteForm, setInviteForm] = useState({ email: "", role: "staff" });
@@ -52,7 +38,6 @@ export default function UsersAdmin({ user }) {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    // allow 1 tick for tenantRole to hydrate into App state after selectTenant/login
     const t = window.setTimeout(() => setAuthReady(true), 0);
     return () => window.clearTimeout(t);
   }, [uiRole]);
@@ -60,9 +45,7 @@ export default function UsersAdmin({ user }) {
   async function load() {
     setLoading(true);
     setPageErr("");
-
     try {
-      // ✅ api.js getUsers() returns an ARRAY already
       const list = await getUsers();
       setRows(Array.isArray(list) ? list : []);
       setRowErrors({});
@@ -88,16 +71,12 @@ export default function UsersAdmin({ user }) {
       email: inviteForm.email.trim().toLowerCase(),
       role: inviteForm.role,
     };
-
     if (!payload.email) return toast("error", "Email is required");
 
     setInviting(true);
     try {
       const res = await inviteUserToTenant(payload);
-      toast(
-        "success",
-        res?.mode === "invited" ? "Invite sent" : "User added to tenant"
-      );
+      toast("success", res?.mode === "invited" ? "Invite sent" : "User added to tenant");
       setInviteForm({ email: "", role: "staff" });
       await load();
     } catch (e2) {
@@ -114,16 +93,9 @@ export default function UsersAdmin({ user }) {
     return rows.filter((u) => {
       const email = String(u.email || "").toLowerCase();
       const name = String(u.full_name || "").toLowerCase();
-
-      // ✅ display/logic role (tenantRole first)
       const roleText = String(u.tenantRole || u.role || "").toLowerCase();
 
-      return (
-        email.includes(q) ||
-        name.includes(q) ||
-        roleText.includes(q) ||
-        String(u.id).includes(q)
-      );
+      return email.includes(q) || name.includes(q) || roleText.includes(q) || String(u.id).includes(q);
     });
   }, [rows, query]);
 
@@ -134,7 +106,6 @@ export default function UsersAdmin({ user }) {
   function canChangeRole(targetUser, nextRole) {
     const me = Number(targetUser.id) === Number(user?.id);
     const next = String(nextRole || "").toLowerCase();
-
     if (me && !["admin", "owner"].includes(next)) {
       return { ok: false, reason: "You cannot remove your own admin/owner access." };
     }
@@ -169,7 +140,6 @@ export default function UsersAdmin({ user }) {
     setSavingId(target.id);
     setRowErrors((prev) => ({ ...prev, [target.id]: "" }));
 
-    // optimistic UI update (update tenantRole if present; otherwise update role)
     setRows((prev) =>
       prev.map((u) =>
         u.id === target.id
@@ -189,9 +159,8 @@ export default function UsersAdmin({ user }) {
       }));
 
       toast("success", res?.message || `Updated ${target.email} to ${nextRole}`);
-      await load(); // ✅ sync with backend truth
+      await load();
     } catch (e) {
-      // revert
       setRows((prev) =>
         prev.map((u) =>
           u.id === target.id
@@ -286,9 +255,7 @@ export default function UsersAdmin({ user }) {
 
     if (!payload.full_name) return toast("error", "Full name is required");
     if (!payload.email) return toast("error", "Email is required");
-    if (!payload.password || payload.password.length < 8) {
-      return toast("error", "Password must be at least 8 characters");
-    }
+    if (!payload.password || payload.password.length < 8) return toast("error", "Password must be at least 8 characters");
 
     setCreating(true);
     try {
@@ -303,10 +270,9 @@ export default function UsersAdmin({ user }) {
     }
   }
 
-  // ✅ prevent flash denial before tenantRole is available in state
   if (!authReady) {
     return (
-      <div style={{ maxWidth: 900 }}>
+      <div>
         <h1>Users</h1>
         <p style={{ color: "#6b7280" }}>Loading access…</p>
       </div>
@@ -315,7 +281,7 @@ export default function UsersAdmin({ user }) {
 
   if (!isAdmin) {
     return (
-      <div style={{ maxWidth: 900 }}>
+      <div>
         <h1>Users</h1>
         <p>You do not have access to this page.</p>
       </div>
@@ -344,7 +310,7 @@ export default function UsersAdmin({ user }) {
   };
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <div className="users-page">
       {/* Toasts */}
       <div
         style={{
@@ -371,9 +337,7 @@ export default function UsersAdmin({ user }) {
               border: "1px solid rgba(255,255,255,.08)",
             }}
           >
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>
-              {t.type === "success" ? "✅ Success" : "⚠️ Error"}
-            </div>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>{t.type === "success" ? "✅ Success" : "⚠️ Error"}</div>
             <div style={{ opacity: 0.95 }}>{t.message}</div>
           </div>
         ))}
@@ -396,9 +360,7 @@ export default function UsersAdmin({ user }) {
             >
               <div style={{ fontWeight: 700 }}>
                 {confirm.target.full_name || "—"}{" "}
-                <span style={{ fontWeight: 400, color: "#6b7280" }}>
-                  (ID: {confirm.target.id})
-                </span>
+                <span style={{ fontWeight: 400, color: "#6b7280" }}>(ID: {confirm.target.id})</span>
               </div>
               <div style={{ color: "#374151" }}>{confirm.target.email}</div>
               <div style={{ marginTop: 8, fontSize: 13, color: "#6b7280" }}>
@@ -406,7 +368,7 @@ export default function UsersAdmin({ user }) {
               </div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
               <button className="btn" onClick={cancelConfirm}>
                 Cancel
               </button>
@@ -418,12 +380,11 @@ export default function UsersAdmin({ user }) {
         </div>
       )}
 
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "end" }}>
+      {/* Header */}
+      <div className="page-head">
         <div>
           <h1 style={{ marginBottom: 6 }}>User Management</h1>
-          <p style={{ marginTop: 0, color: "#6b7280" }}>
-            Create users, invite users to tenant, and manage per-tenant roles.
-          </p>
+          <p style={{ marginTop: 0, color: "#6b7280" }}>Create users, invite users to tenant, and manage per-tenant roles.</p>
         </div>
 
         <button className="btn" onClick={load} disabled={loading}>
@@ -432,35 +393,21 @@ export default function UsersAdmin({ user }) {
       </div>
 
       {/* Invite user */}
-      <div
-        style={{
-          marginTop: 14,
-          marginBottom: 16,
-          padding: 14,
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
-          background: "#fff",
-        }}
-      >
+      <div className="card" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Invite user to this tenant</h3>
 
-        <form
-          onSubmit={handleInvite}
-          style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}
-        >
+        <form onSubmit={handleInvite} className="form-grid-3">
           <input
             className="input"
             placeholder="Email"
             value={inviteForm.email}
             onChange={(e) => setInviteForm((p) => ({ ...p, email: e.target.value }))}
-            style={{ minWidth: 260 }}
           />
 
           <select
             className="input"
             value={inviteForm.role}
             onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value }))}
-            style={{ maxWidth: 200 }}
           >
             <option value="staff">staff</option>
             <option value="admin">admin</option>
@@ -472,75 +419,55 @@ export default function UsersAdmin({ user }) {
           </button>
         </form>
 
-        <p style={{ marginTop: 10, color: "#6b7280", fontSize: 13 }}>
-          Invited users will join this tenant with the selected role.
-        </p>
+        <p style={{ marginTop: 10, color: "#6b7280", fontSize: 13 }}>Invited users will join this tenant with the selected role.</p>
       </div>
 
       {/* Create user */}
-      <div
-        style={{
-          marginTop: 14,
-          marginBottom: 16,
-          padding: 14,
-          border: "1px solid #e5e7eb",
-          borderRadius: 12,
-          background: "#fff",
-        }}
-      >
+      <div className="card" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Create user</h3>
 
-        <form onSubmit={handleCreate} style={{ display: "grid", gap: 10, maxWidth: 740 }}>
-          <div style={{ display: "flex", gap: 10 }}>
-            <input
-              className="input"
-              placeholder="Full name"
-              value={createForm.full_name}
-              onChange={(e) => setCreateForm((p) => ({ ...p, full_name: e.target.value }))}
-            />
+        <form onSubmit={handleCreate} className="form-grid-2">
+          <input
+            className="input"
+            placeholder="Full name"
+            value={createForm.full_name}
+            onChange={(e) => setCreateForm((p) => ({ ...p, full_name: e.target.value }))}
+          />
 
-            <input
-              className="input"
-              placeholder="Email"
-              value={createForm.email}
-              onChange={(e) => setCreateForm((p) => ({ ...p, email: e.target.value }))}
-            />
-          </div>
+          <input
+            className="input"
+            placeholder="Email"
+            value={createForm.email}
+            onChange={(e) => setCreateForm((p) => ({ ...p, email: e.target.value }))}
+          />
 
-          <div style={{ display: "flex", gap: 10 }}>
-            <input
-              className="input"
-              type="password"
-              placeholder="Temp password (min 8)"
-              value={createForm.password}
-              onChange={(e) => setCreateForm((p) => ({ ...p, password: e.target.value }))}
-            />
+          <input
+            className="input"
+            type="password"
+            placeholder="Temp password (min 8)"
+            value={createForm.password}
+            onChange={(e) => setCreateForm((p) => ({ ...p, password: e.target.value }))}
+          />
 
-            <select
-              className="input"
-              value={createForm.role}
-              onChange={(e) => setCreateForm((p) => ({ ...p, role: e.target.value }))}
-              style={{ maxWidth: 200 }}
-            >
-              <option value="staff">staff</option>
-              <option value="admin">admin</option>
-              <option value="owner">owner</option>
-            </select>
-          </div>
+          <select className="input" value={createForm.role} onChange={(e) => setCreateForm((p) => ({ ...p, role: e.target.value }))}>
+            <option value="staff">staff</option>
+            <option value="admin">admin</option>
+            <option value="owner">owner</option>
+          </select>
 
-          <button className="btn" type="submit" disabled={creating}>
+          <button className="btn" type="submit" disabled={creating} style={{ gridColumn: "1 / -1" }}>
             {creating ? "Creating..." : "Create user"}
           </button>
         </form>
       </div>
 
-      <div style={{ display: "flex", gap: 12, alignItems: "center", margin: "14px 0" }}>
+      {/* Search row */}
+      <div className="users-searchRow">
         <input
           className="input"
           placeholder="Search name, email, role, id..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          style={{ maxWidth: 420 }}
         />
 
         <div style={{ fontSize: 13, color: "#6b7280" }}>
@@ -563,7 +490,7 @@ export default function UsersAdmin({ user }) {
         </div>
       )}
 
-      <div style={{ overflowX: "auto" }}>
+      <div className="tableWrap" style={{ marginTop: 10 }}>
         <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead style={{ background: "#f3f4f6" }}>
             <tr>
@@ -591,7 +518,6 @@ export default function UsersAdmin({ user }) {
                 const isSaving = savingId === u.id;
                 const inlineErr = rowErrors[u.id];
                 const canUndo = !!undoMap[u.id];
-
                 const currentRole = getRoleForRow(u);
 
                 return (
@@ -600,8 +526,8 @@ export default function UsersAdmin({ user }) {
                     <td>{u.full_name || "-"}</td>
                     <td>{u.email}</td>
 
-                    <td style={{ minWidth: 280 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <td style={{ minWidth: 260 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                         <select
                           className="input"
                           value={currentRole}
@@ -628,22 +554,18 @@ export default function UsersAdmin({ user }) {
                           </span>
                         )}
 
-                        {isSaving && (
-                          <span style={{ fontSize: 12, color: "#6b7280" }}>Saving...</span>
-                        )}
+                        {isSaving && <span style={{ fontSize: 12, color: "#6b7280" }}>Saving...</span>}
                       </div>
 
                       {inlineErr ? (
-                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>
-                          {inlineErr}
-                        </div>
+                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div>
                       ) : null}
                     </td>
 
                     <td>{u.created_at ? new Date(u.created_at).toLocaleString() : "-"}</td>
 
                     <td style={{ minWidth: 230 }}>
-                      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                         <button
                           className="btn"
                           onClick={() => undoRole(u.id)}
@@ -653,17 +575,12 @@ export default function UsersAdmin({ user }) {
                           Undo
                         </button>
 
-                        <span style={{ fontSize: 12, color: "#6b7280" }}>
-                          {isMe ? "Self protected" : "Ready"}
-                        </span>
+                        <span style={{ fontSize: 12, color: "#6b7280" }}>{isMe ? "Self protected" : "Ready"}</span>
                       </div>
 
                       {canUndo && (
                         <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-                          Last change: <b>{undoMap[u.id].newRole}</b>{" "}
-                          <span style={{ opacity: 0.8 }}>
-                            (undo → {undoMap[u.id].prevRole})
-                          </span>
+                          Last change: <b>{undoMap[u.id].newRole}</b> <span style={{ opacity: 0.8 }}>(undo → {undoMap[u.id].prevRole})</span>
                         </div>
                       )}
                     </td>

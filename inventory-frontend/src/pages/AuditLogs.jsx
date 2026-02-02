@@ -1,3 +1,4 @@
+// src/pages/AuditLogs.jsx
 import { useEffect, useMemo, useState } from "react";
 import { getAuditLogs, downloadAuditCsv } from "../services/api";
 
@@ -33,7 +34,6 @@ export default function AuditLogs({ user }) {
         user_email: isAdmin ? (String(userEmail || "").trim().toLowerCase() || undefined) : undefined,
       });
 
-      // ✅ backend returns { logs, total }
       setRows(Array.isArray(data?.logs) ? data.logs : []);
       setTotal(Number(data?.total || 0));
     } catch (e) {
@@ -63,8 +63,8 @@ export default function AuditLogs({ user }) {
   }
 
   return (
-    <div>
-      <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
+    <div className="auditlogs-page">
+      <div className="page-head">
         <h1 style={{ margin: 0 }}>{isAdmin ? "Audit Logs" : "My Activity"}</h1>
 
         <button className="btn" onClick={() => downloadAuditCsv({ limit: 20000 })} disabled={loading}>
@@ -72,8 +72,8 @@ export default function AuditLogs({ user }) {
         </button>
       </div>
 
-      <div style={filterCard}>
-        <div style={filterGrid}>
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="auditlogs-filters">
           <input
             className="input"
             placeholder="Action (e.g. LOGIN_FAILED)"
@@ -96,9 +96,13 @@ export default function AuditLogs({ user }) {
             <option value={200}>200</option>
           </select>
 
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="btn" onClick={applyFilters} disabled={loading}>Apply</button>
-            <button className="btn" onClick={clearFilters} disabled={loading}>Clear</button>
+          <div className="auditlogs-filterBtns">
+            <button className="btn" onClick={applyFilters} disabled={loading}>
+              Apply
+            </button>
+            <button className="btn" onClick={clearFilters} disabled={loading}>
+              Clear
+            </button>
           </div>
         </div>
       </div>
@@ -106,53 +110,68 @@ export default function AuditLogs({ user }) {
       {err && <p style={{ color: "red" }}>{err}</p>}
       {loading && <p>Loading…</p>}
 
-      <table border="1" cellPadding="10" style={{ width: "100%", marginTop: 12, borderCollapse: "collapse" }}>
-        <thead style={{ background: "#f3f4f6" }}>
-          <tr>
-            <th align="left">ID</th>
-            <th align="left">Date</th>
-            <th align="left">User</th>
-            <th align="left">Action</th>
-            <th align="left">Entity</th>
-            <th align="left">IP</th>
-            <th align="left">Details</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id}>
-              <td>{r.id}</td>
-              <td>{r.created_at ? new Date(r.created_at).toLocaleString() : "-"}</td>
-              <td>{r.user_email || "-"}</td>
-              <td><code>{r.action}</code></td>
-              <td>{r.entity_type}:{r.entity_id ?? "-"}</td>
-              <td>{r.ip_address ?? "-"}</td>
-              <td>
-                <pre style={pre}>{r.details ? JSON.stringify(r.details, null, 2) : "-"}</pre>
-              </td>
-            </tr>
-          ))}
-
-          {!rows.length && !loading && (
+      <div className="tableWrap" style={{ marginTop: 12 }}>
+        <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead style={{ background: "#f3f4f6" }}>
             <tr>
-              <td colSpan={7} style={{ textAlign: "center" }}>No results</td>
+              <th align="left">ID</th>
+              <th align="left">Date</th>
+              <th align="left">User</th>
+              <th align="left">Action</th>
+              <th align="left">Entity</th>
+              <th align="left">IP</th>
+              <th align="left">Details</th>
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td>{r.id}</td>
+                <td>{r.created_at ? new Date(r.created_at).toLocaleString() : "-"}</td>
+                <td>{r.user_email || "-"}</td>
+                <td>
+                  <code>{r.action}</code>
+                </td>
+                <td>
+                  {r.entity_type}:{r.entity_id ?? "-"}
+                </td>
+                <td>{r.ip_address ?? "-"}</td>
+                <td>
+                  <pre className="preBox">{r.details ? JSON.stringify(r.details, null, 2) : "-"}</pre>
+                </td>
+              </tr>
+            ))}
 
-      <div style={pager}>
-        <button className="btn" onClick={() => setPage(1)} disabled={page === 1 || loading}>First</button>
-        <button className="btn" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1 || loading}>Prev</button>
-        <span>Page {page} / {totalPages}</span>
-        <button className="btn" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages || loading}>Next</button>
-        <button className="btn" onClick={() => setPage(totalPages)} disabled={page >= totalPages || loading}>Last</button>
+            {!rows.length && !loading && (
+              <tr>
+                <td colSpan={7} style={{ textAlign: "center" }}>
+                  No results
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="auditlogs-pager">
+        <button className="btn" onClick={() => setPage(1)} disabled={page === 1 || loading}>
+          First
+        </button>
+        <button className="btn" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1 || loading}>
+          Prev
+        </button>
+
+        <span style={{ color: "#374151" }}>
+          Page <b>{page}</b> / <b>{totalPages}</b>
+        </span>
+
+        <button className="btn" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages || loading}>
+          Next
+        </button>
+        <button className="btn" onClick={() => setPage(totalPages)} disabled={page >= totalPages || loading}>
+          Last
+        </button>
       </div>
     </div>
   );
 }
-
-const filterCard = { border: "1px solid #e5e7eb", padding: 12, borderRadius: 12, marginTop: 12, background: "#fff" };
-const filterGrid = { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 };
-const pre = { background: "#f9fafb", padding: 8, borderRadius: 8, maxHeight: 200, overflow: "auto", fontSize: 12 };
-const pager = { display: "flex", gap: 8, marginTop: 12, alignItems: "center" };

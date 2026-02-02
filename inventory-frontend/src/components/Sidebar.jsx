@@ -1,40 +1,53 @@
-import { Link } from "react-router-dom";
+// src/components/Sidebar.jsx
+import { Link, useLocation } from "react-router-dom";
 
 export default function Sidebar({ user }) {
-  // ✅ Treat owner as admin
   const uiRole = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = uiRole === "admin" || uiRole === "owner";
 
-
-  const linkStyle = { color: "#fff", textDecoration: "none" };
+  const { pathname } = useLocation();
+  const isActive = (to) => pathname === to;
 
   return (
-    <div style={{ width: 220, background: "#111827", color: "#fff", padding: 20 }}>
-      <h2>Inventory</h2>
+    <aside className="sidebar">
+      <div className="sidebar-brand">Inventory</div>
 
-      <nav style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <Link to="/dashboard" style={linkStyle}>Dashboard</Link>
+      <nav className="sidebar-nav">
+        <Link className={`sidebar-link ${isActive("/dashboard") ? "active" : ""}`} to="/dashboard">
+          Dashboard
+        </Link>
 
-        {/* ✅ Anyone logged in */}
-        <Link to="/products" style={linkStyle}>Products</Link>
+        <Link className={`sidebar-link ${isActive("/products") ? "active" : ""}`} to="/products">
+          Products
+        </Link>
 
-        {/* ✅ Admin/Owner only */}
         {isAdmin && (
           <>
-            <Link to="/categories" style={linkStyle}>Categories</Link>
-            <Link to="/stock" style={linkStyle}>Stock In / Out</Link>
-            <Link to="/users" style={linkStyle}>Users</Link>
-            <Link to="/audit-dashboard" style={linkStyle}>Audit Dashboard</Link>
-            <Link to="/billing" style={linkStyle}>Billing</Link>
-
+            <Link className={`sidebar-link ${isActive("/categories") ? "active" : ""}`} to="/categories">
+              Categories
+            </Link>
+            <Link className={`sidebar-link ${isActive("/stock") ? "active" : ""}`} to="/stock">
+              Stock In / Out
+            </Link>
+            <Link className={`sidebar-link ${isActive("/users") ? "active" : ""}`} to="/users">
+              Users
+            </Link>
+            <Link
+              className={`sidebar-link ${isActive("/audit-dashboard") ? "active" : ""}`}
+              to="/audit-dashboard"
+            >
+              Audit Dashboard
+            </Link>
+            <Link className={`sidebar-link ${isActive("/billing") ? "active" : ""}`} to="/billing">
+              Billing
+            </Link>
           </>
         )}
 
-        {/* ✅ Logs label depends on role */}
-        <Link to="/audit" style={linkStyle}>
+        <Link className={`sidebar-link ${isActive("/audit") ? "active" : ""}`} to="/audit">
           {isAdmin ? "Audit Logs" : "My Activity"}
         </Link>
       </nav>
-    </div>
+    </aside>
   );
 }

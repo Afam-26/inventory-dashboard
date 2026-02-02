@@ -353,7 +353,7 @@ export default function Landing() {
                 <li>Basic roles</li>
                 <li>Email support</li>
               </ul>
-              <a className="btn lp-btn-outline lp-full" href="#contact">
+              <a className="btn lp-full" href="#contact">
                 Start free
               </a>
             </div>
@@ -390,7 +390,7 @@ export default function Landing() {
                 <li>Custom branding</li>
                 <li>SLA support</li>
               </ul>
-              <a className="btn lp-btn-outline lp-full" href="#contact">
+              <a className="btn lp-full" href="#contact">
                 Talk to sales
               </a>
             </div>

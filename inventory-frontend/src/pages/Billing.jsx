@@ -61,7 +61,6 @@ export default function Billing({ user }) {
   }
 
   function usageLine(u) {
-    // backend returns { used, limit, pct, label } typically (from makeUsageLine)
     if (!u) return null;
     const used = Number(u.used ?? 0);
     const limit = u.limit == null ? null : Number(u.limit);
@@ -88,7 +87,6 @@ export default function Billing({ user }) {
     try {
       const key = String(planKey || "").toLowerCase();
 
-      // ✅ If Stripe enabled AND we have priceId AND plan isn’t starter -> checkout flow
       const priceId = PRICE_IDS[key] || "";
       const shouldStripe =
         stripeEnabled && key !== "starter" && priceId && priceId.trim() !== "";
@@ -99,10 +97,8 @@ export default function Billing({ user }) {
           window.location.href = r.url;
           return;
         }
-        // fallback if Stripe didn’t return url
       }
 
-      // ✅ No-payment mode fallback (your original goal)
       await updateCurrentPlan(key);
       setMsg(`Plan updated to "${key}".`);
       await loadAll();
@@ -130,12 +126,38 @@ export default function Billing({ user }) {
 
   const currentKey = String(current?.planKey || "").toLowerCase();
 
+  // ✅ Responsive grids (no CSS file changes required)
+  const usageGridStyle = {
+    marginTop: 12,
+    display: "grid",
+    gap: 10,
+    gridTemplateColumns: "1fr",
+  };
+
+  const plansGridStyle = {
+    display: "grid",
+    gridTemplateColumns: "1fr",
+    gap: 14,
+  };
+
   return (
-    <div>
+    <div style={{ width: "100%", maxWidth: 1100 }}>
       <h1 style={{ marginBottom: 6 }}>Billing Plans</h1>
       <div style={{ color: "#6b7280", marginBottom: 16 }}>
         Choose a plan for this tenant. (No payment integration — just plan limits/enforcement.)
       </div>
+
+      {/* ✅ Responsive CSS in component */}
+      <style>{`
+        @media (min-width: 640px) {
+          .billing-usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+          .billing-plans-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+        }
+        @media (min-width: 980px) {
+          .billing-usage-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+          .billing-plans-grid { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+        }
+      `}</style>
 
       {err && <div style={{ color: "#b91c1c", marginBottom: 10 }}>{err}</div>}
       {msg && <div style={{ color: "#065f46", marginBottom: 10 }}>{msg}</div>}
@@ -155,7 +177,15 @@ export default function Billing({ user }) {
                 marginBottom: 14,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                }}
+              >
                 <div>
                   <div style={{ fontWeight: 900 }}>
                     Current plan:{" "}
@@ -169,7 +199,7 @@ export default function Billing({ user }) {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                   {stripeEnabled && current?.stripe?.customerId && (
                     <button className="btn" onClick={openPortal} disabled={!isAdmin || changing}>
                       Open Stripe Portal
@@ -180,22 +210,51 @@ export default function Billing({ user }) {
 
               {/* Usage meters */}
               {current?.usage && (
-                <div style={{ marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "repeat(3, minmax(0, 1fr))" }}>
+                <div className="billing-usage-grid" style={usageGridStyle}>
                   {[
                     ["Categories", usageLine(current.usage.categories)],
                     ["Products", usageLine(current.usage.products)],
                     ["Users", usageLine(current.usage.users)],
                   ].map(([label, u]) => (
-                    <div key={label} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 10, background: "#f9fafb" }}>
+                    <div
+                      key={label}
+                      style={{
+                        border: "1px solid #e5e7eb",
+                        borderRadius: 12,
+                        padding: 10,
+                        background: "#f9fafb",
+                        minWidth: 0,
+                      }}
+                    >
                       <div style={{ fontWeight: 800 }}>{label}</div>
                       <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
-                        {u?.limit == null ? `${u?.used ?? 0} / Unlimited` : `${u?.used ?? 0} / ${u?.limit ?? 0}`}
+                        {u?.limit == null
+                          ? `${u?.used ?? 0} / Unlimited`
+                          : `${u?.used ?? 0} / ${u?.limit ?? 0}`}
                       </div>
-                      <div style={{ height: 10, background: "#e5e7eb", borderRadius: 999, overflow: "hidden", marginTop: 8 }}>
-                        <div style={{ height: "100%", width: `${u?.limit == null ? 0 : (u?.pct ?? 0)}%`, background: "#111827" }} />
+
+                      <div
+                        style={{
+                          height: 10,
+                          background: "#e5e7eb",
+                          borderRadius: 999,
+                          overflow: "hidden",
+                          marginTop: 8,
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${u?.limit == null ? 0 : u?.pct ?? 0}%`,
+                            background: "#111827",
+                          }}
+                        />
                       </div>
+
                       {u?.label ? (
-                        <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>{u.label}</div>
+                        <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>
+                          {u.label}
+                        </div>
                       ) : null}
                     </div>
                   ))}
@@ -205,7 +264,7 @@ export default function Billing({ user }) {
           )}
 
           {/* Plan cards */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14 }}>
+          <div className="billing-plans-grid" style={plansGridStyle}>
             {plans.map((p) => {
               const key = String(p.key || "").toLowerCase();
               const isCurrent = key === currentKey;
@@ -219,17 +278,32 @@ export default function Billing({ user }) {
                     padding: 14,
                     background: "#fff",
                     boxShadow: "0 8px 22px rgba(0,0,0,.06)",
+                    minWidth: 0,
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      alignItems: "baseline",
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <div style={{ fontWeight: 900, fontSize: 18 }}>{p.name}</div>
                     <div style={{ color: "#111827", fontWeight: 800 }}>{p.priceLabel}</div>
                   </div>
 
                   <div style={{ marginTop: 10, fontSize: 13, color: "#374151" }}>
-                    <div>Categories limit: <b>{limitLabel(p?.limits?.categories)}</b></div>
-                    <div>Products limit: <b>{limitLabel(p?.limits?.products)}</b></div>
-                    <div>Users limit: <b>{limitLabel(p?.limits?.users)}</b></div>
+                    <div>
+                      Categories limit: <b>{limitLabel(p?.limits?.categories)}</b>
+                    </div>
+                    <div>
+                      Products limit: <b>{limitLabel(p?.limits?.products)}</b>
+                    </div>
+                    <div>
+                      Users limit: <b>{limitLabel(p?.limits?.users)}</b>
+                    </div>
                   </div>
 
                   <button
@@ -244,7 +318,8 @@ export default function Billing({ user }) {
 
                   {stripeEnabled && key !== "starter" && !PRICE_IDS[key] ? (
                     <div style={{ marginTop: 8, fontSize: 12, color: "#b45309" }}>
-                      Stripe is enabled, but no priceId configured for this plan — using no-payment fallback.
+                      Stripe is enabled, but no priceId configured for this plan — using no-payment
+                      fallback.
                     </div>
                   ) : null}
                 </div>

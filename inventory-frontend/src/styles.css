@@ -1,3 +1,6 @@
+/* =========================
+   Base
+   ========================= */
 body {
   margin: 0;
   font-family: Arial, sans-serif;
@@ -8,6 +11,21 @@ h1 {
   margin-top: 0;
 }
 
+/* prevent accidental horizontal scroll */
+html, body {
+  width: 100%;
+  overflow-x: hidden;
+}
+
+/* iOS safe area padding helpers */
+:root {
+  --safe-top: env(safe-area-inset-top);
+  --safe-right: env(safe-area-inset-right);
+  --safe-bottom: env(safe-area-inset-bottom);
+  --safe-left: env(safe-area-inset-left);
+}
+
+/* Cards, buttons, inputs */
 .card {
   background: white;
   padding: 16px;
@@ -22,6 +40,10 @@ h1 {
   padding: 10px 14px;
   border-radius: 8px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .btn:disabled {
@@ -29,16 +51,140 @@ h1 {
   cursor: not-allowed;
 }
 
-.input, select {
+.input,
+select,
+textarea {
   padding: 10px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
 }
 
-/* ===========================
+/* iOS: prevent zoom on focus */
+input, select, textarea, button {
+  font-size: 16px;
+}
+
+/* =========================
+   ✅ APP (private area) Mobile Layout
+   Requires:
+   - AppLayout root: .app-shell
+   - body wrapper: .app-body
+   - main: .app-main
+   - sidebar root: .sidebar
+   ========================= */
+
+/* Default app layout (desktop) */
+.app-shell {
+  width: 100%;
+}
+
+.app-body {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 280px;
+  flex: 0 0 280px;
+  background: #0b1220;
+  color: #fff;
+}
+
+/* main area */
+.app-main {
+  flex: 1;
+  min-width: 0; /* ✅ critical so content can shrink instead of overflowing */
+  padding: 20px;
+}
+
+/* Make tables scroll instead of breaking layout */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Generic “grid” helpers (works well for billing/pricing cards) */
+.responsive-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+@media (max-width: 1100px) {
+  .responsive-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .responsive-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ✅ Mobile: sidebar collapses, main becomes full width */
+@media (max-width: 900px) {
+  /* Reduce padding for smaller screens */
+  .app-main {
+    padding: 14px;
+  }
+
+  /* Stack layout */
+  .app-body {
+    display: block;
+  }
+
+  /* Sidebar becomes full-width top section (simple approach) */
+  .sidebar {
+    width: 100%;
+    flex: none;
+    border-radius: 0;
+  }
+
+  /* If your Sidebar has a list, keep it from being too tall */
+  .sidebar nav,
+  .sidebar .links {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding-bottom: 10px;
+  }
+
+  /* Sidebar link buttons should fit */
+  .sidebar a,
+  .sidebar button {
+    width: 100%;
+  }
+
+  /* Make headings smaller on mobile to prevent wrapping weirdly */
+  h1 {
+    font-size: 22px;
+  }
+
+  /* Billing / cards should never overflow */
+  .card {
+    padding: 14px;
+  }
+
+  /* Buttons fill width if needed (optional but nice on mobile forms) */
+  .btn.full {
+    width: 100%;
+  }
+}
+
+/* =========================
    Landing page styles (LP)
    Matches your dashboard 100%
-   =========================== */
+   ========================= */
 
 .lp-container {
   max-width: 1120px;
@@ -67,6 +213,7 @@ h1 {
   position: sticky;
   top: 0;
   z-index: 50;
+  padding-top: max(10px, var(--safe-top));
 }
 
 .lp-topbar-inner {
@@ -128,6 +275,8 @@ h1 {
   max-width: 1120px;
   margin: 0 auto;
   padding: 0 16px 12px 16px;
+  width: 100%;
+  box-sizing: border-box;
 }
 .lp-mobileMenu a {
   display: block;
@@ -378,6 +527,7 @@ h1 {
 .lp-footer {
   border-top: 1px solid #e5e7eb;
   background: #ffffff;
+  padding-bottom: max(16px, var(--safe-bottom));
 }
 .lp-footerInner {
   display: flex;
@@ -423,7 +573,6 @@ html.page-exit body .lp-root {
   opacity: 1;
 }
 
-
 @keyframes lpExit {
   from {
     opacity: 1;
@@ -454,5 +603,3 @@ html.page-exit body .lp-root {
     filter: blur(0);
   }
 }
-
-

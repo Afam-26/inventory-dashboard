@@ -34,7 +34,7 @@ export default function AppLayout({ user, setUser }) {
   }
 
   return (
-    <div>
+    <div className="app-shell">
       {/* Top bar (APP ONLY) */}
       <div
         style={{

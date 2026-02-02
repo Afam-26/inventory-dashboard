@@ -113,10 +113,14 @@ function guessMapping(headers) {
   };
 }
 
+function n0(v) {
+  const num = Number(v);
+  return Number.isFinite(num) ? num : 0;
+}
+
 export default function Products({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = role === "admin" || role === "owner";
-
 
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -157,8 +161,6 @@ export default function Products({ user }) {
 
   /* ============================
      Barcode scanner (Stock.jsx pattern)
-     - Uses Quagga loaded globally (window.Quagga)
-     - On detect, fills the BARCODE field in the create form and closes scanner
   ============================ */
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scanError, setScanError] = useState("");
@@ -171,9 +173,8 @@ export default function Products({ user }) {
         Q.offDetected();
         Q.stop();
       }
-    } catch (e) {
-      // Scanner may already be stopped; safe to ignore
-      void e;
+    } catch {
+      // ignore
     }
   }
 
@@ -181,21 +182,16 @@ export default function Products({ user }) {
     const code = String(codeRaw || "").trim();
     if (!code) return;
 
-    // prevent repeated rapid triggers
     if (code === lastScan) return;
     setLastScan(code);
-
     setScanError("");
 
-    // Fill barcode on create form
     setForm((prev) => ({
       ...prev,
       barcode: code,
-      // If you want SKU to auto-fill when empty, uncomment:
       // sku: prev.sku || code,
     }));
 
-    // close scanner
     setScannerOpen(false);
     stopScanner();
   }
@@ -238,7 +234,6 @@ export default function Products({ user }) {
         }
 
         Q.start();
-
         Q.onDetected((data) => {
           const code = data?.codeResult?.code;
           if (code) handleDetectedCode(code);
@@ -246,9 +241,7 @@ export default function Products({ user }) {
       }
     );
 
-    return () => {
-      stopScanner();
-    };
+    return () => stopScanner();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scannerOpen]);
 
@@ -257,7 +250,7 @@ export default function Products({ user }) {
   ============================ */
   const [csvFileName, setCsvFileName] = useState("");
   const [csvHeaders, setCsvHeaders] = useState([]);
-  const [csvRows, setCsvRows] = useState([]); // raw rows (no header)
+  const [csvRows, setCsvRows] = useState([]);
 
   const [mapping, setMapping] = useState({
     name: -1,
@@ -275,29 +268,24 @@ export default function Products({ user }) {
   const [importing, setImporting] = useState(false);
   const [importProgress, setImportProgress] = useState({ done: 0, total: 0 });
   const [importMsg, setImportMsg] = useState("");
-  const [importErrors, setImportErrors] = useState([]); // { line, sku, message }
+  const [importErrors, setImportErrors] = useState([]);
   const previewCount = 20;
 
   async function loadAll(searchQuery = "") {
-  setLoading(true);
-  setError("");
-  try {
-    const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
-
-    // ✅ PRODUCTS API returns { products: [...] }
-    const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
-    setProducts(list);
-
-    // ✅ CATEGORIES might be { categories: [...] } or [...]
-    const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
+    setLoading(true);
+    setError("");
+    try {
+      const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
+      const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
+      setProducts(list);
+      const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
       setCategories(cats);
     } catch (e2) {
-      setError(e2.message || "Failed to load");
+      setError(e2?.message || "Failed to load");
     } finally {
       setLoading(false);
     }
   }
-
 
   useEffect(() => {
     loadAll("");
@@ -320,13 +308,24 @@ export default function Products({ user }) {
     e.preventDefault();
     setError("");
 
+    const payload = {
+      name: String(form.name || "").trim(),
+      sku: String(form.sku || "").trim() || null,
+      barcode: String(form.barcode || "").trim() || null,
+      category_id: form.category_id ? Number(form.category_id) : null,
+      quantity: n0(form.quantity),
+      cost_price: n0(form.cost_price),
+      selling_price: n0(form.selling_price),
+      reorder_level: n0(form.reorder_level),
+    };
+
+    if (!payload.name) {
+      setError("Product name is required.");
+      return;
+    }
+
     try {
-      await addProduct({
-        ...form,
-        sku: String(form.sku || "").trim() || null,
-        barcode: String(form.barcode || "").trim() || null,
-        category_id: form.category_id ? Number(form.category_id) : null,
-      });
+      await addProduct(payload);
 
       setForm({
         name: "",
@@ -341,7 +340,7 @@ export default function Products({ user }) {
 
       await loadAll(search);
     } catch (e2) {
-      setError(e2.message || "Create failed");
+      setError(e2?.message || "Create failed");
     }
   }
 
@@ -380,16 +379,21 @@ export default function Products({ user }) {
           editForm.category_id === "" || editForm.category_id == null
             ? null
             : Number(editForm.category_id),
-        cost_price: Number(editForm.cost_price) || 0,
-        selling_price: Number(editForm.selling_price) || 0,
-        reorder_level: Number(editForm.reorder_level) || 0,
+        cost_price: n0(editForm.cost_price),
+        selling_price: n0(editForm.selling_price),
+        reorder_level: n0(editForm.reorder_level),
       };
+
+      if (!payload.name) {
+        setRowErrors((prev) => ({ ...prev, [id]: "Name is required." }));
+        return;
+      }
 
       await updateProduct(id, payload);
       await loadAll(search);
       cancelEdit();
     } catch (e2) {
-      setRowErrors((prev) => ({ ...prev, [id]: e2.message || "Update failed" }));
+      setRowErrors((prev) => ({ ...prev, [id]: e2?.message || "Update failed" }));
     } finally {
       setSavingId(null);
     }
@@ -434,7 +438,7 @@ export default function Products({ user }) {
         });
       }, 10_200);
     } catch (e2) {
-      setRowErrors((prev) => ({ ...prev, [p.id]: e2.message || "Delete failed" }));
+      setRowErrors((prev) => ({ ...prev, [p.id]: e2?.message || "Delete failed" }));
     } finally {
       setSavingId(null);
     }
@@ -442,14 +446,13 @@ export default function Products({ user }) {
 
   async function undoDelete() {
     if (!undo) return;
-
     setError("");
     try {
       await addProduct(undo.payload);
       setUndo(null);
       await loadAll(search);
     } catch (e2) {
-      setError(e2.message || "Undo failed");
+      setError(e2?.message || "Undo failed");
     }
   }
 
@@ -458,7 +461,7 @@ export default function Products({ user }) {
     try {
       await downloadProductsCsv();
     } catch (e2) {
-      setError(e2.message || "Export failed");
+      setError(e2?.message || "Export failed");
     }
   }
 
@@ -498,7 +501,7 @@ export default function Products({ user }) {
         reorder_level: g.reorder_level,
       });
     } catch (e2) {
-      setError(e2.message || "Failed to read CSV");
+      setError(e2?.message || "Failed to read CSV");
       setCsvFileName("");
       setCsvHeaders([]);
       setCsvRows([]);
@@ -698,7 +701,7 @@ export default function Products({ user }) {
         clearImportUi();
       }, 3500);
     } catch (e2) {
-      setError(e2.message || "Import failed");
+      setError(e2?.message || "Import failed");
     } finally {
       setImporting(false);
     }
@@ -746,8 +749,69 @@ export default function Products({ user }) {
   };
 
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: 12 }}>
+    <div style={{ width: "100%", maxWidth: 1100 }}>
+      {/* Responsive helper CSS (local to this page) */}
+      <style>{`
+        .prod-toolbar {
+          display:flex;
+          justify-content:space-between;
+          align-items:flex-end;
+          gap:12px;
+          flex-wrap:wrap;
+        }
+        .prod-toolbar-right {
+          display:flex;
+          gap:10px;
+          align-items:center;
+          flex-wrap:wrap;
+          width:100%;
+        }
+        .prod-search {
+          width:100%;
+          min-width:0 !important;
+        }
+
+        @media (min-width: 740px) {
+          .prod-toolbar-right { width:auto; }
+          .prod-search { width:320px; }
+        }
+
+        .prod-import-grid {
+          display:grid;
+          grid-template-columns: 1fr;
+          gap:10px;
+        }
+        @media (min-width: 860px) {
+          .prod-import-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
+        .prod-create-grid {
+          display:grid;
+          grid-template-columns: 1fr;
+          gap:10px;
+        }
+        @media (min-width: 860px) {
+          .prod-create-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (min-width: 1060px) {
+          .prod-create-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        }
+
+        .prod-actions {
+          display:flex;
+          gap:10px;
+          align-items:center;
+          flex-wrap:wrap;
+        }
+
+        .prod-table-wrap { overflow-x:auto; width:100%; }
+        .prod-table { width:100%; border-collapse:collapse; min-width: 980px; }
+        @media (max-width: 900px) {
+          .prod-table { min-width: 900px; }
+        }
+      `}</style>
+
+      <div className="prod-toolbar">
         <div>
           <h1 style={{ marginBottom: 6 }}>Products</h1>
           {!isAdmin && (
@@ -768,13 +832,12 @@ export default function Products({ user }) {
           )}
         </div>
 
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <div className="prod-toolbar-right">
           <input
-            className="input"
+            className="input prod-search"
             placeholder="Search (name, SKU, category)"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            style={{ minWidth: 260 }}
             disabled={anyBusy}
           />
 
@@ -835,7 +898,7 @@ export default function Products({ user }) {
               </div>
             </div>
 
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div className="prod-actions">
               <label style={{ display: "inline-flex", gap: 8, alignItems: "center", fontSize: 12 }}>
                 <input
                   type="checkbox"
@@ -886,7 +949,8 @@ export default function Products({ user }) {
           {csvHeaders.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Column Mapping</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+
+              <div className="prod-import-grid">
                 {[
                   ["name", "Name (required)"],
                   ["sku", "SKU (required)"],
@@ -897,13 +961,14 @@ export default function Products({ user }) {
                   ["selling_price", "Selling Price"],
                   ["reorder_level", "Reorder Level"],
                 ].map(([key, label]) => (
-                  <div key={key} style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  <div key={key} style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
                     <div style={{ width: 170, fontSize: 12, color: "#374151" }}>{label}</div>
                     <select
                       className="input"
                       value={mapping[key]}
                       disabled={anyBusy}
                       onChange={(e) => setMapping((m) => ({ ...m, [key]: Number(e.target.value) }))}
+                      style={{ minWidth: 0 }}
                     >
                       <option value={-1}>— Not mapped —</option>
                       {csvHeaders.map((h, idx) => (
@@ -933,7 +998,11 @@ export default function Products({ user }) {
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Preview (first {previewCount} rows)</div>
                 <div style={{ overflowX: "auto" }}>
-                  <table border="1" cellPadding="8" style={{ width: "100%", borderCollapse: "collapse", background: "#fff" }}>
+                  <table
+                    border="1"
+                    cellPadding="8"
+                    style={{ width: "100%", borderCollapse: "collapse", background: "#fff", minWidth: 900 }}
+                  >
                     <thead style={{ background: "#f3f4f6" }}>
                       <tr>
                         <th>Line</th>
@@ -1007,18 +1076,16 @@ export default function Products({ user }) {
 
       {/* Admin create form */}
       {isAdmin && (
-        <form onSubmit={handleCreate} style={{ display: "grid", gap: 10, maxWidth: 650, marginBottom: 20, marginTop: 14 }}>
-          <div style={{ display: "flex", gap: 10 }}>
+        <form onSubmit={handleCreate} style={{ marginTop: 14 }}>
+          <div className="prod-create-grid">
             <input
               className="input"
-              placeholder="Product name"
+              placeholder="Product name *"
               value={form.name}
               onChange={(e) => updateField("name", e.target.value)}
               disabled={anyBusy}
             />
-          </div>
 
-          <div style={{ display: "flex", gap: 10 }}>
             <input
               className="input"
               placeholder="SKU"
@@ -1026,6 +1093,7 @@ export default function Products({ user }) {
               onChange={(e) => updateField("sku", e.target.value)}
               disabled={anyBusy}
             />
+
             <input
               className="input"
               placeholder="Barcode"
@@ -1033,9 +1101,7 @@ export default function Products({ user }) {
               onChange={(e) => updateField("barcode", e.target.value)}
               disabled={anyBusy}
             />
-          </div>
 
-          <div style={{ display: "flex", gap: 10 }}>
             <select
               className="input"
               value={form.category_id}
@@ -1058,9 +1124,7 @@ export default function Products({ user }) {
               onChange={(e) => updateField("quantity", e.target.value)}
               disabled={anyBusy}
             />
-          </div>
 
-          <div style={{ display: "flex", gap: 10 }}>
             <input
               className="input"
               type="number"
@@ -1069,6 +1133,7 @@ export default function Products({ user }) {
               onChange={(e) => updateField("cost_price", e.target.value)}
               disabled={anyBusy}
             />
+
             <input
               className="input"
               type="number"
@@ -1077,6 +1142,7 @@ export default function Products({ user }) {
               onChange={(e) => updateField("selling_price", e.target.value)}
               disabled={anyBusy}
             />
+
             <input
               className="input"
               type="number"
@@ -1087,9 +1153,14 @@ export default function Products({ user }) {
             />
           </div>
 
-          {/* Small Add Product button + Scan barcode button next to it */}
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button className="btn" type="submit" disabled={anyBusy} style={{ padding: "10px 20px", fontSize: 12, width: "fit-content" }}>
+          {/* Buttons row */}
+          <div className="prod-actions" style={{ marginTop: 10 }}>
+            <button
+              className="btn"
+              type="submit"
+              disabled={anyBusy}
+              style={{ padding: "10px 14px", fontSize: 12, width: "fit-content" }}
+            >
               Add Product
             </button>
 
@@ -1098,7 +1169,7 @@ export default function Products({ user }) {
               type="button"
               disabled={anyBusy}
               onClick={() => setScannerOpen(true)}
-              style={{ padding: "10px 20px", fontSize: 12, width: "fit-content" }}
+              style={{ padding: "10px 14px", fontSize: 12, width: "fit-content" }}
             >
               Scan barcode
             </button>
@@ -1200,7 +1271,7 @@ export default function Products({ user }) {
               <div style={{ color: "#6b7280" }}>Barcode: {confirmDelete.barcode || "-"}</div>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
               <button className="btn" onClick={() => setConfirmDelete(null)} disabled={savingId != null}>
                 Cancel
               </button>
@@ -1216,134 +1287,137 @@ export default function Products({ user }) {
         </div>
       )}
 
-      <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse", marginTop: 14 }}>
-        <thead style={{ background: "#f3f4f6" }}>
-          <tr>
-            <th>Name</th>
-            <th>SKU</th>
-            <th>Barcode</th>
-            <th>Category</th>
-            <th>Stock</th>
-            <th>Cost</th>
-            <th>Selling</th>
-            <th>Reorder</th>
-            {isAdmin && <th>Actions</th>}
-          </tr>
-        </thead>
-
-        <tbody>
-          {products.map((p) => {
-            const isEditing = editingId === p.id;
-            const isSaving = savingId === p.id;
-            const inlineErr = rowErrors[p.id];
-
-            return (
-              <tr key={p.id}>
-                <td>
-                  {isEditing ? (
-                    <input
-                      className="input"
-                      value={editForm?.name ?? ""}
-                      onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
-                      disabled={isSaving}
-                    />
-                  ) : (
-                    p.name
-                  )}
-                </td>
-
-                <td>
-                  {isEditing ? (
-                    <input
-                      className="input"
-                      value={editForm?.sku ?? ""}
-                      onChange={(e) => setEditForm((f) => ({ ...f, sku: e.target.value }))}
-                      disabled={isSaving}
-                    />
-                  ) : (
-                    p.sku || "-"
-                  )}
-                </td>
-
-                <td>
-                  {isEditing ? (
-                    <input
-                      className="input"
-                      value={editForm?.barcode ?? ""}
-                      onChange={(e) => setEditForm((f) => ({ ...f, barcode: e.target.value }))}
-                      disabled={isSaving}
-                    />
-                  ) : (
-                    p.barcode || "-"
-                  )}
-                </td>
-
-                <td>
-                  {isEditing ? (
-                    <select
-                      className="input"
-                      value={editForm?.category_id ?? ""}
-                      onChange={(e) => setEditForm((f) => ({ ...f, category_id: e.target.value }))}
-                      disabled={isSaving}
-                    >
-                      <option value="">None</option>
-                      {categories.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    p.category ?? "-"
-                  )}
-                </td>
-
-                <td>{p.quantity}</td>
-                <td>{p.cost_price}</td>
-                <td>{p.selling_price}</td>
-                <td>{p.reorder_level}</td>
-
-                {isAdmin && (
-                  <td style={{ minWidth: 240 }}>
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      {!isEditing ? (
-                        <button className="btn" onClick={() => startEdit(p)} disabled={anyBusy}>
-                          Edit
-                        </button>
-                      ) : (
-                        <>
-                          <button className="btn" onClick={() => saveEdit(p.id)} disabled={isSaving}>
-                            {isSaving ? "Saving..." : "Save"}
-                          </button>
-                          <button className="btn" onClick={cancelEdit} disabled={isSaving}>
-                            Cancel
-                          </button>
-                        </>
-                      )}
-
-                      <button className="btn" onClick={() => askDelete(p)} disabled={anyBusy}>
-                        Delete
-                      </button>
-                    </div>
-
-                    {inlineErr ? (
-                      <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div>
-                    ) : null}
-                  </td>
-                )}
-              </tr>
-            );
-          })}
-
-          {!loading && products.length === 0 && (
+      {/* Products table */}
+      <div className="prod-table-wrap" style={{ marginTop: 14 }}>
+        <table border="1" cellPadding="10" className="prod-table">
+          <thead style={{ background: "#f3f4f6" }}>
             <tr>
-              <td colSpan={isAdmin ? 9 : 8} style={{ textAlign: "center" }}>
-                No products yet
-              </td>
+              <th>Name</th>
+              <th>SKU</th>
+              <th>Barcode</th>
+              <th>Category</th>
+              <th>Stock</th>
+              <th>Cost</th>
+              <th>Selling</th>
+              <th>Reorder</th>
+              {isAdmin && <th>Actions</th>}
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+
+          <tbody>
+            {products.map((p) => {
+              const isEditing = editingId === p.id;
+              const isSaving = savingId === p.id;
+              const inlineErr = rowErrors[p.id];
+
+              return (
+                <tr key={p.id}>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        value={editForm?.name ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                        disabled={isSaving}
+                      />
+                    ) : (
+                      p.name
+                    )}
+                  </td>
+
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        value={editForm?.sku ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, sku: e.target.value }))}
+                        disabled={isSaving}
+                      />
+                    ) : (
+                      p.sku || "-"
+                    )}
+                  </td>
+
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        value={editForm?.barcode ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, barcode: e.target.value }))}
+                        disabled={isSaving}
+                      />
+                    ) : (
+                      p.barcode || "-"
+                    )}
+                  </td>
+
+                  <td>
+                    {isEditing ? (
+                      <select
+                        className="input"
+                        value={editForm?.category_id ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, category_id: e.target.value }))}
+                        disabled={isSaving}
+                      >
+                        <option value="">None</option>
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      p.category ?? "-"
+                    )}
+                  </td>
+
+                  <td>{p.quantity}</td>
+                  <td>{p.cost_price}</td>
+                  <td>{p.selling_price}</td>
+                  <td>{p.reorder_level}</td>
+
+                  {isAdmin && (
+                    <td style={{ minWidth: 260 }}>
+                      <div className="prod-actions">
+                        {!isEditing ? (
+                          <button className="btn" onClick={() => startEdit(p)} disabled={anyBusy}>
+                            Edit
+                          </button>
+                        ) : (
+                          <>
+                            <button className="btn" onClick={() => saveEdit(p.id)} disabled={isSaving}>
+                              {isSaving ? "Saving..." : "Save"}
+                            </button>
+                            <button className="btn" onClick={cancelEdit} disabled={isSaving}>
+                              Cancel
+                            </button>
+                          </>
+                        )}
+
+                        <button className="btn" onClick={() => askDelete(p)} disabled={anyBusy}>
+                          Delete
+                        </button>
+                      </div>
+
+                      {inlineErr ? (
+                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div>
+                      ) : null}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+
+            {!loading && products.length === 0 && (
+              <tr>
+                <td colSpan={isAdmin ? 9 : 8} style={{ textAlign: "center" }}>
+                  No products yet
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

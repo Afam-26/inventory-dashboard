@@ -144,10 +144,7 @@ export default function Landing() {
             <a href="#contact">Contact</a>
           </nav>
 
-          <div className="lp-topbar-actions">
-            <a className="btn" href="#pricing">
-              See pricing
-            </a>
+          <div className="lp-topbar-actions">           
             <button className="btn" type="button" onClick={() => exitTo("/login")}>
               Sign in
             </button>
@@ -182,10 +179,7 @@ export default function Landing() {
             Contact
           </a>
 
-          <div className="lp-mobileMenuActions">
-            <a className="btn" href="#pricing" onClick={closeMenu}>
-              See pricing
-            </a>
+          <div className="lp-mobileMenuActions">            
             <button className="btn" type="button" onClick={() => exitTo("/login")}>
               Sign in
             </button>

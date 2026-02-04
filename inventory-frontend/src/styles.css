@@ -38,6 +38,249 @@ h1 {
 }
 
 /* =========================
+   SIGNUP (mobile-first, no overflow)
+   ========================= */
+
+.signup-bg{
+  min-height: 100vh;
+  width: 100%;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  padding-top: max(16px, var(--safe-top));
+  padding-bottom: max(16px, var(--safe-bottom));
+  box-sizing: border-box;
+  overflow-x: hidden;
+
+  background:
+    radial-gradient(1200px 600px at 20% 20%, rgba(99,102,241,.35), transparent 60%),
+    radial-gradient(900px 500px at 90% 30%, rgba(16,185,129,.25), transparent 55%),
+    radial-gradient(1000px 600px at 60% 90%, rgba(244,63,94,.18), transparent 60%),
+    #0b1020;
+}
+
+.signup-container{
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  min-width: 0;
+}
+
+.signup-head{
+  color: #fff;
+  margin-bottom: 10px;
+}
+
+.signup-title{
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: -0.4px;
+  line-height: 1.15;
+}
+
+@media (min-width: 520px){
+  .signup-title{ font-size: 28px; }
+}
+
+.signup-sub{
+  margin-top: 6px;
+  color: rgba(255,255,255,.72);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.signup-shell{
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr; /* ✅ mobile: stack */
+  gap: 16px;
+  min-width: 0;
+}
+
+@media (min-width: 900px){
+  .signup-shell{ grid-template-columns: 1.15fr .85fr; }
+}
+
+.signup-card{
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(255,255,255,.08);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 30px 80px rgba(0,0,0,.35);
+  color: #fff;
+  overflow: hidden;
+  padding: 18px;
+  min-width: 0; /* ✅ prevents grid overflow */
+}
+
+.signup-error{
+  background: rgba(239,68,68,.18);
+  border: 1px solid rgba(239,68,68,.35);
+  padding: 12px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+  color: #fecaca;
+  font-size: 14px;
+}
+
+.signup-form{
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.signup-row2{
+  display: grid;
+  grid-template-columns: 1fr; /* ✅ mobile: stack */
+  gap: 10px;
+  min-width: 0;
+}
+
+@media (min-width: 760px){
+  .signup-row2{ grid-template-columns: 1fr 1fr; }
+}
+
+.signup-field{
+  min-width: 0;
+}
+
+.signup-label{
+  font-size: 12px;
+  opacity: 0.85;
+  margin-bottom: 6px;
+}
+
+.signup-input{
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 12px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(0,0,0,.18);
+  color: #fff;
+  outline: none;
+}
+
+.signup-input::placeholder{
+  color: rgba(255,255,255,.55);
+}
+
+.signup-btn{
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.18);
+  background: linear-gradient(135deg, rgba(99,102,241,.95), rgba(16,185,129,.75));
+  color: #fff;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.signup-btn:disabled{
+  opacity: 0.75;
+  cursor: not-allowed;
+}
+
+.signup-foot{
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  font-size: 12px;
+  opacity: 0.92;
+}
+
+.signup-link{
+  color: #a5b4fc;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.signup-link:hover{
+  opacity: 0.9;
+  text-decoration: underline;
+}
+
+.signup-dot{ opacity: 0.75; }
+
+.signup-note{
+  opacity: 0.75;
+}
+
+/* Plans */
+.signup-planHead{
+  font-weight: 900;
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+
+.signup-planGrid{
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.signup-planBtn{
+  text-align: left;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,.14);
+  background: rgba(0,0,0,.14);
+  color: #fff;
+  cursor: pointer;
+}
+
+.signup-planBtn:disabled{
+  opacity: 0.8;
+  cursor: not-allowed;
+}
+
+.signup-planBtn.active{
+  border: 1px solid rgba(255,255,255,.55);
+  background: rgba(255,255,255,.12);
+  box-shadow: 0 18px 40px rgba(0,0,0,.25);
+}
+
+.signup-planTop{
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.signup-planName,
+.signup-planPrice{
+  font-weight: 900;
+}
+
+.signup-planTag{
+  font-size: 12px;
+  opacity: 0.8;
+  margin-top: 4px;
+}
+
+.signup-planList{
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.signup-planList li{
+  margin-bottom: 4px;
+}
+
+.signup-planHint{
+  margin-top: 12px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+/* =========================
    Shared UI: Cards / Buttons / Inputs
    ========================= */
 .card {

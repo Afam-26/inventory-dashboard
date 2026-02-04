@@ -7,6 +7,12 @@ body {
   background: #f9fafb;
 }
 
+/* ✅ Critical: prevents 100%-width elements + padding from overflowing */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+
 h1 {
   margin-top: 0;
 }
@@ -404,6 +410,51 @@ table {
   color: #374151;
 }
 
+/* =========================
+   Role pills (Stock-style)
+   ========================= */
+.role-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Variants */
+.role-pill.staff {
+  background: #e5e7eb;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+
+.role-pill.admin {
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.role-pill.owner {
+  background: #111827;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+/* Optional "you" badge style (still a pill) */
+.role-pill.you {
+  background: #111827;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  text-transform: none;
+}
+
+
+
 /* Sections */
 .lp-section {
   padding: 44px 0;
@@ -478,8 +529,9 @@ table {
   gap: 14px;
 }
 @media (min-width: 768px) {
-  .lp-priceGrid { grid-template-columns: repeat(3, 1fr); }
+  .lp-priceGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+
 
 .lp-priceCard { padding: 20px; }
 

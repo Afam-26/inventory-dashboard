@@ -32,140 +32,148 @@ import { savePostLoginRedirect, peekPostLoginRedirect } from "./utils/authRedire
  * ✅ Landing is INDEX route (so it never matches /login)
  * ✅ FIX: Use effectiveUser from storage to avoid role flash after tenant select
  * ✅ FIX: No side-effects during render
+ * ✅ FIX: Always clear page-exit on navigation (prevents white screen)
  */
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
 
-  // ✅ Use freshest possible user to prevent 1-render stale role issues
   const effectiveUser = user || getStoredUser();
 
-  // ✅ Always treat auth as token + user
   const token = localStorage.getItem("token") || "";
   const isAuthed = Boolean(token) && Boolean(effectiveUser);
 
-  // ✅ Tenant selected = stored tenantId
   const tenantId = getTenantId();
   const hasTenant = Boolean(tenantId);
 
-  // Optional: keep state synced if storage changed elsewhere
   useEffect(() => {
     if (!user && effectiveUser) setUser(effectiveUser);
-    // eslint-disable-next-line react-hooks/exhaustive-deps    
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, tenantId]);
 
-  useEffect(() => {
-  consumePageExit(); // removes html.page-exit if ever left behind
-  }, []);
+  return (
+    <>
+      {/* ✅ runs on every route change */}
+      <RouteEffects />
 
-  return (    
-    <Routes>
-      {/* =========================
-          PUBLIC AREA
-         ========================= */}
-      <Route element={<PublicLayout />}>
-        {/* ✅ Landing ONLY matches "/" */}
-        <Route index element={<Landing />} />
-
-        <Route
-          path="login"
-          element={
-            !isAuthed ? (
-              <Login onSuccess={(u) => setUser(u)} />
-            ) : !hasTenant ? (
-              <Navigate to="/select-tenant" replace />
-            ) : (
-              <Navigate to={peekPostLoginRedirect("/dashboard")} replace />
-            )
-          }
-        />
-
-        <Route path="signup" element={<Signup />} />
-        <Route path="forgot-password" element={<ForgotPassword />} />
-        <Route path="reset-password" element={<ResetPassword />} />
-
-        <Route
-          path="select-tenant"
-          element={
-            !isAuthed ? (
-              <Navigate to="/login" replace />
-            ) : (
-              <SelectTenant onSuccess={(u) => setUser(u)} />
-            )
-          }
-        />
-      </Route>
-
-      {/* =========================
-          PRIVATE APP AREA
-         ========================= */}
-      <Route element={<RequireAuth isAuthed={isAuthed} hasTenant={hasTenant} />}>
-        {/* App layout wrapper */}
-        <Route element={<AppLayout user={effectiveUser} setUser={setUser} />}>
-          <Route path="/dashboard" element={<Dashboard user={effectiveUser} />} />
-          <Route path="/products" element={<Products user={effectiveUser} />} />
-          <Route path="/audit" element={<AuditLogs user={effectiveUser} />} />
+      <Routes>
+        {/* =========================
+            PUBLIC AREA
+          ========================= */}
+        <Route element={<PublicLayout />}>
+          <Route index element={<Landing />} />
 
           <Route
-            path="/categories"
+            path="login"
             element={
-              <RequireAdmin user={effectiveUser}>
-                <Categories user={effectiveUser} />
-              </RequireAdmin>
+              !isAuthed ? (
+                <Login onSuccess={(u) => setUser(u)} />
+              ) : !hasTenant ? (
+                <Navigate to="/select-tenant" replace />
+              ) : (
+                <Navigate to={peekPostLoginRedirect("/dashboard")} replace />
+              )
             }
           />
 
-          <Route
-            path="/audit-dashboard"
-            element={
-              <RequireAdmin user={effectiveUser}>
-                <AuditDashboard user={effectiveUser} />
-              </RequireAdmin>
-            }
-          />
+          <Route path="signup" element={<Signup />} />
+          <Route path="forgot-password" element={<ForgotPassword />} />
+          <Route path="reset-password" element={<ResetPassword />} />
 
           <Route
-            path="/stock"
+            path="select-tenant"
             element={
-              <RequireAdmin user={effectiveUser}>
-                <Stock user={effectiveUser} />
-              </RequireAdmin>
+              !isAuthed ? (
+                <Navigate to="/login" replace />
+              ) : (
+                <SelectTenant onSuccess={(u) => setUser(u)} />
+              )
             }
           />
-
-          <Route
-            path="/users"
-            element={
-              <RequireAdmin user={effectiveUser}>
-                <UsersAdmin user={effectiveUser} />
-              </RequireAdmin>
-            }
-          />
-
-          <Route
-            path="/billing"
-            element={
-              <RequireAdmin user={effectiveUser}>
-                <Billing user={effectiveUser} />
-              </RequireAdmin>
-            }
-          />
-
-          <Route path="/unauthorized" element={<Unauthorized />} />
-
-          {/* Private catch-all */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Route>
-      </Route>
 
-      {/* Global catch-all */}
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>   
+        {/* =========================
+            PRIVATE APP AREA
+          ========================= */}
+        <Route element={<RequireAuth isAuthed={isAuthed} hasTenant={hasTenant} />}>
+          <Route element={<AppLayout user={effectiveUser} setUser={setUser} />}>
+            <Route path="/dashboard" element={<Dashboard user={effectiveUser} />} />
+            <Route path="/products" element={<Products user={effectiveUser} />} />
+            <Route path="/audit" element={<AuditLogs user={effectiveUser} />} />
+
+            <Route
+              path="/categories"
+              element={
+                <RequireAdmin user={effectiveUser}>
+                  <Categories user={effectiveUser} />
+                </RequireAdmin>
+              }
+            />
+
+            <Route
+              path="/audit-dashboard"
+              element={
+                <RequireAdmin user={effectiveUser}>
+                  <AuditDashboard user={effectiveUser} />
+                </RequireAdmin>
+              }
+            />
+
+            <Route
+              path="/stock"
+              element={
+                <RequireAdmin user={effectiveUser}>
+                  <Stock user={effectiveUser} />
+                </RequireAdmin>
+              }
+            />
+
+            <Route
+              path="/users"
+              element={
+                <RequireAdmin user={effectiveUser}>
+                  <UsersAdmin user={effectiveUser} />
+                </RequireAdmin>
+              }
+            />
+
+            <Route
+              path="/billing"
+              element={
+                <RequireAdmin user={effectiveUser}>
+                  <Billing user={effectiveUser} />
+                </RequireAdmin>
+              }
+            />
+
+            <Route path="/unauthorized" element={<Unauthorized />} />
+
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Route>
+        </Route>
+
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   );
 }
 
 /** Public layout wrapper */
 function PublicLayout() {
   return <Outlet />;
+}
+
+/**
+ * ✅ Clears any stuck transition styles on every navigation.
+ * This prevents "white screen until refresh".
+ */
+function RouteEffects() {
+  const location = useLocation();
+
+  useEffect(() => {
+    consumePageExit();
+  }, [location.pathname, location.search]);
+
+  return null;
 }
 
 /**

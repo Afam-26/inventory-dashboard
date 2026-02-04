@@ -207,10 +207,11 @@ router.post(
 
       await db.query(
         `INSERT INTO tenant_invitations
-           (tenant_id, email, role, token_hash, expires_at, created_by_user_id)
-         VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 7 DAY), ?)`,
-        [tenantId, email, role, token_hash, inviterId]
+          (tenant_id, email, role, token, token_hash, expires_at, created_by_user_id)
+        VALUES (?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 7 DAY), ?)`,
+        [tenantId, email, role, raw, token_hash, inviterId]
       );
+
 
       const front =
         process.env.FRONTEND_URL || "http://localhost:5173";

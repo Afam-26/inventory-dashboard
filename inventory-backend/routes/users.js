@@ -106,10 +106,12 @@ router.post("/", async (req, res) => {
 
     await conn.commit();
     res.status(201).json({ ok: true });
-  } catch (err) {
-    await conn.rollback();
-    console.error("USER CREATE ERROR:", err);
-    res.status(500).json({ message: "Database error" });
+  } catch (e) {
+  if (e?.code === "ER_DUP_ENTRY") {
+    return res.status(409).json({ message: "Invite already exists for this email" });
+  }
+  console.error("INVITE ERROR:", e);
+  res.status(500).json({ message: "Database error" });
   } finally {
     conn.release();
   }

@@ -3,8 +3,8 @@ import { useEffect, useState } from "react";
 import { getDashboard } from "../services/api";
 
 export default function Dashboard({ user }) {
-  const role = String(user?.tenantRole || user?.role || "").toLowerCase();
-  const isAdmin = role === "owner" || role === "admin";
+  const role = String(user?.tenantRole || user?.role || "staff").toLowerCase();
+  const isOwner = role === "owner";
 
   const [data, setData] = useState({
     totalProducts: 0,
@@ -22,7 +22,7 @@ export default function Dashboard({ user }) {
         const d = await getDashboard();
         setData(d || {});
       } catch (e) {
-        setError(e.message || "Failed to load dashboard");
+        setError(e?.message || "Failed to load dashboard");
       } finally {
         setLoading(false);
       }
@@ -47,7 +47,8 @@ export default function Dashboard({ user }) {
           <p style={{ fontSize: 24 }}>{Number(data.lowStockCount || 0)}</p>
         </div>
 
-        {isAdmin ? (
+        {/* ✅ Owner-only (Admin + Staff see same message) */}
+        {isOwner ? (
           <div className="card">
             <h3>Inventory Value</h3>
             <p style={{ fontSize: 24 }}>
@@ -57,7 +58,7 @@ export default function Dashboard({ user }) {
         ) : (
           <div className="card">
             <h3>Inventory Value</h3>
-            <p style={{ fontSize: 14, color: "#6b7280" }}>Admins only</p>
+            <p style={{ fontSize: 14, color: "#6b7280" }}>Owner view only</p>
           </div>
         )}
       </div>

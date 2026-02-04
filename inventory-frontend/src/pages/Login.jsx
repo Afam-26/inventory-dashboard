@@ -118,7 +118,7 @@ export default function Login({ onSuccess }) {
   }
 
 return (
-  <div className="page-enter" style={styles.page}>
+  <div className="page-enter auth-container" style={styles.page}>
       <div style={styles.card}>
         <h1 style={styles.title}>Login</h1>
         <p style={styles.subtitle}>Sign in to your account.</p>
@@ -167,6 +167,20 @@ return (
             {loading ? "Signing in..." : "Sign In"}
           </button>
         </form>
+        <div style={{ marginTop: 24, textAlign: "center" }}>
+          <Link
+            to="/"
+            style={{
+              display: "inline-block",
+              fontSize: 14,
+              color: "#6b7280",
+              textDecoration: "underline",
+            }}
+          >
+            ← Back to landing page
+          </Link>
+        </div>
+        
 
         <div style={{ marginTop: 14, textAlign: "center" }}>
           <Link to="/forgot-password" style={styles.link}>

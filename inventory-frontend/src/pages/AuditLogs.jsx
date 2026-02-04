@@ -6,6 +6,11 @@ export default function AuditLogs({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = role === "owner" || role === "admin";
 
+  function RolePill({ role }) {
+    const r = String(role || "staff").toLowerCase();
+    return <span className={`role-pill ${r}`}>{r}</span>;
+  }
+
   const [action, setAction] = useState("");
   const [userEmail, setUserEmail] = useState("");
 
@@ -64,8 +69,11 @@ export default function AuditLogs({ user }) {
 
   return (
     <div className="auditlogs-page">
-      <div className="page-head">
-        <h1 style={{ margin: 0 }}>{isAdmin ? "Audit Logs" : "My Activity"}</h1>
+      <div className="page-head" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <h1 style={{ margin: 0 }}>{isAdmin ? "Audit Logs" : "My Activity"}</h1>
+          <RolePill role={role || "staff"} />
+        </div>
 
         <button className="btn" onClick={() => downloadAuditCsv({ limit: 20000 })} disabled={loading}>
           Export CSV
@@ -74,12 +82,7 @@ export default function AuditLogs({ user }) {
 
       <div className="card" style={{ marginTop: 12 }}>
         <div className="auditlogs-filters">
-          <input
-            className="input"
-            placeholder="Action (e.g. LOGIN_FAILED)"
-            value={action}
-            onChange={(e) => setAction(e.target.value)}
-          />
+          <input className="input" placeholder="Action (e.g. LOGIN_FAILED)" value={action} onChange={(e) => setAction(e.target.value)} />
 
           <input
             className="input"
@@ -153,7 +156,7 @@ export default function AuditLogs({ user }) {
         </table>
       </div>
 
-      <div className="auditlogs-pager">
+      <div className="auditlogs-pager" style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
         <button className="btn" onClick={() => setPage(1)} disabled={page === 1 || loading}>
           First
         </button>

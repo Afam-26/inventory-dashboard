@@ -25,6 +25,48 @@ function normalizeDetails(v) {
 }
 
 /**
+ * created_at_iso is canonical in your writer.
+ * Some legacy rows may still have created_at populated. Normalize to an ISO string for UI.
+ */
+function normalizeCreatedAtIso(row) {
+  if (row?.created_at_iso) return row.created_at_iso;
+  if (row?.created_at) {
+    try {
+      return new Date(row.created_at).toISOString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Build a UTC ISO cutoff string inside MySQL.
+ * We compare created_at_iso lexicographically (safe for ISO 8601 like 2026-02-01T20:26:03.123Z)
+ */
+async function getIsoCutoff(days) {
+  const [[r]] = await db.query(
+    `SELECT DATE_FORMAT(DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY), '%Y-%m-%dT%H:%i:%s.000Z') AS cutoff`,
+    [Number(days)]
+  );
+  return r?.cutoff;
+}
+
+/**
+ * Determine "after hours" using UTC hour extracted from created_at_iso.
+ * created_at_iso looks like: 2026-02-01T20:26:03.123Z
+ * Hour is substring(12,2) (1-indexed in MySQL SUBSTRING).
+ */
+function afterHoursSqlUtc() {
+  return `
+    (
+      CAST(SUBSTRING(created_at_iso, 12, 2) AS UNSIGNED) < 8
+      OR CAST(SUBSTRING(created_at_iso, 12, 2) AS UNSIGNED) >= 18
+    )
+  `;
+}
+
+/**
  * GET /api/audit
  * Query:
  *  - page (default 1)
@@ -38,7 +80,9 @@ function normalizeDetails(v) {
 router.get("/", async (req, res) => {
   try {
     const tenantId = req.tenantId;
-    const role = String(req.user?.role || "").toLowerCase();
+
+    // Use tenantRole when available (your frontend uses tenantRole)
+    const role = String(req.user?.tenantRole || req.user?.role || "").toLowerCase();
     const isAdmin = role === "owner" || role === "admin";
 
     const page = Math.max(1, Number(req.query.page || 1));
@@ -77,7 +121,7 @@ router.get("/", async (req, res) => {
       `
       SELECT
         id, user_id, user_email, action, entity_type, entity_id,
-        details, ip_address, created_at, created_at_iso, tenant_id
+        details, ip_address, user_agent, created_at, created_at_iso, tenant_id
       FROM audit_logs
       ${whereSql}
       ORDER BY id DESC
@@ -90,7 +134,11 @@ router.get("/", async (req, res) => {
       page,
       limit,
       total: Number(countRow?.total || 0),
-      logs: (rows || []).map((r) => ({ ...r, details: normalizeDetails(r.details) })),
+      logs: (rows || []).map((r) => ({
+        ...r,
+        details: normalizeDetails(r.details),
+        created_at_iso: normalizeCreatedAtIso(r),
+      })),
     });
   } catch (e) {
     console.error("AUDIT LIST ERROR:", e?.message || e);
@@ -100,17 +148,19 @@ router.get("/", async (req, res) => {
 
 /**
  * GET /api/audit/stats?days=30
+ * ✅ Use created_at_iso (UTC) for stable windowing.
  */
 router.get("/stats", async (req, res) => {
   try {
     const tenantId = req.tenantId;
-    const role = String(req.user?.role || "").toLowerCase();
+    const role = String(req.user?.tenantRole || req.user?.role || "").toLowerCase();
     const isAdmin = role === "owner" || role === "admin";
 
     const days = Math.min(365, Math.max(1, Number(req.query.days || 30)));
+    const cutoff = await getIsoCutoff(days);
 
-    const baseWhere = ["tenant_id = ?", "created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)"];
-    const baseParams = [tenantId, days];
+    const baseWhere = ["tenant_id = ?", "created_at_iso >= ?"];
+    const baseParams = [tenantId, cutoff];
 
     if (!isAdmin) {
       baseWhere.push("user_id = ?");
@@ -121,10 +171,12 @@ router.get("/stats", async (req, res) => {
 
     const [byDay] = await db.query(
       `
-      SELECT DATE(created_at) AS day, COUNT(*) AS count
+      SELECT
+        DATE(SUBSTRING(created_at_iso, 1, 10)) AS day,
+        COUNT(*) AS count
       FROM audit_logs
       ${whereSql}
-      GROUP BY DATE(created_at)
+      GROUP BY DATE(SUBSTRING(created_at_iso, 1, 10))
       ORDER BY day ASC
       `,
       baseParams
@@ -156,7 +208,7 @@ router.get("/stats", async (req, res) => {
       `
       SELECT user_email, COUNT(*) AS count
       FROM audit_logs
-      ${whereSql}
+      ${whereSql} AND user_email IS NOT NULL
       GROUP BY user_email
       ORDER BY count DESC
       LIMIT 10
@@ -186,7 +238,7 @@ router.get("/stats", async (req, res) => {
 router.get("/csv", async (req, res) => {
   try {
     const tenantId = req.tenantId;
-    const role = String(req.user?.role || "").toLowerCase();
+    const role = String(req.user?.tenantRole || req.user?.role || "").toLowerCase();
     const isAdmin = role === "owner" || role === "admin";
 
     const limit = Math.min(50000, Math.max(1, Number(req.query.limit || 20000)));
@@ -203,7 +255,7 @@ router.get("/csv", async (req, res) => {
       `
       SELECT
         id, created_at, created_at_iso, user_email, action,
-        entity_type, entity_id, ip_address
+        entity_type, entity_id, ip_address, user_agent
       FROM audit_logs
       WHERE ${where.join(" AND ")}
       ORDER BY id DESC
@@ -214,13 +266,14 @@ router.get("/csv", async (req, res) => {
 
     const header = [
       "id",
-      "created_at",
       "created_at_iso",
+      "created_at",
       "user_email",
       "action",
       "entity_type",
       "entity_id",
       "ip_address",
+      "user_agent",
     ];
 
     const escape = (v) => {
@@ -233,13 +286,14 @@ router.get("/csv", async (req, res) => {
       lines.push(
         [
           escape(r.id),
-          escape(r.created_at),
-          escape(r.created_at_iso),
-          escape(r.user_email),
-          escape(r.action),
-          escape(r.entity_type),
-          escape(r.entity_id),
-          escape(r.ip_address),
+          escape(r.created_at_iso || ""),
+          escape(r.created_at || ""),
+          escape(r.user_email || ""),
+          escape(r.action || ""),
+          escape(r.entity_type || ""),
+          escape(r.entity_id ?? ""),
+          escape(r.ip_address || ""),
+          escape(r.user_agent || ""),
         ].join(",")
       );
     }
@@ -257,14 +311,18 @@ router.get("/csv", async (req, res) => {
  * ✅ GET /api/audit/report?days=7
  * SOC-style summary
  * Admin/Owner only
+ *
+ * ✅ Uses created_at_iso for time window + after-hours detection.
+ * ✅ Returns ip_address + created_at_iso fields for frontend.
  */
 router.get("/report", requireRole("owner", "admin"), async (req, res) => {
   try {
     const tenantId = req.tenantId;
     const days = Math.min(365, Math.max(1, Number(req.query.days || 7)));
+    const cutoff = await getIsoCutoff(days);
 
-    const whereSql = `WHERE tenant_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)`;
-    const baseParams = [tenantId, days];
+    const whereSql = `WHERE tenant_id = ? AND created_at_iso >= ?`;
+    const baseParams = [tenantId, cutoff];
 
     const [[totalRow]] = await db.query(
       `SELECT COUNT(*) AS total FROM audit_logs ${whereSql}`,
@@ -300,9 +358,9 @@ router.get("/report", requireRole("owner", "admin"), async (req, res) => {
 
     const [failedByIp] = await db.query(
       `
-      SELECT ip_address, COUNT(*) AS count
+      SELECT COALESCE(NULLIF(ip_address,''),'unknown') AS ip_address, COUNT(*) AS count
       FROM audit_logs
-      ${whereSql} AND action = 'LOGIN_FAILED' AND ip_address IS NOT NULL
+      ${whereSql} AND action = 'LOGIN_FAILED'
       GROUP BY ip_address
       ORDER BY count DESC
       LIMIT 10
@@ -312,11 +370,11 @@ router.get("/report", requireRole("owner", "admin"), async (req, res) => {
 
     const [afterHours] = await db.query(
       `
-      SELECT id, user_email, ip_address, created_at, action
+      SELECT id, user_email, ip_address, created_at_iso, action
       FROM audit_logs
       ${whereSql}
         AND action = 'LOGIN'
-        AND (HOUR(created_at) < 8 OR HOUR(created_at) >= 18)
+        AND ${afterHoursSqlUtc()}
       ORDER BY id DESC
       LIMIT 50
       `,
@@ -325,7 +383,7 @@ router.get("/report", requireRole("owner", "admin"), async (req, res) => {
 
     const [destructive] = await db.query(
       `
-      SELECT id, user_email, ip_address, created_at, action, entity_type, entity_id
+      SELECT id, user_email, ip_address, created_at_iso, action, entity_type, entity_id
       FROM audit_logs
       ${whereSql}
         AND action LIKE '%DELETE%'
@@ -347,8 +405,14 @@ router.get("/report", requireRole("owner", "admin"), async (req, res) => {
       findings: {
         failed_logins_by_email: failedByEmail || [],
         failed_logins_by_ip: failedByIp || [],
-        after_hours_logins: afterHours || [],
-        destructive_events: destructive || [],
+        after_hours_logins: (afterHours || []).map((r) => ({
+          ...r,
+          created_at_iso: normalizeCreatedAtIso(r),
+        })),
+        destructive_events: (destructive || []).map((r) => ({
+          ...r,
+          created_at_iso: normalizeCreatedAtIso(r),
+        })),
       },
     });
   } catch (e) {

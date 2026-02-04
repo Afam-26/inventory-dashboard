@@ -42,6 +42,11 @@ export default function UsersAdmin({ user }) {
     return () => window.clearTimeout(t);
   }, [uiRole]);
 
+  function RolePill({ role, className = "" }) {
+    const r = String(role || "staff").toLowerCase();
+    return <span className={`role-pill ${r} ${className}`}>{r}</span>;
+  }
+
   async function load() {
     setLoading(true);
     setPageErr("");
@@ -255,7 +260,9 @@ export default function UsersAdmin({ user }) {
 
     if (!payload.full_name) return toast("error", "Full name is required");
     if (!payload.email) return toast("error", "Email is required");
-    if (!payload.password || payload.password.length < 8) return toast("error", "Password must be at least 8 characters");
+    if (!payload.password || payload.password.length < 8) {
+      return toast("error", "Password must be at least 8 characters");
+    }
 
     setCreating(true);
     try {
@@ -363,8 +370,12 @@ export default function UsersAdmin({ user }) {
                 <span style={{ fontWeight: 400, color: "#6b7280" }}>(ID: {confirm.target.id})</span>
               </div>
               <div style={{ color: "#374151" }}>{confirm.target.email}</div>
-              <div style={{ marginTop: 8, fontSize: 13, color: "#6b7280" }}>
-                Current: <b>{confirm.prevRole}</b> → New: <b>{confirm.nextRole}</b>
+
+              <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13, color: "#6b7280" }}>Current</span>
+                <RolePill role={confirm.prevRole} />
+                <span style={{ fontSize: 13, color: "#6b7280" }}>→ New</span>
+                <RolePill role={confirm.nextRole} />
               </div>
             </div>
 
@@ -384,7 +395,9 @@ export default function UsersAdmin({ user }) {
       <div className="page-head">
         <div>
           <h1 style={{ marginBottom: 6 }}>User Management</h1>
-          <p style={{ marginTop: 0, color: "#6b7280" }}>Create users, invite users to tenant, and manage per-tenant roles.</p>
+          <p style={{ marginTop: 0, color: "#6b7280" }}>
+            Create users, invite users to tenant, and manage per-tenant roles.
+          </p>
         </div>
 
         <button className="btn" onClick={load} disabled={loading}>
@@ -404,11 +417,7 @@ export default function UsersAdmin({ user }) {
             onChange={(e) => setInviteForm((p) => ({ ...p, email: e.target.value }))}
           />
 
-          <select
-            className="input"
-            value={inviteForm.role}
-            onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value }))}
-          >
+          <select className="input" value={inviteForm.role} onChange={(e) => setInviteForm((p) => ({ ...p, role: e.target.value }))}>
             <option value="staff">staff</option>
             <option value="admin">admin</option>
             <option value="owner">owner</option>
@@ -419,7 +428,9 @@ export default function UsersAdmin({ user }) {
           </button>
         </form>
 
-        <p style={{ marginTop: 10, color: "#6b7280", fontSize: 13 }}>Invited users will join this tenant with the selected role.</p>
+        <p style={{ marginTop: 10, color: "#6b7280", fontSize: 13 }}>
+          Invited users will join this tenant with the selected role.
+        </p>
       </div>
 
       {/* Create user */}
@@ -540,26 +551,14 @@ export default function UsersAdmin({ user }) {
                           <option value="owner">owner</option>
                         </select>
 
-                        {isMe && (
-                          <span
-                            style={{
-                              fontSize: 12,
-                              padding: "3px 8px",
-                              borderRadius: 999,
-                              background: "#111827",
-                              color: "#fff",
-                            }}
-                          >
-                            you
-                          </span>
-                        )}
+                        <RolePill role={currentRole} />
+
+                        {isMe && <span className="role-pill you">you</span>}
 
                         {isSaving && <span style={{ fontSize: 12, color: "#6b7280" }}>Saving...</span>}
                       </div>
 
-                      {inlineErr ? (
-                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div>
-                      ) : null}
+                      {inlineErr ? <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div> : null}
                     </td>
 
                     <td>{u.created_at ? new Date(u.created_at).toLocaleString() : "-"}</td>
@@ -580,7 +579,8 @@ export default function UsersAdmin({ user }) {
 
                       {canUndo && (
                         <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-                          Last change: <b>{undoMap[u.id].newRole}</b> <span style={{ opacity: 0.8 }}>(undo → {undoMap[u.id].prevRole})</span>
+                          Last change: <b>{undoMap[u.id].newRole}</b>{" "}
+                          <span style={{ opacity: 0.8 }}>(undo → {undoMap[u.id].prevRole})</span>
                         </div>
                       )}
                     </td>

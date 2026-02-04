@@ -1,12 +1,11 @@
 // routes/billing.js
 import express from "express";
 import { db } from "../config/db.js";
-import { requireAuth, requireTenant } from "../middleware/auth.js";
+import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 import { requireBillingAdmin } from "../middleware/billing.js";
 import { PLANS, normalizePlanKey, makeUsageLine } from "../utils/plans.js";
 import { logAudit, SEVERITY } from "../utils/audit.js";
 import { getStripe, stripeIsEnabled } from "../utils/stripe.js";
-
 
 const router = express.Router();
 
@@ -106,11 +105,9 @@ router.get("/current", async (req, res) => {
 
 /**
  * POST /api/billing/change-plan
- * owner/admin only
- * body: { planKey }
- * - if Stripe enabled, you may want to force checkout flow instead of direct change for paid plans.
+ * ✅ OWNER ONLY
  */
-router.post("/change-plan", requireBillingAdmin, async (req, res) => {
+router.post("/change-plan", requireRole("owner"), requireBillingAdmin, async (req, res) => {
   try {
     const tenantId = req.tenantId;
     const requested = normalizePlanKey(req.body?.planKey);
@@ -138,20 +135,9 @@ router.post("/change-plan", requireBillingAdmin, async (req, res) => {
 
 /**
  * POST /api/billing/stripe/checkout
- * owner/admin only
- * body: { priceId, planKey }
- *
- * Stripe-ready: creates a Checkout Session.
- * You must configure:
- * - STRIPE_SECRET_KEY
- * - STRIPE_PRICE_PRO, STRIPE_PRICE_BUSINESS (or send priceId from UI safely)
- * - FRONTEND_URL
+ * ✅ OWNER ONLY
  */
-router.post("/stripe/checkout", requireBillingAdmin, async (req, res) => {
-  console.log("Stripe enabled:", Boolean(process.env.STRIPE_SECRET_KEY));
-  console.log("Stripe key prefix:", (process.env.STRIPE_SECRET_KEY || "").slice(0, 8));
-  console.log("PriceId:", req.body?.priceId);
-  
+router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async (req, res) => {
   const stripe = getStripe();
   if (!stripe) return res.status(400).json({ message: "Stripe not configured" });
 
@@ -195,10 +181,9 @@ router.post("/stripe/checkout", requireBillingAdmin, async (req, res) => {
 
 /**
  * POST /api/billing/stripe/portal
- * owner/admin only
- * Opens Stripe customer portal
+ * ✅ OWNER ONLY
  */
-router.post("/stripe/portal", requireBillingAdmin, async (req, res) => {
+router.post("/stripe/portal", requireRole("owner"), requireBillingAdmin, async (req, res) => {
   const stripe = getStripe();
   if (!stripe) return res.status(400).json({ message: "Stripe not configured" });
 
@@ -223,11 +208,6 @@ router.post("/stripe/portal", requireBillingAdmin, async (req, res) => {
 
 /**
  * POST /api/billing/stripe/webhook
- * Stripe webhook receiver (raw body required)
- *
- * IMPORTANT:
- * - Mount this route with RAW body in server.js:
- *   app.post("/api/billing/stripe/webhook", express.raw({ type: "application/json" }), billingWebhookHandler)
  */
 export async function billingWebhookHandler(req, res) {
   const stripe = getStripe();
@@ -245,7 +225,6 @@ export async function billingWebhookHandler(req, res) {
   }
 
   try {
-    // Minimal: keep tenant plan_key in sync when subscription changes
     if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {
       const sub = event.data.object;
       const customerId = sub.customer;
@@ -254,7 +233,6 @@ export async function billingWebhookHandler(req, res) {
       const status = sub.status || null;
       const periodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
 
-      // Find tenant by stripe_customer_id
       const [[t]] = await db.query("SELECT id FROM tenants WHERE stripe_customer_id=? LIMIT 1", [customerId]);
       if (t?.id) {
         await db.query(
@@ -271,7 +249,6 @@ export async function billingWebhookHandler(req, res) {
       const customerId = sub.customer;
       const [[t]] = await db.query("SELECT id FROM tenants WHERE stripe_customer_id=? LIMIT 1", [customerId]);
       if (t?.id) {
-        // Example policy: downgrade to starter
         await db.query(
           `UPDATE tenants
            SET plan_key='starter', stripe_subscription_id=NULL, stripe_price_id=NULL, plan_status=?, current_period_end=NULL

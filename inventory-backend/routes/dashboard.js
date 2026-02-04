@@ -19,8 +19,11 @@ async function safeAudit(req, entry) {
 router.get("/", requireAuth, requireTenant, async (req, res) => {
   try {
     const tenantId = req.tenantId;
-    const role = String(req.user?.role || "").toLowerCase();
-    const isAdmin = role === "owner" || role === "admin";
+
+    // ✅ use tenantRole when present
+    const role = String(req.user?.tenantRole || req.user?.role || "").toLowerCase();
+    const isOwner = role === "owner";
+
     const userId = req.user?.id ?? null;
 
     const [[totalProducts]] = await db.query(
@@ -50,7 +53,8 @@ router.get("/", requireAuth, requireTenant, async (req, res) => {
 
     let inventoryValue = null;
 
-    if (isAdmin) {
+    // ✅ Owner-only now
+    if (isOwner) {
       const [[v]] = await db.query(
         `
         SELECT COALESCE(SUM(COALESCE(quantity,0)*COALESCE(cost_price,0)),0) AS v
@@ -79,7 +83,6 @@ router.get("/", requireAuth, requireTenant, async (req, res) => {
       }
 
       if (shouldLog) {
-        // ✅ fire-and-forget (no await) so deadlocks can't break response
         void safeAudit(req, {
           action: "DASHBOARD_INVENTORY_VALUE_VIEW",
           entity_type: "dashboard",
@@ -96,7 +99,7 @@ router.get("/", requireAuth, requireTenant, async (req, res) => {
       lowStockCount: Number(lowStock?.c || 0),
       categories: Number(categories?.c || 0),
       members: Number(members?.c || 0),
-      inventoryValue,
+      inventoryValue, // admin will now receive null
     });
   } catch (err) {
     console.error("DASHBOARD ERROR:", err);

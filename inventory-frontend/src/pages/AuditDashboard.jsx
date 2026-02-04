@@ -97,6 +97,11 @@ function fmtDate(iso) {
   }
 }
 
+function RolePill({ role }) {
+  const r = String(role || "staff").toLowerCase();
+  return <span className={`role-pill ${r}`}>{r}</span>;
+}
+
 function Card({ title, right, children }) {
   return (
     <div className="card">
@@ -134,39 +139,16 @@ function BarChart({ data }) {
       {!data || data.length === 0 ? (
         <div style={{ color: "#6b7280", fontSize: 13 }}>No daily data for this range.</div>
       ) : (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-end",
-            gap: 6,
-            height: 150,
-            overflowX: "auto",
-            paddingTop: 4,
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 150, overflowX: "auto", paddingTop: 4 }}>
           {data.map((d) => {
             const h = Math.round((Number(d.count || 0) / max) * 120);
             return (
               <div key={d.day} style={{ width: 18, display: "flex", flexDirection: "column", alignItems: "center" }}>
                 <div
                   title={`${d.day}: ${d.count}`}
-                  style={{
-                    width: "100%",
-                    height: h,
-                    background: "#111827",
-                    borderRadius: 6,
-                    opacity: d.count ? 1 : 0.25,
-                  }}
+                  style={{ width: "100%", height: h, background: "#111827", borderRadius: 6, opacity: d.count ? 1 : 0.25 }}
                 />
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: "#6b7280",
-                    marginTop: 6,
-                    writingMode: "vertical-rl",
-                    transform: "rotate(180deg)",
-                  }}
-                >
+                <div style={{ fontSize: 10, color: "#6b7280", marginTop: 6, writingMode: "vertical-rl", transform: "rotate(180deg)" }}>
                   {String(d.day).slice(5)}
                 </div>
               </div>
@@ -329,9 +311,12 @@ export default function AuditDashboard({ user }) {
 
   return (
     <div className="auditdash-page">
-      <div className="page-head">
+      <div className="page-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: 12, flexWrap: "wrap" }}>
         <div>
-          <h1 style={{ marginBottom: 6 }}>Audit Dashboard</h1>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <h1 style={{ marginBottom: 6 }}>Audit Dashboard</h1>
+            <RolePill role={role || "staff"} />
+          </div>
           <div style={{ color: "#6b7280" }}>Stats, exports, integrity checks, and SOC-style summaries.</div>
         </div>
       </div>
@@ -356,9 +341,7 @@ export default function AuditDashboard({ user }) {
           <span style={verifyResult.ok ? styles.pillOk : styles.pillBad}>
             {verifyResult.ok
               ? `OK (checked ${verifyResult.checked}${verifyResult.startId ? `, startId ${verifyResult.startId}` : ""})`
-              : `BROKEN${verifyResult.brokenAtId ? ` at id ${verifyResult.brokenAtId}` : ""}: ${
-                  verifyResult.reason || "unknown"
-                }`}
+              : `BROKEN${verifyResult.brokenAtId ? ` at id ${verifyResult.brokenAtId}` : ""}: ${verifyResult.reason || "unknown"}`}
           </span>
         )}
       </div>
@@ -494,7 +477,11 @@ export default function AuditDashboard({ user }) {
                 </div>
                 <Table
                   columns={[
-                    { key: "ip_address", label: "IP address" },
+                    {
+                      key: "ip_address",
+                      label: "IP address",
+                      render: (r) => r.ip_address ?? r.ip ?? r.ipAddress ?? "—",
+                    },
                     { key: "count", label: "Count" },
                   ]}
                   rows={(report?.findings?.failed_logins_by_ip || []).slice(0, 10)}
@@ -515,7 +502,8 @@ export default function AuditDashboard({ user }) {
                     { key: "user_email", label: "User" },
                     { key: "ip_address", label: "IP" },
                     { key: "action", label: "Action" },
-                    { key: "created_at", label: "Date", render: (r) => fmtDate(r.created_at) },
+                    { key: "created_at_iso", label: "Date", render: (r) => fmtDate(r.created_at_iso ?? r.created_at) }
+
                   ]}
                   rows={(report?.findings?.after_hours_logins || []).slice(0, 25)}
                   emptyText="No after-hours logins"
@@ -535,7 +523,7 @@ export default function AuditDashboard({ user }) {
                     { key: "entity_id", label: "Entity ID" },
                     { key: "user_email", label: "User" },
                     { key: "ip_address", label: "IP" },
-                    { key: "created_at", label: "Date", render: (r) => fmtDate(r.created_at) },
+                    { key: "created_at_iso", label: "Date", render: (r) => fmtDate(r.created_at_iso ?? r.created_at) }
                   ]}
                   rows={(report?.findings?.destructive_events || []).slice(0, 25)}
                   emptyText="No destructive events"

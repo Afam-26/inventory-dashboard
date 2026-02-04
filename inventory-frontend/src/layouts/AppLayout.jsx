@@ -1,5 +1,5 @@
 // src/layouts/AppLayout.jsx
-import { Outlet } from "react-router-dom";
+import { Outlet, useNavigate } from "react-router-dom";
 import { useMemo } from "react";
 import Sidebar from "../components/Sidebar";
 
@@ -7,11 +7,13 @@ import { logoutApi, setToken, setStoredUser, setTenantId } from "../services/api
 import { clearPostLoginRedirect } from "../utils/authRedirect";
 
 export default function AppLayout({ user, setUser }) {
-  const uiRole = useMemo(
-    () => String(user?.tenantRole || user?.role || "").toLowerCase(),
-    [user]
-  );
+  const navigate = useNavigate();
+  const uiRole = useMemo(() => {
+    const r = String(user?.tenantRole || user?.role || "").toLowerCase().trim();
+    return r || "staff";
+  }, [user]);
 
+  const isOwner = uiRole === "owner";
   const isAdmin = uiRole === "admin" || uiRole === "owner";
 
   async function logout() {
@@ -27,16 +29,34 @@ export default function AppLayout({ user, setUser }) {
       // ignore
     }
 
-    window.location.replace("/");
+     // ✅ Go to sign-in page (NOT landing)
+    navigate("/login", { replace: true });
   }
+
+  // ✅ Make pill readable no matter what CSS does
+  const pillStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "4px 10px",
+    borderRadius: 999,
+    fontSize: 12,
+    fontWeight: 800,
+    marginLeft: 8,
+    border: "1px solid #e5e7eb",
+    background: "#111827",
+    color: "#ffffff",
+  };
 
   return (
     <div className="app-shell">
       <div className="app-topbar">
         <p className="app-topbar-left">
-          Logged in as{" "}
-          <span className={`app-rolePill ${isAdmin ? "admin" : "staff"}`}>
-            {uiRole || "user"}
+          Logged in as
+          <span
+            className={`app-rolePill ${isOwner ? "owner" : isAdmin ? "admin" : "staff"}`}
+            style={pillStyle}
+          >
+            {uiRole}
           </span>
         </p>
 

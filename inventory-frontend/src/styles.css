@@ -2,7 +2,8 @@
    Base / Reset
    ========================= */
 html {
-  -webkit-text-size-adjust: 100%; /* ✅ iOS Safari text scaling control */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 html,
@@ -10,13 +11,26 @@ body {
   width: 100%;
   margin: 0;
   padding: 0;
-  overflow-x: hidden; /* ✅ stop horizontal scroll/zoom */
+  overflow-x: hidden;
 }
 
 body {
   font-family: Arial, sans-serif;
   background: #f9fafb;
 }
+
+
+/* ✅ Prevent iOS Chrome font inflation / weird scaling */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 
 /* ✅ Critical: prevents 100%-width elements + padding from overflowing */
 *,
@@ -284,16 +298,13 @@ h1 {
    Shared UI: Cards / Buttons / Inputs
    ========================= */
 .card {
-  background: white;
-  padding: 16px;
-  border-radius: 10px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-
-  border: 1px solid #e5e7eb; /* your newer style */
+  background: #fff;
+  border: 1px solid #e5e7eb;
   border-radius: 14px;
   padding: 14px;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
 }
+
 
 .btn {
   background: #111827;

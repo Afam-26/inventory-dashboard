@@ -31,7 +31,7 @@ export default function Stock({ user }) {
   const [form, setForm] = useState({
     product_id: "",
     type: "IN",
-    quantity: 1,
+    quantity: "",
     reason: "",
   });
 

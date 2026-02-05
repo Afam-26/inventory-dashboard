@@ -437,9 +437,29 @@ export default function UsersAdmin({ user }) {
       <div className="card" style={{ marginTop: 14 }}>
         <h3 style={{ marginTop: 0 }}>Create user</h3>
 
-        <form onSubmit={handleCreate} className="form-grid-2">
+       <form onSubmit={handleCreate} className="form-grid-2" autoComplete="off">
+          {/* 🔒 Autofill busters (Chrome/Safari) */}
+          <input
+            type="text"
+            name="fake_username"
+            autoComplete="username"
+            tabIndex={-1}
+            aria-hidden="true"
+            style={{ position: "absolute", left: "-9999px", top: "-9999px" }}
+          />
+          <input
+            type="password"
+            name="fake_password"
+            autoComplete="new-password"
+            tabIndex={-1}
+            aria-hidden="true"
+            style={{ position: "absolute", left: "-9999px", top: "-9999px" }}
+          />
+
           <input
             className="input"
+            name="create_full_name"
+            autoComplete="off"
             placeholder="Full name"
             value={createForm.full_name}
             onChange={(e) => setCreateForm((p) => ({ ...p, full_name: e.target.value }))}
@@ -447,6 +467,9 @@ export default function UsersAdmin({ user }) {
 
           <input
             className="input"
+            type="email"
+            name="create_email"
+            autoComplete="off"
             placeholder="Email"
             value={createForm.email}
             onChange={(e) => setCreateForm((p) => ({ ...p, email: e.target.value }))}
@@ -455,12 +478,20 @@ export default function UsersAdmin({ user }) {
           <input
             className="input"
             type="password"
+            name="create_password"
+            autoComplete="new-password"
             placeholder="Temp password (min 8)"
             value={createForm.password}
             onChange={(e) => setCreateForm((p) => ({ ...p, password: e.target.value }))}
           />
 
-          <select className="input" value={createForm.role} onChange={(e) => setCreateForm((p) => ({ ...p, role: e.target.value }))}>
+          <select
+            className="input"
+            name="create_role"
+            autoComplete="off"
+            value={createForm.role}
+            onChange={(e) => setCreateForm((p) => ({ ...p, role: e.target.value }))}
+          >
             <option value="staff">staff</option>
             <option value="admin">admin</option>
             <option value="owner">owner</option>

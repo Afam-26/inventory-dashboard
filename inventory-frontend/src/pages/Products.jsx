@@ -139,10 +139,10 @@ export default function Products({ user }) {
     sku: "",
     barcode: "",
     category_id: "",
-    quantity: 0,
-    cost_price: 0,
-    selling_price: 0,
-    reorder_level: 10,
+    quantity: "",
+    cost_price: "",
+    selling_price: "",
+    reorder_level: "",
   });
 
   /* ============================

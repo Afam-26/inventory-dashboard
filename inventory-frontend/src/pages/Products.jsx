@@ -1,5 +1,5 @@
 // src/pages/Products.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getProducts,
   addProduct,
@@ -243,6 +243,14 @@ export default function Products({ user }) {
   const [importMsg, setImportMsg] = useState("");
   const [importErrors, setImportErrors] = useState([]);
   const previewCount = 20;
+  const [fieldErrors, setFieldErrors] = useState({});
+  const nameRef = useRef(null);
+  const skuRef = useRef(null);
+
+  // optional: triggers shake animation by toggling a class briefly
+  const [shake, setShake] = useState({});
+
+
 
   async function loadAll(searchQuery = "") {
     setLoading(true);
@@ -278,35 +286,81 @@ export default function Products({ user }) {
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
+
+    // clear page error as they type (optional)
+    if (error) setError("");
+
+    // clear per-field error when they type in that field
+    setFieldErrors((prev) => {
+      if (!prev?.[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+
+    // remove shake on that field
+    setShake((prev) => ({ ...prev, [key]: false }));
   }
 
+
   async function handleCreate(e) {
-    e.preventDefault();
+  e.preventDefault();
+  setError("");  
+  setFieldErrors({});
+
+  // ✅ Frontend validation (prevents "Database error")
+  const name = String(form.name || "").trim();
+  const sku = String(form.sku || "").trim();
+
+  const errs = {};
+  if (!name) errs.name = "Product name is required.";
+  if (!sku) errs.sku = "SKU is required.";
+
+  if (Object.keys(errs).length > 0) {
+    setFieldErrors(errs);
+
+    // show a single top error (first one)
+    const firstKey = Object.keys(errs)[0];
+    setError(errs[firstKey]);
+
+    // focus the first invalid field
+    if (firstKey === "name") nameRef.current?.focus();
+    if (firstKey === "sku") skuRef.current?.focus();
+
+    // trigger shake on invalid fields
+    setShake({ name: !!errs.name, sku: !!errs.sku });
+    window.setTimeout(() => setShake({}), 420);
+
+    return;
+  }
+
+  try {
+    await addProduct({
+      ...form,
+      name,
+      sku: sku || null, // ✅ keep as required (do NOT turn to null)
+      barcode: String(form.barcode || "").trim() || null,
+      category_id: form.category_id ? Number(form.category_id) : null,
+      quantity: Number(form.quantity) || 0,
+      cost_price: Number(form.cost_price) || 0,
+      selling_price: Number(form.selling_price) || 0,
+      reorder_level: Number(form.reorder_level) || 0,
+    });
+
+    setForm({
+      name: "",
+      sku: "",
+      barcode: "",
+      category_id: "",
+      quantity: "",       // ✅ keep empty so it doesn't prefill 0
+      cost_price: "",     // ✅ keep empty so it doesn't prefill 0
+      selling_price: "",  // ✅ keep empty so it doesn't prefill 0
+      reorder_level: 10,
+    });
+
+    setFieldErrors({});
+    setShake({});
     setError("");
-
-    try {
-      await addProduct({
-        ...form,
-        name: String(form.name || "").trim(),
-        sku: String(form.sku || "").trim() || null,
-        barcode: String(form.barcode || "").trim() || null,
-        category_id: form.category_id ? Number(form.category_id) : null,
-        quantity: Number(form.quantity) || 0,
-        cost_price: Number(form.cost_price) || 0,
-        selling_price: Number(form.selling_price) || 0,
-        reorder_level: Number(form.reorder_level) || 0,
-      });
-
-      setForm({
-        name: "",
-        sku: "",
-        barcode: "",
-        category_id: "",
-        quantity: 0,
-        cost_price: 0,
-        selling_price: 0,
-        reorder_level: 10,
-      });
 
       await loadAll(search);
     } catch (e2) {
@@ -929,83 +983,125 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* Admin create form */}
+     {/* Admin create form */}
       {isAdmin && (
         <form onSubmit={handleCreate} className="products-create card">
           <div className="products-formGrid">
-            <input
-              className="input"
-              placeholder="Product name *"
-              value={form.name}
-              onChange={(e) => updateField("name", e.target.value)}
-              disabled={anyBusy}
-            />
+            {/* Product name */}
+            <div className="field">
+              <input
+                ref={nameRef}
+                className={`input ${fieldErrors.name ? "input-error" : ""} ${
+                  shake?.name ? "input-shake" : ""
+                }`}
+                placeholder="Product name *"
+                value={form.name}
+                onChange={(e) => updateField("name", e.target.value)}
+                disabled={anyBusy}
+                aria-invalid={Boolean(fieldErrors.name)}
+              />
+              {fieldErrors.name ? (
+                <div className="field-errorText">{fieldErrors.name}</div>
+              ) : null}
+            </div>
 
-            <input
-              className="input"
-              placeholder="SKU"
-              value={form.sku}
-              onChange={(e) => updateField("sku", e.target.value)}
-              disabled={anyBusy}
-            />
+            {/* SKU */}
+            <div className="field">
+              <input
+                ref={skuRef}
+                className={`input ${fieldErrors.sku ? "input-error" : ""} ${
+                  shake?.sku ? "input-shake" : ""
+                }`}
+                placeholder="SKU *"
+                value={form.sku}
+                onChange={(e) => updateField("sku", e.target.value)}
+                disabled={anyBusy}
+                aria-invalid={Boolean(fieldErrors.sku)}
+              />
+              {fieldErrors.sku ? (
+                <div className="field-errorText">{fieldErrors.sku}</div>
+              ) : null}
+            </div>
 
-            <input
-              className="input"
-              placeholder="Barcode"
-              value={form.barcode}
-              onChange={(e) => updateField("barcode", e.target.value)}
-              disabled={anyBusy}
-            />
+            {/* Barcode */}
+            <div className="field">
+              <input
+                className="input"
+                placeholder="Barcode"
+                value={form.barcode}
+                onChange={(e) => updateField("barcode", e.target.value)}
+                disabled={anyBusy}
+              />
+            </div>
 
-            <select
-              className="input"
-              value={form.category_id}
-              onChange={(e) => updateField("category_id", e.target.value)}
-              disabled={anyBusy}
-            >
-              <option value="">Select category</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            {/* Category */}
+            <div className="field">
+              <select
+                className="input"
+                value={form.category_id}
+                onChange={(e) => updateField("category_id", e.target.value)}
+                disabled={anyBusy}
+              >
+                <option value="">Select category</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-            <input
-              className="input"
-              type="number"
-              placeholder="Quantity"
-              value={form.quantity}
-              onChange={(e) => updateField("quantity", e.target.value)}
-              disabled={anyBusy}
-            />
+            {/* Quantity */}
+            <div className="field">
+              <input
+                className="input"
+                type="number"
+                placeholder="Quantity"
+                value={form.quantity}
+                onChange={(e) => updateField("quantity", e.target.value)}
+                disabled={anyBusy}
+                inputMode="numeric"
+              />
+            </div>
 
-            <input
-              className="input"
-              type="number"
-              placeholder="Cost price"
-              value={form.cost_price}
-              onChange={(e) => updateField("cost_price", e.target.value)}
-              disabled={anyBusy}
-            />
+            {/* Cost price */}
+            <div className="field">
+              <input
+                className="input"
+                type="number"
+                placeholder="Cost price"
+                value={form.cost_price}
+                onChange={(e) => updateField("cost_price", e.target.value)}
+                disabled={anyBusy}
+                inputMode="decimal"
+              />
+            </div>
 
-            <input
-              className="input"
-              type="number"
-              placeholder="Selling price"
-              value={form.selling_price}
-              onChange={(e) => updateField("selling_price", e.target.value)}
-              disabled={anyBusy}
-            />
+            {/* Selling price */}
+            <div className="field">
+              <input
+                className="input"
+                type="number"
+                placeholder="Selling price"
+                value={form.selling_price}
+                onChange={(e) => updateField("selling_price", e.target.value)}
+                disabled={anyBusy}
+                inputMode="decimal"
+              />
+            </div>
 
-            <input
-              className="input"
-              type="number"
-              placeholder="Reorder level"
-              value={form.reorder_level}
-              onChange={(e) => updateField("reorder_level", e.target.value)}
-              disabled={anyBusy}
-            />
+            {/* Reorder level */}
+            <div className="field">
+              <input
+                className="input"
+                type="number"
+                placeholder="Reorder level"
+                value={form.reorder_level}
+                onChange={(e) => updateField("reorder_level", e.target.value)}
+                disabled={anyBusy}
+                inputMode="numeric"
+              />
+            </div>
           </div>
 
           <div className="products-createActions">
@@ -1026,6 +1122,7 @@ export default function Products({ user }) {
           </div>
         </form>
       )}
+
 
       {/* Barcode scanner modal */}
       {scannerOpen && (

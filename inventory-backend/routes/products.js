@@ -225,7 +225,8 @@ router.post("/", requireRole("owner", "admin"), async (req, res) => {
       ? 10
       : Number(req.body.reorder_level);
 
-  if (!name) return res.status(400).json({ message: "Name required" });
+  if (!name) return res.status(400).json({ message: "Product name is required." });
+  if (!sku) return res.status(400).json({ message: "SKU is required." });
 
   try {
     // If category_id is provided, ensure it belongs to tenant

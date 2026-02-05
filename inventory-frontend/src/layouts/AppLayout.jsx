@@ -2,6 +2,7 @@
 import { Outlet, useNavigate } from "react-router-dom";
 import { useMemo } from "react";
 import Sidebar from "../components/Sidebar";
+import SessionGuard from "../components/SessionGuard";
 
 import { logoutApi, setToken, setStoredUser, setTenantId } from "../services/api";
 import { clearPostLoginRedirect } from "../utils/authRedirect";
@@ -29,11 +30,9 @@ export default function AppLayout({ user, setUser }) {
       // ignore
     }
 
-     // ✅ Go to sign-in page (NOT landing)
     navigate("/login", { replace: true });
   }
 
-  // ✅ Make pill readable no matter what CSS does
   const pillStyle = {
     display: "inline-flex",
     alignItems: "center",
@@ -49,13 +48,13 @@ export default function AppLayout({ user, setUser }) {
 
   return (
     <div className="app-shell">
+      {/* ✅ Session features */}
+      <SessionGuard />
+
       <div className="app-topbar">
         <p className="app-topbar-left">
           Logged in as
-          <span
-            className={`app-rolePill ${isOwner ? "owner" : isAdmin ? "admin" : "staff"}`}
-            style={pillStyle}
-          >
+          <span className={`app-rolePill ${isOwner ? "owner" : isAdmin ? "admin" : "staff"}`} style={pillStyle}>
             {uiRole}
           </span>
         </p>

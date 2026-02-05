@@ -40,7 +40,7 @@ export default function Sidebar({ user }) {
               className={`sidebar-link ${isActive("/audit-dashboard") ? "active" : ""}`}
               to="/audit-dashboard"
             >
-              Audit Dashboard
+              Dashboard Audit
             </Link>
 
             {/* ✅ Owner-only */}

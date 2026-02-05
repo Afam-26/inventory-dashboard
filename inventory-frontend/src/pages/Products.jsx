@@ -740,7 +740,7 @@ export default function Products({ user }) {
               />
             </label>
           )}
-
+          
           {undo && Date.now() < undo.expiresAt && (
             <button className="btn" onClick={undoDelete} disabled={anyBusy}>
               Undo delete
@@ -748,7 +748,7 @@ export default function Products({ user }) {
           )}
         </div>
       </div>
-
+       <br />            
       {error && <p style={{ color: "red" }}>{error}</p>}
       {importMsg && <p style={{ color: "green" }}>{importMsg}</p>}
 
@@ -761,8 +761,8 @@ export default function Products({ user }) {
               <div style={{ color: "#6b7280", fontSize: 12 }}>
                 {csvFileName ? `Selected: ${csvFileName} (${csvRows.length} rows)` : "No file selected"}
               </div>
-            </div>
-
+            </div>  
+                      
             <div className="products-importActions">
               <label className="products-check">
                 <input
@@ -777,7 +777,7 @@ export default function Products({ user }) {
               <button className="btn" onClick={startImport} disabled={anyBusy || !csvRows.length}>
                 {importing ? "Importing..." : "Start Import"}
               </button>
-
+               
               <button
                 className="btn"
                 onClick={downloadErrorReport}

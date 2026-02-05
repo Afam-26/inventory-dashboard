@@ -303,7 +303,7 @@ export default function AuditDashboard({ user }) {
   if (!isAdmin) {
     return (
       <div>
-        <h1>Audit Dashboard</h1>
+        <h1>Dashboard Audit</h1>
         <p>You do not have access to this page.</p>
       </div>
     );
@@ -314,7 +314,7 @@ export default function AuditDashboard({ user }) {
       <div className="page-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "end", gap: 12, flexWrap: "wrap" }}>
         <div>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <h1 style={{ marginBottom: 6 }}>Audit Dashboard</h1>
+            <h1 style={{ marginBottom: 6 }}>Dashboard Audit</h1>
             <RolePill role={role || "staff"} />
           </div>
           <div style={{ color: "#6b7280" }}>Stats, exports, integrity checks, and SOC-style summaries.</div>

@@ -42,6 +42,48 @@ function authHeaders() {
 
 /**
  * ============================
+ * JWT helpers (needed by SessionGuard)
+ * ============================
+ */
+function decodeJwtPayload(token) {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length < 2) return null;
+
+    // Base64url → Base64
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const json = atob(b64);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+export function getTokenExpMs() {
+  const token = localStorage.getItem("token");
+  if (!token) return null;
+
+  const payload = decodeJwtPayload(token);
+  if (!payload?.exp) return null;
+
+  // JWT exp is seconds
+  return Number(payload.exp) * 1000;
+}
+
+export function getTokenRemainingMs() {
+  const expMs = getTokenExpMs();
+  if (!expMs) return 0;
+  return Math.max(0, expMs - Date.now());
+}
+
+export function isTokenExpired(leewayMs = 0) {
+  const expMs = getTokenExpMs();
+  if (!expMs) return true;
+  return Date.now() + Number(leewayMs || 0) >= expMs;
+}
+
+/**
+ * ============================
  * Tenant handling
  * ============================
  */
@@ -76,6 +118,50 @@ export function getStoredUser() {
 export function setStoredUser(user) {
   if (user) localStorage.setItem("user", JSON.stringify(user));
   else localStorage.removeItem("user");
+}
+
+/**
+ * ============================
+ * Global auth-expired handling
+ * - lets SessionGuard + API fetches force login redirect
+ * ============================
+ */
+const authExpiredListeners = new Set();
+
+export function onAuthExpired(cb) {
+  if (typeof cb !== "function") return () => {};
+  authExpiredListeners.add(cb);
+  return () => authExpiredListeners.delete(cb);
+}
+
+export function clearSessionStorage() {
+  setToken("");
+  setTenantId(null);
+  setStoredUser(null);
+}
+
+export function handleAuthExpired(reason = "TOKEN_EXPIRED") {
+  // clear first
+  clearSessionStorage();
+
+  // notify listeners (SessionGuard can show UI or just let redirect happen)
+  for (const cb of authExpiredListeners) {
+    try {
+      cb({ reason });
+    } catch {
+      // ignore
+    }
+  }
+
+  // hard redirect so we never stay on broken private routes
+  try {
+    const path = window.location.pathname || "";
+    if (!path.startsWith("/login")) {
+      window.location.replace("/login");
+    }
+  } catch {
+    // ignore
+  }
 }
 
 /**
@@ -133,8 +219,9 @@ async function baseFetch(
 
   if (!res.ok) {
     const msg = data?.message || "Request failed";
+    const code = data?.code || "API_ERROR";
 
-    // Normalize "No tenant selected"
+    // ✅ Tenant-required normalization
     if (
       String(msg).toLowerCase().includes("tenant") &&
       String(msg).toLowerCase().includes("selected")
@@ -142,7 +229,28 @@ async function baseFetch(
       throw makeApiError(msg, "TENANT_REQUIRED", res.status);
     }
 
-    throw makeApiError(msg, data?.code || "API_ERROR", res.status);
+    // ✅ Token expired / invalid → force login page (no “invalid token” UI)
+    // We check both backend code + common message patterns
+    const lower = String(msg).toLowerCase();
+    const isAuth401 = res.status === 401;
+    const looksExpired =
+      code === "TOKEN_EXPIRED" ||
+      lower.includes("token expired") ||
+      lower.includes("jwt expired") ||
+      lower.includes("expired token");
+
+    const looksInvalid =
+      code === "INVALID_TOKEN" ||
+      lower.includes("invalid token") ||
+      lower.includes("jwt malformed") ||
+      lower.includes("missing token");
+
+    if (isAuth401 && (looksExpired || looksInvalid)) {
+      handleAuthExpired(looksExpired ? "TOKEN_EXPIRED" : "INVALID_TOKEN");
+      throw makeApiError("Session expired. Please sign in again.", "AUTH_EXPIRED", 401);
+    }
+
+    throw makeApiError(msg, code, res.status);
   }
 
   return data ?? {};
@@ -204,9 +312,7 @@ export async function logoutApi() {
     { useCookie: true }
   );
 
-  setToken("");
-  setTenantId(null);
-  setStoredUser(null);
+  clearSessionStorage();
   return data;
 }
 
@@ -324,10 +430,7 @@ export async function restoreCategory(id) {
  */
 export async function getProducts(search = "") {
   const q = String(search || "").trim();
-  const url = q
-    ? `${API_BASE}/products?search=${encodeURIComponent(q)}`
-    : `${API_BASE}/products`;
-
+  const url = q ? `${API_BASE}/products?search=${encodeURIComponent(q)}` : `${API_BASE}/products`;
   return baseFetch(url, {}, { useAuth: true });
 }
 
@@ -364,23 +467,14 @@ export async function getProductBySku(skuOrBarcode) {
   const code = String(skuOrBarcode || "").trim();
   if (!code) throw new Error("SKU is required");
 
-  return baseFetch(
-    `${API_BASE}/products/by-sku/${encodeURIComponent(code)}`,
-    {},
-    { useAuth: true }
-  );
+  return baseFetch(`${API_BASE}/products/by-sku/${encodeURIComponent(code)}`, {}, { useAuth: true });
 }
 
-// Optional (if you want to use /by-code later)
 export async function getProductByCode(code) {
   const clean = String(code || "").trim();
   if (!clean) throw new Error("Code is required");
 
-  return baseFetch(
-    `${API_BASE}/products/by-code/${encodeURIComponent(clean)}`,
-    {},
-    { useAuth: true }
-  );
+  return baseFetch(`${API_BASE}/products/by-code/${encodeURIComponent(clean)}`, {}, { useAuth: true });
 }
 
 // CSV export
@@ -470,16 +564,13 @@ export async function fetchStockCsvBlob(params = {}) {
     if (v !== undefined && v !== null && String(v).trim() !== "") qs.set(k, String(v));
   }
 
-  const res = await fetch(
-    `${API_BASE}/stock/export.csv${qs.toString() ? `?${qs}` : ""}`,
-    {
-      headers: {
-        ...authHeaders(),
-        ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}),
-      },
-      cache: "no-store",
-    }
-  );
+  const res = await fetch(`${API_BASE}/stock/export.csv${qs.toString() ? `?${qs}` : ""}`, {
+    headers: {
+      ...authHeaders(),
+      ...(getTenantId() ? { "x-tenant-id": String(getTenantId()) } : {}),
+    },
+    cache: "no-store",
+  });
 
   if (!res.ok) {
     const text = await res.text();
@@ -560,7 +651,6 @@ export async function getAuditLogs(params = {}) {
     { useAuth: true }
   );
 
-  // supports either { logs, total, page, limit } or raw arrays (older versions)
   return {
     page: Number(data?.page || 1),
     limit: Number(data?.limit || 50),
@@ -610,35 +700,20 @@ export async function downloadAuditCsv(params = {}) {
  * BILLING
  * ============================
  */
-
-// Always return: { plans: [...], stripeEnabled: boolean }
 export async function getPlans() {
   const data = await baseFetch(`${API_BASE}/billing/plans`, {}, { useAuth: true });
 
-  // If backend returns { plans, stripeEnabled }
   if (data && typeof data === "object" && Array.isArray(data.plans)) {
-    return {
-      plans: data.plans,
-      stripeEnabled: Boolean(data.stripeEnabled),
-    };
+    return { plans: data.plans, stripeEnabled: Boolean(data.stripeEnabled) };
   }
 
-  // Backward compatibility: if some old backend returned an array directly
-  if (Array.isArray(data)) {
-    return {
-      plans: data,
-      stripeEnabled: false,
-    };
-  }
-
-  // Fallback safe
+  if (Array.isArray(data)) return { plans: data, stripeEnabled: false };
   return { plans: [], stripeEnabled: false };
 }
 
 export async function getCurrentPlan() {
   const data = await baseFetch(`${API_BASE}/billing/current`, {}, { useAuth: true });
 
-  // normalize a little (safe defaults)
   return {
     tenantId: data?.tenantId ?? null,
     planKey: data?.planKey ?? "starter",
@@ -672,7 +747,6 @@ export async function updateCurrentPlan(planKey) {
  * STRIPE
  * ============================
  */
-
 export async function startStripeCheckout({ priceId, planKey }) {
   return baseFetch(
     `${API_BASE}/billing/stripe/checkout`,
@@ -686,10 +760,5 @@ export async function startStripeCheckout({ priceId, planKey }) {
 }
 
 export async function openStripePortal() {
-  return baseFetch(
-    `${API_BASE}/billing/stripe/portal`,
-    { method: "POST" },
-    { useAuth: true }
-  );
+  return baseFetch(`${API_BASE}/billing/stripe/portal`, { method: "POST" }, { useAuth: true });
 }
-

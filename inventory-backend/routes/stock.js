@@ -76,11 +76,6 @@ router.get("/", async (req, res) => {
 /**
  * ✅ Export stock movements CSV (owner/admin/staff)
  * Tenant-safe (filters sm.tenant_id)
- * Query params (optional):
- *  - search
- *  - type: IN | OUT
- *  - from: YYYY-MM-DD
- *  - to: YYYY-MM-DD
  */
 router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, res) => {
   try {
@@ -143,20 +138,11 @@ router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, re
 
 /**
  * GET /api/stock/movements
- * Query params (optional):
- *  - limit (default 200, max 500)
- *  - productId (optional)
- *  - search (optional)
- *  - type (optional: IN/OUT)
- *  - from (optional: YYYY-MM-DD)
- *  - to (optional: YYYY-MM-DD)
+ * Optional filters: search, type, from, to, limit
  */
-// GET /api/stock/movements
-// Supports optional filters: search, type, from, to, limit, productId
-// routes/stock.js
 router.get("/movements", async (req, res) => {
   try {
-    const tenantId = req.tenantId; // ✅ you already have requireTenant middleware
+    const tenantId = req.tenantId;
     const limit = Math.min(500, Math.max(1, Number(req.query.limit || 200)));
 
     const from = String(req.query.from || "").trim();
@@ -216,7 +202,6 @@ router.get("/movements", async (req, res) => {
   }
 });
 
-
 /**
  * POST /api/stock/move
  * Body: { productId, type: 'IN'|'OUT', quantity, reason }
@@ -224,7 +209,6 @@ router.get("/movements", async (req, res) => {
  */
 router.post("/move", requireRole("owner", "admin", "staff"), async (req, res) => {
   const tenantId = req.tenantId;
-  const userId = req.user.id;
 
   const productId = Number(req.body?.productId);
   const type = String(req.body?.type || "").toUpperCase();
@@ -277,8 +261,7 @@ router.post("/move", requireRole("owner", "admin", "staff"), async (req, res) =>
 
     await conn.commit();
 
-    // Audit AFTER commit (safer: avoids writing audit row if transaction rolls back)
-   await logAudit(req, {
+    await logAudit(req, {
       action: "STOCK_MOVE",
       entity_type: "product",
       entity_id: productId,
@@ -294,7 +277,6 @@ router.post("/move", requireRole("owner", "admin", "staff"), async (req, res) =>
       },
     });
 
-
     res.status(201).json({ ok: true, movementId: mr.insertId, quantity: newQty });
   } catch (e) {
     try {
@@ -302,6 +284,157 @@ router.post("/move", requireRole("owner", "admin", "staff"), async (req, res) =>
     } catch {}
     console.error("STOCK MOVE ERROR:", e);
     res.status(500).json({ message: "Server error" });
+  } finally {
+    conn.release();
+  }
+});
+
+/**
+ * ✅ POST /api/stock/reconcile
+ * owner/admin only
+ *
+ * Reconciles stock ledger (stock_movements) to match products.quantity.
+ *
+ * Query params:
+ *  - dryRun=1   -> no writes, just preview
+ *  - limit=200  -> only reconcile first N mismatches
+ */
+router.post("/reconcile", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = Number(req.tenantId);
+  const dryRun = String(req.query.dryRun || "").trim() === "1";
+  const limit = Number(req.query.limit || 0);
+
+  if (!Number.isFinite(tenantId) || tenantId <= 0) {
+    return res.status(400).json({ message: "No tenant selected" });
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    // ledger = SUM(IN) - SUM(OUT)
+    const [rows] = await conn.query(
+      `
+      SELECT
+        p.id AS product_id,
+        p.name,
+        p.sku,
+        COALESCE(p.quantity, 0) AS product_qty,
+        COALESCE(SUM(
+          CASE
+            WHEN sm.type = 'IN' THEN sm.quantity
+            WHEN sm.type = 'OUT' THEN -sm.quantity
+            ELSE 0
+          END
+        ), 0) AS ledger_qty
+      FROM products p
+      LEFT JOIN stock_movements sm
+        ON sm.tenant_id = p.tenant_id
+       AND sm.product_id = p.id
+      WHERE p.tenant_id = ?
+      GROUP BY p.id
+      ORDER BY p.id ASC
+      `,
+      [tenantId]
+    );
+
+    const checked = rows.length;
+
+    const mismatches = [];
+    for (const r of rows) {
+      const productQty = Number(r.product_qty || 0);
+      const ledgerQty = Number(r.ledger_qty || 0);
+      const delta = productQty - ledgerQty; // target - current
+
+      if (delta !== 0) {
+        mismatches.push({
+          product_id: Number(r.product_id),
+          name: r.name,
+          sku: r.sku,
+          product_qty: productQty,
+          ledger_qty: ledgerQty,
+          delta,
+        });
+      }
+    }
+
+    const limited =
+      Number.isFinite(limit) && limit > 0 ? mismatches.slice(0, limit) : mismatches;
+
+    const movementsToInsert = [];
+    const preview = [];
+
+    for (const m of limited) {
+      const type = m.delta > 0 ? "IN" : "OUT";
+      const qty = Math.abs(m.delta);
+
+      if (!Number.isFinite(qty) || qty <= 0) continue;
+
+      const reason = `Bulk reconcile: set ledger to match products.quantity (${m.ledger_qty} -> ${m.product_qty})`;
+
+      movementsToInsert.push([tenantId, m.product_id, type, qty, reason]);
+      preview.push({
+        product_id: m.product_id,
+        sku: m.sku,
+        name: m.name,
+        ledger_before: m.ledger_qty,
+        target: m.product_qty,
+        type,
+        qty,
+      });
+    }
+
+    let adjusted = 0;
+
+    if (!dryRun && movementsToInsert.length) {
+      await conn.query(
+        `
+        INSERT INTO stock_movements
+          (tenant_id, product_id, type, quantity, reason, created_at)
+        VALUES
+          ${movementsToInsert.map(() => "(?, ?, ?, ?, ?, NOW())").join(",")}
+        `,
+        movementsToInsert.flat()
+      );
+
+      adjusted = movementsToInsert.length;
+    }
+
+    await logAudit(req, {
+      action: dryRun ? "STOCK_RECONCILE_DRYRUN" : "STOCK_RECONCILE_RUN",
+      entity_type: "tenant",
+      entity_id: tenantId,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      details: {
+        dryRun,
+        tenantId,
+        checked,
+        mismatches: mismatches.length,
+        adjusted: dryRun ? 0 : adjusted,
+        limit: Number.isFinite(limit) && limit > 0 ? limit : null,
+        preview: preview.slice(0, 25),
+      },
+    });
+
+    await conn.commit();
+
+    return res.json({
+      ok: true,
+      dryRun,
+      tenantId,
+      checked,
+      mismatches: mismatches.length,
+      adjusted: dryRun ? 0 : adjusted,
+      skipped: mismatches.length - limited.length,
+      preview: preview.slice(0, 50),
+    });
+  } catch (err) {
+    try {
+      await conn.rollback();
+    } catch {}
+    console.error("STOCK RECONCILE ERROR:", err);
+    return res.status(500).json({ message: "Database error" });
   } finally {
     conn.release();
   }

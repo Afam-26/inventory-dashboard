@@ -113,6 +113,33 @@ function guessMapping(headers) {
   };
 }
 
+/* ============================
+   LOW stock + urgency sorting
+   - LOW first
+   - Most urgent first: (quantity - reorder_level) asc
+   - Then alphabetical
+============================ */
+
+function isLowStock(p) {
+  const qty = Number(p?.quantity ?? 0);
+  const reorder = Number(p?.reorder_level ?? 0);
+  return reorder > 0 && qty <= reorder;
+}
+
+function sortProductsLowFirst(list) {
+  return [...list].sort((a, b) => {
+    const aLow = isLowStock(a) ? 1 : 0;
+    const bLow = isLowStock(b) ? 1 : 0;
+
+    // LOW items first
+    if (aLow !== bLow) return bLow - aLow;
+
+    // then alphabetical by name
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+}
+
+
 export default function Products({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = role === "admin" || role === "owner";
@@ -243,33 +270,37 @@ export default function Products({ user }) {
   const [importMsg, setImportMsg] = useState("");
   const [importErrors, setImportErrors] = useState([]);
   const previewCount = 20;
+
+  // field validation UI
   const [fieldErrors, setFieldErrors] = useState({});
   const nameRef = useRef(null);
   const skuRef = useRef(null);
 
-  // optional: triggers shake animation by toggling a class briefly
+  // optional: shake animation toggles
   const [shake, setShake] = useState({});
 
-
-
   async function loadAll(searchQuery = "") {
-    setLoading(true);
-    setError("");
+  setLoading(true);
+  setError("");
 
-    try {
-      const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
+  try {
+    const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
 
-      const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
-      setProducts(list);
+    const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
 
-      const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
-      setCategories(cats);
-    } catch (e2) {
-      setError(e2?.message || "Failed to load");
-    } finally {
-      setLoading(false);
-    }
+    // ✅ IMPORTANT: sort low stock first
+    setProducts(sortProductsLowFirst(list));
+
+    const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
+    setCategories(cats);
+  } catch (e2) {
+    setError(e2?.message || "Failed to load");
+  } finally {
+    setLoading(false);
   }
+}
+
+
 
   useEffect(() => {
     loadAll("");
@@ -287,7 +318,7 @@ export default function Products({ user }) {
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
 
-    // clear page error as they type (optional)
+    // clear page error as they type
     if (error) setError("");
 
     // clear per-field error when they type in that field
@@ -302,65 +333,61 @@ export default function Products({ user }) {
     setShake((prev) => ({ ...prev, [key]: false }));
   }
 
-
   async function handleCreate(e) {
-  e.preventDefault();
-  setError("");  
-  setFieldErrors({});
-
-  // ✅ Frontend validation (prevents "Database error")
-  const name = String(form.name || "").trim();
-  const sku = String(form.sku || "").trim();
-
-  const errs = {};
-  if (!name) errs.name = "Product name is required.";
-  if (!sku) errs.sku = "SKU is required.";
-
-  if (Object.keys(errs).length > 0) {
-    setFieldErrors(errs);
-
-    // show a single top error (first one)
-    const firstKey = Object.keys(errs)[0];
-    setError(errs[firstKey]);
-
-    // focus the first invalid field
-    if (firstKey === "name") nameRef.current?.focus();
-    if (firstKey === "sku") skuRef.current?.focus();
-
-    // trigger shake on invalid fields
-    setShake({ name: !!errs.name, sku: !!errs.sku });
-    window.setTimeout(() => setShake({}), 420);
-
-    return;
-  }
-
-  try {
-    await addProduct({
-      ...form,
-      name,
-      sku: sku || null, // ✅ keep as required (do NOT turn to null)
-      barcode: String(form.barcode || "").trim() || null,
-      category_id: form.category_id ? Number(form.category_id) : null,
-      quantity: Number(form.quantity) || 0,
-      cost_price: Number(form.cost_price) || 0,
-      selling_price: Number(form.selling_price) || 0,
-      reorder_level: Number(form.reorder_level) || 0,
-    });
-
-    setForm({
-      name: "",
-      sku: "",
-      barcode: "",
-      category_id: "",
-      quantity: "",       // ✅ keep empty so it doesn't prefill 0
-      cost_price: "",     // ✅ keep empty so it doesn't prefill 0
-      selling_price: "",  // ✅ keep empty so it doesn't prefill 0
-      reorder_level: 10,
-    });
-
-    setFieldErrors({});
-    setShake({});
+    e.preventDefault();
     setError("");
+    setFieldErrors({});
+
+    // ✅ Frontend validation (prevents "Database error")
+    const name = String(form.name || "").trim();
+    const sku = String(form.sku || "").trim();
+
+    const errs = {};
+    if (!name) errs.name = "Product name is required.";
+    if (!sku) errs.sku = "SKU is required.";
+
+    if (Object.keys(errs).length > 0) {
+      setFieldErrors(errs);
+
+      const firstKey = Object.keys(errs)[0];
+      setError(errs[firstKey]);
+
+      if (firstKey === "name") nameRef.current?.focus();
+      if (firstKey === "sku") skuRef.current?.focus();
+
+      setShake({ name: !!errs.name, sku: !!errs.sku });
+      window.setTimeout(() => setShake({}), 420);
+
+      return;
+    }
+
+    try {
+      await addProduct({
+        ...form,
+        name,
+        sku, // ✅ required
+        barcode: String(form.barcode || "").trim() || null,
+        category_id: form.category_id ? Number(form.category_id) : null,
+        quantity: Number(form.quantity) || 0,
+        cost_price: Number(form.cost_price) || 0,
+        selling_price: Number(form.selling_price) || 0,
+        reorder_level: Number(form.reorder_level) || 0,
+      });
+
+      setForm({
+        name: "",
+        sku: "",
+        barcode: "",
+        category_id: "",
+        quantity: "", // ✅ keep empty so it doesn't prefill 0
+        cost_price: "", // ✅ keep empty so it doesn't prefill 0
+        selling_price: "", // ✅ keep empty so it doesn't prefill 0
+        reorder_level: 10,
+      });
+
+      setFieldErrors({});
+      setShake({});
+      setError("");
 
       await loadAll(search);
     } catch (e2) {
@@ -376,6 +403,7 @@ export default function Products({ user }) {
       sku: p.sku || "",
       barcode: p.barcode || "",
       category_id: p.category_id ?? "",
+      quantity: p.quantity ?? 0,
       cost_price: p.cost_price ?? 0,
       selling_price: p.selling_price ?? 0,
       reorder_level: p.reorder_level ?? 0,
@@ -400,6 +428,7 @@ export default function Products({ user }) {
         sku: String(editForm.sku || "").trim() || null,
         barcode: String(editForm.barcode || "").trim() || null,
         category_id: editForm.category_id === "" || editForm.category_id == null ? null : Number(editForm.category_id),
+        quantity: Number(editForm.quantity) || 0,
         cost_price: Number(editForm.cost_price) || 0,
         selling_price: Number(editForm.selling_price) || 0,
         reorder_level: Number(editForm.reorder_level) || 0,
@@ -759,11 +788,7 @@ export default function Products({ user }) {
         <div>
           <h1 className="products-title">Products</h1>
 
-          {!isAdmin && (
-            <div className="products-pill">
-              Read-only (Staff)
-            </div>
-          )}
+          {!isAdmin && <div className="products-pill">Read-only (Staff)</div>}
         </div>
 
         <div className="products-actions">
@@ -794,7 +819,7 @@ export default function Products({ user }) {
               />
             </label>
           )}
-          
+
           {undo && Date.now() < undo.expiresAt && (
             <button className="btn" onClick={undoDelete} disabled={anyBusy}>
               Undo delete
@@ -802,7 +827,8 @@ export default function Products({ user }) {
           )}
         </div>
       </div>
-       <br />            
+
+      <br />
       {error && <p style={{ color: "red" }}>{error}</p>}
       {importMsg && <p style={{ color: "green" }}>{importMsg}</p>}
 
@@ -815,8 +841,8 @@ export default function Products({ user }) {
               <div style={{ color: "#6b7280", fontSize: 12 }}>
                 {csvFileName ? `Selected: ${csvFileName} (${csvRows.length} rows)` : "No file selected"}
               </div>
-            </div>  
-                      
+            </div>
+
             <div className="products-importActions">
               <label className="products-check">
                 <input
@@ -831,7 +857,7 @@ export default function Products({ user }) {
               <button className="btn" onClick={startImport} disabled={anyBusy || !csvRows.length}>
                 {importing ? "Importing..." : "Start Import"}
               </button>
-               
+
               <button
                 className="btn"
                 onClick={downloadErrorReport}
@@ -983,7 +1009,7 @@ export default function Products({ user }) {
         </div>
       )}
 
-     {/* Admin create form */}
+      {/* Admin create form */}
       {isAdmin && (
         <form onSubmit={handleCreate} className="products-create card">
           <div className="products-formGrid">
@@ -991,36 +1017,28 @@ export default function Products({ user }) {
             <div className="field">
               <input
                 ref={nameRef}
-                className={`input ${fieldErrors.name ? "input-error" : ""} ${
-                  shake?.name ? "input-shake" : ""
-                }`}
+                className={`input ${fieldErrors.name ? "input-error" : ""} ${shake?.name ? "input-shake" : ""}`}
                 placeholder="Product name *"
                 value={form.name}
                 onChange={(e) => updateField("name", e.target.value)}
                 disabled={anyBusy}
                 aria-invalid={Boolean(fieldErrors.name)}
               />
-              {fieldErrors.name ? (
-                <div className="field-errorText">{fieldErrors.name}</div>
-              ) : null}
+              {fieldErrors.name ? <div className="field-errorText">{fieldErrors.name}</div> : null}
             </div>
 
             {/* SKU */}
             <div className="field">
               <input
                 ref={skuRef}
-                className={`input ${fieldErrors.sku ? "input-error" : ""} ${
-                  shake?.sku ? "input-shake" : ""
-                }`}
+                className={`input ${fieldErrors.sku ? "input-error" : ""} ${shake?.sku ? "input-shake" : ""}`}
                 placeholder="SKU *"
                 value={form.sku}
                 onChange={(e) => updateField("sku", e.target.value)}
                 disabled={anyBusy}
                 aria-invalid={Boolean(fieldErrors.sku)}
               />
-              {fieldErrors.sku ? (
-                <div className="field-errorText">{fieldErrors.sku}</div>
-              ) : null}
+              {fieldErrors.sku ? <div className="field-errorText">{fieldErrors.sku}</div> : null}
             </div>
 
             {/* Barcode */}
@@ -1109,12 +1127,7 @@ export default function Products({ user }) {
               Add Product
             </button>
 
-            <button
-              className="btn products-smallBtn"
-              type="button"
-              disabled={anyBusy}
-              onClick={() => setScannerOpen(true)}
-            >
+            <button className="btn products-smallBtn" type="button" disabled={anyBusy} onClick={() => setScannerOpen(true)}>
               Scan barcode
             </button>
 
@@ -1122,7 +1135,6 @@ export default function Products({ user }) {
           </div>
         </form>
       )}
-
 
       {/* Barcode scanner modal */}
       {scannerOpen && (
@@ -1253,6 +1265,7 @@ export default function Products({ user }) {
               const isEditing = editingId === p.id;
               const isSaving = savingId === p.id;
               const inlineErr = rowErrors[p.id];
+              const low = isLowStock(p);
 
               return (
                 <tr key={p.id}>
@@ -1265,7 +1278,27 @@ export default function Products({ user }) {
                         disabled={isSaving}
                       />
                     ) : (
-                      p.name
+                      <>
+                        {p.name}
+                        {low && (
+                          <span
+                            style={{
+                              marginLeft: 8,
+                              padding: "2px 8px",
+                              borderRadius: 999,
+                              fontSize: 11,
+                              fontWeight: 800,
+                              background: "#fee2e2",
+                              color: "#991b1b",
+                              border: "1px solid #fecaca",
+                              verticalAlign: "middle",
+                            }}
+                            title={`LOW: qty ${Number(p?.quantity ?? 0)} ≤ reorder ${Number(p?.reorder_level ?? 0)}`}
+                          >
+                            LOW
+                          </span>
+                        )}
+                      </>
                     )}
                   </td>
 
@@ -1315,9 +1348,51 @@ export default function Products({ user }) {
                     )}
                   </td>
 
-                  <td>{p.quantity}</td>
-                  <td>{p.cost_price}</td>
-                  <td>{p.selling_price}</td>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        type="number"
+                        inputMode="numeric"
+                        value={editForm?.quantity ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, quantity: e.target.value }))}
+                        disabled={isSaving}
+                      />
+                    ) : (
+                      p.quantity
+                    )}
+                  </td>
+
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        type="number"
+                        inputMode="decimal"
+                        value={editForm?.cost_price ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))}
+                        disabled={isSaving}
+                      />
+                    ) : (
+                      p.cost_price
+                    )}
+                  </td>
+
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        type="number"
+                        inputMode="decimal"
+                        value={editForm?.selling_price ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, selling_price: e.target.value }))}
+                        disabled={isSaving}
+                      />
+                    ) : (
+                      p.selling_price
+                    )}
+                  </td>
+
                   <td>{p.reorder_level}</td>
 
                   {isAdmin && (
@@ -1343,9 +1418,7 @@ export default function Products({ user }) {
                         </button>
                       </div>
 
-                      {inlineErr ? (
-                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div>
-                      ) : null}
+                      {inlineErr ? <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div> : null}
                     </td>
                   )}
                 </tr>

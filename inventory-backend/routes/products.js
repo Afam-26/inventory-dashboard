@@ -601,34 +601,127 @@ router.post("/import", requireRole("owner", "admin"), async (req, res) => {
 /** =========================
  * PUT /api/products/:id
  * owner/admin only
+ * - Updates product fields
+ * - If quantity is included, auto-creates a stock movement adjustment
+ *   so SUM(stock_movements) matches products.quantity
  * ========================= */
 router.put("/:id", requireRole("owner", "admin"), async (req, res) => {
-  const tenantId = req.tenantId;
+  const tenantId = Number(req.tenantId);
   const id = Number(req.params.id);
 
+  if (!Number.isFinite(id) || id <= 0) {
+    return res.status(400).json({ message: "Invalid id" });
+  }
+
+  // Normalize inputs (allow partial updates)
   const name = req.body?.name != null ? String(req.body.name).trim() : null;
-  const sku = req.body?.sku != null ? String(req.body.sku).trim() : null;
-  const barcode = req.body?.barcode != null ? String(req.body.barcode).trim() : null;
+  const sku = req.body?.sku != null ? (String(req.body.sku).trim() || null) : null;
+  const barcode = req.body?.barcode != null ? (String(req.body.barcode).trim() || null) : null;
 
-  const category_id = req.body?.category_id != null ? Number(req.body.category_id) : null;
+  // category_id: allow "", null => null; number => verify
+  let category_id = null;
+  if (Object.prototype.hasOwnProperty.call(req.body || {}, "category_id")) {
+    const raw = req.body.category_id;
+    if (raw === "" || raw == null) category_id = null;
+    else {
+      const n = Number(raw);
+      category_id = Number.isFinite(n) ? n : null;
+    }
+  } else {
+    category_id = null;
+  }
 
-  const quantity = req.body?.quantity != null ? Number(req.body.quantity) : null;
-  const cost_price = req.body?.cost_price != null ? Number(req.body.cost_price) : null;
-  const selling_price = req.body?.selling_price != null ? Number(req.body.selling_price) : null;
-  const reorder_level = req.body?.reorder_level != null ? Number(req.body.reorder_level) : null;
+  // IMPORTANT: only adjust stock if quantity is explicitly present
+  const hasQuantity = Object.prototype.hasOwnProperty.call(req.body || {}, "quantity");
+  const quantity = hasQuantity ? Number(req.body.quantity) : null;
 
+  const cost_price =
+    Object.prototype.hasOwnProperty.call(req.body || {}, "cost_price")
+      ? Number(req.body.cost_price)
+      : null;
+
+  const selling_price =
+    Object.prototype.hasOwnProperty.call(req.body || {}, "selling_price")
+      ? Number(req.body.selling_price)
+      : null;
+
+  const reorder_level =
+    Object.prototype.hasOwnProperty.call(req.body || {}, "reorder_level")
+      ? Number(req.body.reorder_level)
+      : null;
+
+  // Validate numeric fields if provided
+  if (hasQuantity && (!Number.isFinite(quantity) || quantity < 0)) {
+    return res.status(400).json({ message: "Quantity must be a number ≥ 0" });
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(req.body || {}, "cost_price") &&
+    (!Number.isFinite(cost_price) || cost_price < 0)
+  ) {
+    return res.status(400).json({ message: "Cost price must be a number ≥ 0" });
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(req.body || {}, "selling_price") &&
+    (!Number.isFinite(selling_price) || selling_price < 0)
+  ) {
+    return res.status(400).json({ message: "Selling price must be a number ≥ 0" });
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(req.body || {}, "reorder_level") &&
+    (!Number.isFinite(reorder_level) || reorder_level < 0)
+  ) {
+    return res.status(400).json({ message: "Reorder level must be a number ≥ 0" });
+  }
+
+  const conn = await db.getConnection();
   try {
-    if (!id) return res.status(400).json({ message: "Invalid id" });
+    await conn.beginTransaction();
 
-    if (category_id) {
-      const [[cat]] = await db.query(`SELECT id FROM categories WHERE id=? AND tenant_id=? LIMIT 1`, [
-        category_id,
-        tenantId,
-      ]);
-      if (!cat) return res.status(400).json({ message: "Invalid category_id" });
+    // Validate category (if category_id provided and not null)
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "category_id") && category_id) {
+      const [[cat]] = await conn.query(
+        `SELECT id FROM categories WHERE id=? AND tenant_id=? LIMIT 1`,
+        [category_id, tenantId]
+      );
+      if (!cat) {
+        await conn.rollback();
+        return res.status(400).json({ message: "Invalid category_id" });
+      }
     }
 
-    const [r] = await db.query(
+    // Load current product (ensure tenant scoping)
+    const [[p]] = await conn.query(
+      `SELECT id, name, sku, barcode, category_id, quantity, cost_price, selling_price, reorder_level
+       FROM products
+       WHERE id=? AND tenant_id=?
+       LIMIT 1`,
+      [id, tenantId]
+    );
+
+    if (!p) {
+      await conn.rollback();
+      return res.status(404).json({ message: "Not found" });
+    }
+
+    // Compute current ledger stock (from movements)
+    // This is the “real stock” if you rely on movements anywhere (like some dashboards)
+    const [[ledgerRow]] = await conn.query(
+      `SELECT COALESCE(SUM(
+        CASE
+          WHEN type='IN' THEN quantity
+          WHEN type='OUT' THEN -quantity
+          ELSE 0
+        END
+      ), 0) AS stock
+      FROM stock_movements
+      WHERE tenant_id=? AND product_id=?`,
+      [tenantId, id]
+    );
+
+    const ledgerStock = Number(ledgerRow?.stock || 0);
+
+    // Update product fields (COALESCE keeps existing when null)
+    const [r] = await conn.query(
       `
       UPDATE products
       SET
@@ -646,33 +739,96 @@ router.put("/:id", requireRole("owner", "admin"), async (req, res) => {
         name,
         sku,
         barcode,
-        category_id,
-        Number.isFinite(quantity) ? quantity : null,
-        Number.isFinite(cost_price) ? cost_price : null,
-        Number.isFinite(selling_price) ? selling_price : null,
-        Number.isFinite(reorder_level) ? reorder_level : null,
+        // if category_id key was not supplied, keep null so COALESCE keeps existing
+        Object.prototype.hasOwnProperty.call(req.body || {}, "category_id")
+          ? category_id
+          : null,
+
+        hasQuantity ? quantity : null,
+
+        Object.prototype.hasOwnProperty.call(req.body || {}, "cost_price")
+          ? (Number.isFinite(cost_price) ? cost_price : 0)
+          : null,
+
+        Object.prototype.hasOwnProperty.call(req.body || {}, "selling_price")
+          ? (Number.isFinite(selling_price) ? selling_price : 0)
+          : null,
+
+        Object.prototype.hasOwnProperty.call(req.body || {}, "reorder_level")
+          ? (Number.isFinite(reorder_level) ? reorder_level : 0)
+          : null,
+
         id,
         tenantId,
       ]
     );
 
-    if (r.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+    if (r.affectedRows === 0) {
+      await conn.rollback();
+      return res.status(404).json({ message: "Not found" });
+    }
 
+    // If quantity changed, reconcile ledger by inserting a movement
+    let adjustment = null;
+    if (hasQuantity) {
+      const target = quantity;
+      const delta = target - ledgerStock;
+
+      if (delta !== 0) {
+        const type = delta > 0 ? "IN" : "OUT";
+        const moveQty = Math.abs(delta);
+
+        const reason = `Manual adjustment (Products edit): set stock to ${target}`;
+
+        await conn.query(
+          `INSERT INTO stock_movements
+            (tenant_id, product_id, type, quantity, reason, created_at)
+           VALUES (?, ?, ?, ?, ?, NOW())`,
+          [tenantId, id, type, moveQty, reason]
+        );
+
+        adjustment = { from: ledgerStock, to: target, type, quantity: moveQty };
+      }
+    }
+
+    // Audit log (keeps your existing logAudit usage)
     await logAudit(req, {
-      action: "PRODUCT_UPDATE",
+      action: hasQuantity ? "PRODUCT_UPDATE_WITH_STOCK_ADJUST" : "PRODUCT_UPDATE",
       entity_type: "product",
       entity_id: id,
-      details: { id, changes: req.body },
+      details: {
+        id,
+        changes: req.body,
+        prev: {
+          quantity: p.quantity,
+          cost_price: p.cost_price,
+          selling_price: p.selling_price,
+          reorder_level: p.reorder_level,
+        },
+        ledger_before: ledgerStock,
+        adjustment,
+      },
       user_id: req.user?.id ?? null,
       user_email: req.user?.email ?? null,
     });
 
-    return res.json({ ok: true });
+    await conn.commit();
+
+    return res.json({
+      ok: true,
+      adjusted: adjustment, // helpful for frontend toast/logging
+    });
   } catch (err) {
+    try {
+      await conn.rollback();
+    } catch {}
     console.error("PRODUCT UPDATE ERROR:", err);
     return res.status(500).json({ message: "Database error" });
+  } finally {
+    conn.release();
   }
 });
+
 
 /** =========================
  * DELETE /api/products/:id

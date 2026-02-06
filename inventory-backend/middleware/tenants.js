@@ -2,9 +2,9 @@
 import express from "express";
 import crypto from "crypto";
 import { db } from "../config/db.js";
-import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
+import { requireAuth, requireTenant, requireRole } from "./auth.js";
 import { logAudit, SEVERITY } from "../utils/audit.js";
-import { sendEmail } from "../utils/mailer.js";
+import { sendEmail } from "../services/mail/mailer.js";
 
 const router = express.Router();
 

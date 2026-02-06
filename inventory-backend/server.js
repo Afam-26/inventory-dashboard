@@ -25,7 +25,7 @@ import stockRoutes from "./routes/stock.js";
 import authRoutes from "./routes/auth.js";
 import auditRoutes from "./routes/audit.js";
 import usersRoutes from "./routes/users.js";
-import tenantsRouter from "./routes/tenants.js";
+import tenantsRouter from "./middleware/tenants.js";
 import healthRoutes from "./routes/health.js";
 import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
 import invitesRouter from "./routes/invites.js";

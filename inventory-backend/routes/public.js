@@ -2,7 +2,7 @@
 import express from "express";
 import rateLimit from "express-rate-limit";
 
-import { sendEmail } from "../utils/mailer.js";
+import { sendEmail } from "../services/mail/mailer.js";
 import { logAudit, SEVERITY, sendSecurityAlert } from "../utils/audit.js";
 import { sendSlackAlert } from "../utils/slack.js";
 

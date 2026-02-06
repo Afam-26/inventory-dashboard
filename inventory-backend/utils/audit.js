@@ -1,7 +1,7 @@
 // utils/audit.js
 import crypto from "crypto";
 import { db as defaultDb } from "../config/db.js";
-import { sendEmail } from "./mailer.js";
+import { sendEmail } from "../services/mail/mailer.js";
 import { sendSlackAlert } from "./slack.js";
 
 /**

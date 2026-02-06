@@ -5,7 +5,7 @@ import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 import { requireBillingAdmin } from "../middleware/billing.js";
 import { PLANS, normalizePlanKey, makeUsageLine } from "../utils/plans.js";
 import { logAudit, SEVERITY } from "../utils/audit.js";
-import { getStripe, stripeIsEnabled } from "../utils/stripe.js";
+import { getStripe, stripeIsEnabled } from "../services/stripe/stripe.js";
 
 const router = express.Router();
 

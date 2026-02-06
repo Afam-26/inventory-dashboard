@@ -5,8 +5,8 @@ import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
 import crypto from "crypto";
 import { db } from "../config/db.js";
-import { sendEmail } from "../utils/mailer.js";
-import { passwordResetEmail } from "../utils/emailTemplates.js";
+import { sendEmail } from "../services/mail/mailer.js";
+import { passwordResetEmail } from "../services/mail/emailTemplates.js";
 import { logAudit, sendSecurityAlert, SEVERITY } from "../utils/audit.js";
 
 const router = express.Router();

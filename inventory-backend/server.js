@@ -32,6 +32,7 @@ import invitesRouter from "./routes/invites.js";
 import billingRoutes from "./routes/billing.js";
 import billingRouter, { billingWebhookHandler } from "./routes/billing.js";
 import publicRoutes from "./routes/public.js";
+import settingsRoutes from "./routes/settings.js";
 
 
 
@@ -137,6 +138,7 @@ app.use("/api/health", healthRoutes);
 app.use("/api/invites", invitesRouter);
 app.use("/api/billing", billingRoutes);
 app.use("/api/public", publicRoutes);
+app.use("/api/settings", settingsRoutes);
 
 // Normal JSON for everything else:
 app.use(express.json());

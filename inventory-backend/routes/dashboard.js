@@ -26,20 +26,32 @@ router.get("/", requireAuth, requireTenant, async (req, res) => {
 
     const userId = req.user?.id ?? null;
 
+    // ✅ exclude deleted products everywhere in dashboard
     const [[totalProducts]] = await db.query(
-      `SELECT COUNT(*) AS c FROM products WHERE tenant_id=?`,
+      `SELECT COUNT(*) AS c FROM products WHERE tenant_id=? AND deleted_at IS NULL`,
       [tenantId]
     );
 
-    const [[lowStock]] = await db.query(
+    // ✅ match Products.jsx logic:
+    // threshold = (reorder_level > 0 ? reorder_level : settings.low_stock_threshold)
+    // low if quantity <= threshold
+   const [[lowStock]] = await db.query(
       `
       SELECT COUNT(*) AS c
-      FROM products
-      WHERE tenant_id=?
-        AND COALESCE(quantity,0) <= COALESCE(reorder_level,0)
+      FROM products p
+      LEFT JOIN settings s ON s.tenant_id = p.tenant_id
+      WHERE p.tenant_id=?
+        AND p.deleted_at IS NULL
+        AND COALESCE(p.quantity,0) <= (
+          CASE
+            WHEN COALESCE(p.reorder_level,0) > 0 THEN COALESCE(p.reorder_level,0)
+            ELSE COALESCE(s.low_stock_threshold, 10)
+          END
+        )
       `,
       [tenantId]
     );
+
 
     const [[categories]] = await db.query(
       `SELECT COUNT(*) AS c FROM categories WHERE tenant_id=?`,
@@ -58,7 +70,8 @@ router.get("/", requireAuth, requireTenant, async (req, res) => {
       const [[v]] = await db.query(
         `
         SELECT COALESCE(SUM(COALESCE(quantity,0)*COALESCE(cost_price,0)),0) AS v
-        FROM products WHERE tenant_id=?
+        FROM products
+        WHERE tenant_id=? AND deleted_at IS NULL
         `,
         [tenantId]
       );

@@ -370,7 +370,8 @@ router.post("/reconcile", requireRole("owner", "admin"), async (req, res) => {
 
       if (!Number.isFinite(qty) || qty <= 0) continue;
 
-      const reason = `Bulk reconcile: set ledger to match products.quantity (${m.ledger_qty} -> ${m.product_qty})`;
+      const reason = `RECONCILE: set ledger to match products.quantity (${ledgerBefore} -> ${target})`;
+
 
       movementsToInsert.push([tenantId, m.product_id, type, qty, reason]);
       preview.push({

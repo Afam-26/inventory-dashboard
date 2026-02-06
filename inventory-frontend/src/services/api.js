@@ -1,3 +1,4 @@
+
 // src/services/api.js
 
 /**
@@ -230,7 +231,6 @@ async function baseFetch(
     }
 
     // ✅ Token expired / invalid → force login page (no “invalid token” UI)
-    // We check both backend code + common message patterns
     const lower = String(msg).toLowerCase();
     const isAuth401 = res.status === 401;
     const looksExpired =
@@ -247,7 +247,11 @@ async function baseFetch(
 
     if (isAuth401 && (looksExpired || looksInvalid)) {
       handleAuthExpired(looksExpired ? "TOKEN_EXPIRED" : "INVALID_TOKEN");
-      throw makeApiError("Session expired. Please sign in again.", "AUTH_EXPIRED", 401);
+      throw makeApiError(
+        "Session expired. Please sign in again.",
+        "AUTH_EXPIRED",
+        401
+      );
     }
 
     throw makeApiError(msg, code, res.status);
@@ -425,12 +429,43 @@ export async function restoreCategory(id) {
 
 /**
  * ============================
- * PRODUCTS
+ * PRODUCTS (✅ updated for SOFT delete + query flags)
  * ============================
+ *
+ * getProducts signature now supports:
+ *   getProducts("search text")                     // backward compatible
+ *   getProducts({ q, includeDeleted, onlyDeleted }) // new preferred
+ *
+ * Backend expected:
+ *  - GET /api/products?q=...&includeDeleted=true
+ *  - or GET /api/products?q=...&onlyDeleted=true
+ *  - DELETE /api/products/:id          => soft delete (sets deleted_at)
+ *  - PATCH /api/products/:id/restore   => restore (sets deleted_at NULL)
  */
-export async function getProducts(search = "") {
-  const q = String(search || "").trim();
-  const url = q ? `${API_BASE}/products?search=${encodeURIComponent(q)}` : `${API_BASE}/products`;
+export async function getProducts(arg = "") {
+  // Backward compatible:
+  // - string => search text
+  // - object => { q, includeDeleted, onlyDeleted }
+  let q = "";
+  let includeDeleted = false;
+  let onlyDeleted = false;
+
+  if (arg && typeof arg === "object") {
+    q = String(arg.q || "").trim();
+    includeDeleted = Boolean(arg.includeDeleted);
+    onlyDeleted = Boolean(arg.onlyDeleted);
+  } else {
+    q = String(arg || "").trim();
+  }
+
+  const qs = new URLSearchParams();
+  if (q) qs.set("q", q);
+
+  // onlyDeleted wins
+  if (onlyDeleted) qs.set("onlyDeleted", "true");
+  else if (includeDeleted) qs.set("includeDeleted", "true");
+
+  const url = `${API_BASE}/products${qs.toString() ? `?${qs}` : ""}`;
   return baseFetch(url, {}, { useAuth: true });
 }
 
@@ -458,8 +493,14 @@ export async function updateProduct(id, payload) {
   );
 }
 
+// ✅ soft delete (backend sets deleted_at)
 export async function deleteProduct(id) {
   return baseFetch(`${API_BASE}/products/${id}`, { method: "DELETE" }, { useAuth: true });
+}
+
+// ✅ restore soft-deleted product
+export async function restoreProduct(id) {
+  return baseFetch(`${API_BASE}/products/${id}/restore`, { method: "PATCH" }, { useAuth: true });
 }
 
 // ✅ Used by Stock.jsx scanner — now matches SKU OR barcode via backend /by-sku route
@@ -761,4 +802,25 @@ export async function startStripeCheckout({ priceId, planKey }) {
 
 export async function openStripePortal() {
   return baseFetch(`${API_BASE}/billing/stripe/portal`, { method: "POST" }, { useAuth: true });
+}
+
+/**
+ * ============================
+ * SETTINGS
+ * ============================
+ */
+export async function getSettings() {
+  return baseFetch(`${API_BASE}/settings`, {}, { useAuth: true });
+}
+
+export async function updateLowStockThreshold(value) {
+  return baseFetch(
+    `${API_BASE}/settings/low-stock-threshold`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    },
+    { useAuth: true }
+  );
 }

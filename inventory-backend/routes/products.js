@@ -76,7 +76,7 @@ function parseCsv(text) {
  * These MUST come before "/:id" routes
  * ========================= */
 
-// GET /api/products/by-sku/:sku (matches SKU OR barcode)
+// GET /api/products/by-sku/:sku (matches SKU OR barcode) — excludes deleted
 router.get("/by-sku/:sku", requireRole("owner", "admin", "staff"), async (req, res) => {
   const tenantId = req.tenantId;
   const code = String(req.params.sku || "").trim();
@@ -101,6 +101,7 @@ router.get("/by-sku/:sku", requireRole("owner", "admin", "staff"), async (req, r
       LEFT JOIN categories c
         ON c.id = p.category_id AND c.tenant_id = p.tenant_id
       WHERE p.tenant_id = ?
+        AND p.deleted_at IS NULL
         AND (p.sku = ? OR p.barcode = ?)
       LIMIT 1
       `,
@@ -115,7 +116,7 @@ router.get("/by-sku/:sku", requireRole("owner", "admin", "staff"), async (req, r
   }
 });
 
-// GET /api/products/by-code/:code (also matches SKU OR barcode)
+// GET /api/products/by-code/:code (also matches SKU OR barcode) — excludes deleted
 router.get("/by-code/:code", requireRole("owner", "admin", "staff"), async (req, res) => {
   const tenantId = req.tenantId;
   const code = String(req.params.code || "").trim();
@@ -140,6 +141,7 @@ router.get("/by-code/:code", requireRole("owner", "admin", "staff"), async (req,
       LEFT JOIN categories c
         ON c.id = p.category_id AND c.tenant_id = p.tenant_id
       WHERE p.tenant_id = ?
+        AND p.deleted_at IS NULL
         AND (p.sku = ? OR p.barcode = ?)
       LIMIT 1
       `,
@@ -157,18 +159,30 @@ router.get("/by-code/:code", requireRole("owner", "admin", "staff"), async (req,
 /** =========================
  * GET /api/products
  * Tenant-scoped list + optional search
- * Supports: ?search=
+ * Supports:
+ *  - ?search= (backward compatible)
+ *  - ?q=
+ *  - ?includeDeleted=true
+ *  - ?onlyDeleted=true
  * ========================= */
 router.get("/", async (req, res) => {
   const tenantId = req.tenantId;
 
   try {
-    const search = String(req.query.search || "").trim();
+    const q = String(req.query.q || req.query.search || "").trim();
+
+    const includeDeleted = String(req.query.includeDeleted || "").toLowerCase() === "true";
+    const onlyDeleted = String(req.query.onlyDeleted || "").toLowerCase() === "true";
+
     const where = ["p.tenant_id = ?"];
     const params = [tenantId];
 
-    if (search) {
-      const like = `%${search}%`;
+    // deleted filter rules
+    if (onlyDeleted) where.push("p.deleted_at IS NOT NULL");
+    else if (!includeDeleted) where.push("p.deleted_at IS NULL");
+
+    if (q) {
+      const like = `%${q}%`;
       where.push("(p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR c.name LIKE ?)");
       params.push(like, like, like, like);
     }
@@ -186,7 +200,8 @@ router.get("/", async (req, res) => {
         p.cost_price,
         p.selling_price,
         p.reorder_level,
-        p.created_at
+        p.created_at,
+        p.deleted_at
       FROM products p
       LEFT JOIN categories c
         ON c.id = p.category_id AND c.tenant_id = p.tenant_id
@@ -207,6 +222,7 @@ router.get("/", async (req, res) => {
  * POST /api/products
  * owner/admin only
  * Body: { name, sku, barcode, category_id, quantity, cost_price, selling_price, reorder_level }
+ * NOTE: reorder_level default is 0 (means "use tenant default threshold")
  * ========================= */
 router.post("/", requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
@@ -220,9 +236,11 @@ router.post("/", requireRole("owner", "admin"), async (req, res) => {
   const quantity = Number(req.body?.quantity);
   const cost_price = Number(req.body?.cost_price);
   const selling_price = Number(req.body?.selling_price);
+
+  // ✅ default 0 => use tenant default threshold
   const reorder_level =
     req.body?.reorder_level === undefined || req.body?.reorder_level === null || req.body?.reorder_level === ""
-      ? 10
+      ? 0
       : Number(req.body.reorder_level);
 
   if (!name) return res.status(400).json({ message: "Product name is required." });
@@ -254,7 +272,7 @@ router.post("/", requireRole("owner", "admin"), async (req, res) => {
         Number.isFinite(quantity) ? quantity : 0,
         Number.isFinite(cost_price) ? cost_price : 0,
         Number.isFinite(selling_price) ? selling_price : 0,
-        Number.isFinite(reorder_level) ? reorder_level : 10,
+        Number.isFinite(reorder_level) ? reorder_level : 0,
       ]
     );
 
@@ -264,7 +282,7 @@ router.post("/", requireRole("owner", "admin"), async (req, res) => {
       entity_id: r.insertId,
       user_id: req.user?.id ?? null,
       user_email: req.user?.email ?? null,
-      details: { name, sku, barcode, category_id },
+      details: { name, sku, barcode, category_id, reorder_level: Number.isFinite(reorder_level) ? reorder_level : 0 },
     });
 
     return res.status(201).json({ id: r.insertId });
@@ -277,6 +295,7 @@ router.post("/", requireRole("owner", "admin"), async (req, res) => {
 /** =========================
  * ✅ CSV export (owner/admin/staff) - tenant scoped
  * GET /api/products/export.csv
+ * (excludes deleted by default)
  * ========================= */
 router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, res) => {
   const tenantId = req.tenantId;
@@ -297,6 +316,7 @@ router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, re
       LEFT JOIN categories c
         ON c.id = p.category_id AND c.tenant_id = p.tenant_id
       WHERE p.tenant_id = ?
+        AND p.deleted_at IS NULL
       ORDER BY p.id DESC
       `,
       [tenantId]
@@ -332,7 +352,7 @@ router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, re
 /** =========================
  * ✅ Import rows endpoint used by your Products.jsx
  * POST /api/products/import-rows
- * Body: { rows: [{ name, sku, barcode, category, quantity, cost_price, selling_price, reorder_level }], createMissingCategories }
+ * (default reorder_level = 0)
  * ========================= */
 router.post("/import-rows", requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
@@ -407,13 +427,15 @@ router.post("/import-rows", requireRole("owner", "admin"), async (req, res) => {
       const quantity = Number(r.quantity);
       const cost_price = Number(r.cost_price);
       const selling_price = Number(r.selling_price);
+
+      // ✅ blank => 0
       const reorder_level =
         r.reorder_level === undefined || r.reorder_level === null || r.reorder_level === ""
-          ? 10
+          ? 0
           : Number(r.reorder_level);
 
       try {
-        // Upsert by (tenant_id, sku) — assumes you have UNIQUE(tenant_id, sku)
+        // Upsert by (tenant_id, sku) — assumes UNIQUE(tenant_id, sku)
         const [result] = await db.query(
           `
           INSERT INTO products
@@ -426,7 +448,8 @@ router.post("/import-rows", requireRole("owner", "admin"), async (req, res) => {
             quantity=VALUES(quantity),
             cost_price=VALUES(cost_price),
             selling_price=VALUES(selling_price),
-            reorder_level=VALUES(reorder_level)
+            reorder_level=VALUES(reorder_level),
+            deleted_at=NULL
           `,
           [
             tenantId,
@@ -437,11 +460,10 @@ router.post("/import-rows", requireRole("owner", "admin"), async (req, res) => {
             Number.isFinite(quantity) ? quantity : 0,
             Number.isFinite(cost_price) ? cost_price : 0,
             Number.isFinite(selling_price) ? selling_price : 0,
-            Number.isFinite(reorder_level) ? reorder_level : 10,
+            Number.isFinite(reorder_level) ? reorder_level : 0,
           ]
         );
 
-        // mysql2 affectedRows: 1 insert, 2 update
         if (result.affectedRows === 1) inserted++;
         else if (result.affectedRows === 2) updated++;
         else skipped++;
@@ -468,260 +490,50 @@ router.post("/import-rows", requireRole("owner", "admin"), async (req, res) => {
 });
 
 /** =========================
- * CSV import (admin only) - tenant scoped + upsert by (tenant_id, sku)
- * POST /api/products/import
- * Body: { csvText }
- * ========================= */
-router.post("/import", requireRole("owner", "admin"), async (req, res) => {
-  const tenantId = req.tenantId;
-
-  try {
-    const csvText = String(req.body?.csvText || "");
-    if (!csvText.trim()) return res.status(400).json({ message: "csvText is required" });
-
-    const rows = parseCsv(csvText);
-    if (rows.length < 2) return res.status(400).json({ message: "CSV must include header and at least 1 row" });
-
-    const header = rows[0].map((h) => String(h || "").trim().toLowerCase());
-    const idx = (name) => header.indexOf(name);
-
-    const required = ["name", "sku"];
-    for (const r of required) {
-      if (idx(r) === -1) return res.status(400).json({ message: `Missing required column: ${r}` });
-    }
-
-    const iName = idx("name");
-    const iSku = idx("sku");
-    const iBarcode = idx("barcode");
-    const iCategory = idx("category");
-    const iQuantity = idx("quantity");
-    const iCost = idx("cost_price");
-    const iSell = idx("selling_price");
-    const iReorder = idx("reorder_level");
-
-    let inserted = 0;
-    let updated = 0;
-    let skipped = 0;
-    const errors = [];
-
-    const catCache = new Map();
-
-    async function getOrCreateCategoryId(catNameRaw) {
-      const catName = String(catNameRaw || "").trim();
-      if (!catName) return null;
-
-      const key = catName.toLowerCase();
-      if (catCache.has(key)) return catCache.get(key);
-
-      const [[found]] = await db.query(
-        "SELECT id FROM categories WHERE tenant_id=? AND LOWER(name)=LOWER(?) AND deleted_at IS NULL LIMIT 1",
-        [tenantId, catName]
-      );
-
-      if (found?.id) {
-        catCache.set(key, found.id);
-        return found.id;
-      }
-
-      const [r] = await db.query("INSERT INTO categories (tenant_id, name) VALUES (?, ?)", [tenantId, catName]);
-      const newId = r.insertId;
-
-      await logAudit(req, {
-        action: "CATEGORY_CREATE",
-        entity_type: "category",
-        entity_id: newId,
-        details: { name: catName, via: "CSV_IMPORT" },
-        user_id: req.user?.id ?? null,
-        user_email: req.user?.email ?? null,
-      });
-
-      catCache.set(key, newId);
-      return newId;
-    }
-
-    for (let line = 1; line < rows.length; line++) {
-      const r = rows[line];
-
-      const name = String(r[iName] ?? "").trim();
-      const sku = String(r[iSku] ?? "").trim();
-
-      if (!name || !sku) {
-        skipped++;
-        errors.push({ line: line + 1, message: "Missing name or sku" });
-        continue;
-      }
-
-      const barcode = iBarcode !== -1 ? String(r[iBarcode] ?? "").trim() : "";
-      const categoryName = iCategory !== -1 ? String(r[iCategory] ?? "").trim() : "";
-      const category_id = categoryName ? await getOrCreateCategoryId(categoryName) : null;
-
-      const quantity = iQuantity !== -1 ? Number(r[iQuantity]) || 0 : 0;
-      const cost_price = iCost !== -1 ? Number(r[iCost]) || 0 : 0;
-      const selling_price = iSell !== -1 ? Number(r[iSell]) || 0 : 0;
-      const reorder_level = iReorder !== -1 ? Number(r[iReorder]) || 10 : 10;
-
-      const [result] = await db.query(
-        `
-        INSERT INTO products
-          (tenant_id, name, sku, barcode, category_id, quantity, cost_price, selling_price, reorder_level)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-          name=VALUES(name),
-          barcode=VALUES(barcode),
-          category_id=VALUES(category_id),
-          quantity=VALUES(quantity),
-          cost_price=VALUES(cost_price),
-          selling_price=VALUES(selling_price),
-          reorder_level=VALUES(reorder_level)
-        `,
-        [tenantId, name, sku, barcode || null, category_id, quantity, cost_price, selling_price, reorder_level]
-      );
-
-      if (result.affectedRows === 1) inserted++;
-      else if (result.affectedRows === 2) updated++;
-      else skipped++;
-    }
-
-    await logAudit(req, {
-      action: "PRODUCTS_CSV_IMPORT",
-      entity_type: "product",
-      entity_id: null,
-      details: { inserted, updated, skipped, errorsCount: errors.length },
-      user_id: req.user?.id ?? null,
-      user_email: req.user?.email ?? null,
-    });
-
-    return res.json({ message: "CSV import completed", inserted, updated, skipped, errors });
-  } catch (err) {
-    console.error("PRODUCTS CSV IMPORT ERROR:", err);
-    return res.status(500).json({ message: "Database error" });
-  }
-});
-
-/** =========================
  * PUT /api/products/:id
  * owner/admin only
- * - Updates product fields
- * - If quantity is included, auto-creates a stock movement adjustment
- *   so SUM(stock_movements) matches products.quantity
  * ========================= */
 router.put("/:id", requireRole("owner", "admin"), async (req, res) => {
-  const tenantId = Number(req.tenantId);
+  const tenantId = req.tenantId;
   const id = Number(req.params.id);
 
-  if (!Number.isFinite(id) || id <= 0) {
-    return res.status(400).json({ message: "Invalid id" });
-  }
-
-  // Normalize inputs (allow partial updates)
   const name = req.body?.name != null ? String(req.body.name).trim() : null;
-  const sku = req.body?.sku != null ? (String(req.body.sku).trim() || null) : null;
-  const barcode = req.body?.barcode != null ? (String(req.body.barcode).trim() || null) : null;
+  const sku = req.body?.sku != null ? String(req.body.sku).trim() : null;
+  const barcode = req.body?.barcode != null ? String(req.body.barcode).trim() : null;
+  const category_id = req.body?.category_id != null ? Number(req.body.category_id) : null;
 
-  // category_id: allow "", null => null; number => verify
-  let category_id = null;
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, "category_id")) {
-    const raw = req.body.category_id;
-    if (raw === "" || raw == null) category_id = null;
-    else {
-      const n = Number(raw);
-      category_id = Number.isFinite(n) ? n : null;
-    }
-  } else {
-    category_id = null;
-  }
-
-  // IMPORTANT: only adjust stock if quantity is explicitly present
-  const hasQuantity = Object.prototype.hasOwnProperty.call(req.body || {}, "quantity");
-  const quantity = hasQuantity ? Number(req.body.quantity) : null;
-
-  const cost_price =
-    Object.prototype.hasOwnProperty.call(req.body || {}, "cost_price")
-      ? Number(req.body.cost_price)
+  const requestedQty =
+    req.body?.quantity != null && Number.isFinite(Number(req.body.quantity))
+      ? Number(req.body.quantity)
       : null;
 
-  const selling_price =
-    Object.prototype.hasOwnProperty.call(req.body || {}, "selling_price")
-      ? Number(req.body.selling_price)
-      : null;
-
-  const reorder_level =
-    Object.prototype.hasOwnProperty.call(req.body || {}, "reorder_level")
-      ? Number(req.body.reorder_level)
-      : null;
-
-  // Validate numeric fields if provided
-  if (hasQuantity && (!Number.isFinite(quantity) || quantity < 0)) {
-    return res.status(400).json({ message: "Quantity must be a number ≥ 0" });
-  }
-  if (
-    Object.prototype.hasOwnProperty.call(req.body || {}, "cost_price") &&
-    (!Number.isFinite(cost_price) || cost_price < 0)
-  ) {
-    return res.status(400).json({ message: "Cost price must be a number ≥ 0" });
-  }
-  if (
-    Object.prototype.hasOwnProperty.call(req.body || {}, "selling_price") &&
-    (!Number.isFinite(selling_price) || selling_price < 0)
-  ) {
-    return res.status(400).json({ message: "Selling price must be a number ≥ 0" });
-  }
-  if (
-    Object.prototype.hasOwnProperty.call(req.body || {}, "reorder_level") &&
-    (!Number.isFinite(reorder_level) || reorder_level < 0)
-  ) {
-    return res.status(400).json({ message: "Reorder level must be a number ≥ 0" });
-  }
+  const cost_price = req.body?.cost_price != null ? Number(req.body.cost_price) : null;
+  const selling_price = req.body?.selling_price != null ? Number(req.body.selling_price) : null;
+  const reorder_level = req.body?.reorder_level != null ? Number(req.body.reorder_level) : null;
 
   const conn = await db.getConnection();
+
   try {
     await conn.beginTransaction();
 
-    // Validate category (if category_id provided and not null)
-    if (Object.prototype.hasOwnProperty.call(req.body || {}, "category_id") && category_id) {
-      const [[cat]] = await conn.query(
-        `SELECT id FROM categories WHERE id=? AND tenant_id=? LIMIT 1`,
-        [category_id, tenantId]
-      );
-      if (!cat) {
-        await conn.rollback();
-        return res.status(400).json({ message: "Invalid category_id" });
-      }
-    }
-
-    // Load current product (ensure tenant scoping)
-    const [[p]] = await conn.query(
-      `SELECT id, name, sku, barcode, category_id, quantity, cost_price, selling_price, reorder_level
-       FROM products
-       WHERE id=? AND tenant_id=?
-       LIMIT 1`,
+    const [[product]] = await conn.query(
+      `
+      SELECT id, quantity
+      FROM products
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      FOR UPDATE
+      `,
       [id, tenantId]
     );
 
-    if (!p) {
+    if (!product) {
       await conn.rollback();
       return res.status(404).json({ message: "Not found" });
     }
 
-    // Compute current ledger stock (from movements)
-    // This is the “real stock” if you rely on movements anywhere (like some dashboards)
-    const [[ledgerRow]] = await conn.query(
-      `SELECT COALESCE(SUM(
-        CASE
-          WHEN type='IN' THEN quantity
-          WHEN type='OUT' THEN -quantity
-          ELSE 0
-        END
-      ), 0) AS stock
-      FROM stock_movements
-      WHERE tenant_id=? AND product_id=?`,
-      [tenantId, id]
-    );
+    const existingQty = Number(product.quantity || 0);
 
-    const ledgerStock = Number(ledgerRow?.stock || 0);
-
-    // Update product fields (COALESCE keeps existing when null)
-    const [r] = await conn.query(
+    await conn.query(
       `
       UPDATE products
       SET
@@ -729,7 +541,6 @@ router.put("/:id", requireRole("owner", "admin"), async (req, res) => {
         sku = COALESCE(?, sku),
         barcode = COALESCE(?, barcode),
         category_id = COALESCE(?, category_id),
-        quantity = COALESCE(?, quantity),
         cost_price = COALESCE(?, cost_price),
         selling_price = COALESCE(?, selling_price),
         reorder_level = COALESCE(?, reorder_level)
@@ -739,125 +550,140 @@ router.put("/:id", requireRole("owner", "admin"), async (req, res) => {
         name,
         sku,
         barcode,
-        // if category_id key was not supplied, keep null so COALESCE keeps existing
-        Object.prototype.hasOwnProperty.call(req.body || {}, "category_id")
-          ? category_id
-          : null,
-
-        hasQuantity ? quantity : null,
-
-        Object.prototype.hasOwnProperty.call(req.body || {}, "cost_price")
-          ? (Number.isFinite(cost_price) ? cost_price : 0)
-          : null,
-
-        Object.prototype.hasOwnProperty.call(req.body || {}, "selling_price")
-          ? (Number.isFinite(selling_price) ? selling_price : 0)
-          : null,
-
-        Object.prototype.hasOwnProperty.call(req.body || {}, "reorder_level")
-          ? (Number.isFinite(reorder_level) ? reorder_level : 0)
-          : null,
-
+        category_id,
+        Number.isFinite(cost_price) ? cost_price : null,
+        Number.isFinite(selling_price) ? selling_price : null,
+        Number.isFinite(reorder_level) ? reorder_level : null,
         id,
         tenantId,
       ]
     );
 
-    if (r.affectedRows === 0) {
-      await conn.rollback();
-      return res.status(404).json({ message: "Not found" });
+    if (requestedQty !== null && requestedQty !== existingQty) {
+      const diff = requestedQty - existingQty;
+      const type = diff > 0 ? "IN" : "OUT";
+      const absQty = Math.abs(diff);
+
+      await conn.query(
+        `UPDATE products SET quantity = ? WHERE id = ? AND tenant_id = ?`,
+        [requestedQty, id, tenantId]
+      );
+
+      await conn.query(
+        `
+        INSERT INTO stock_movements
+          (tenant_id, product_id, type, quantity, reason, created_at)
+        VALUES (?, ?, ?, ?, ?, NOW())
+        `,
+        [
+          tenantId,
+          id,
+          type,
+          absQty,
+          `Manual adjustment (Products edit): set stock to ${requestedQty}`,
+        ]
+      );
     }
-
-    // If quantity changed, reconcile ledger by inserting a movement
-    let adjustment = null;
-    if (hasQuantity) {
-      const target = quantity;
-      const delta = target - ledgerStock;
-
-      if (delta !== 0) {
-        const type = delta > 0 ? "IN" : "OUT";
-        const moveQty = Math.abs(delta);
-
-        const reason = `Manual adjustment (Products edit): set stock to ${target}`;
-
-        await conn.query(
-          `INSERT INTO stock_movements
-            (tenant_id, product_id, type, quantity, reason, created_at)
-           VALUES (?, ?, ?, ?, ?, NOW())`,
-          [tenantId, id, type, moveQty, reason]
-        );
-
-        adjustment = { from: ledgerStock, to: target, type, quantity: moveQty };
-      }
-    }
-
-    // Audit log (keeps your existing logAudit usage)
-    await logAudit(req, {
-      action: hasQuantity ? "PRODUCT_UPDATE_WITH_STOCK_ADJUST" : "PRODUCT_UPDATE",
-      entity_type: "product",
-      entity_id: id,
-      details: {
-        id,
-        changes: req.body,
-        prev: {
-          quantity: p.quantity,
-          cost_price: p.cost_price,
-          selling_price: p.selling_price,
-          reorder_level: p.reorder_level,
-        },
-        ledger_before: ledgerStock,
-        adjustment,
-      },
-      user_id: req.user?.id ?? null,
-      user_email: req.user?.email ?? null,
-    });
 
     await conn.commit();
 
-    return res.json({
-      ok: true,
-      adjusted: adjustment, // helpful for frontend toast/logging
+    await logAudit(req, {
+      action: "PRODUCT_UPDATE",
+      entity_type: "product",
+      entity_id: id,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      details: {
+        id,
+        updated_fields: Object.keys(req.body),
+        quantity_changed: requestedQty !== null && requestedQty !== existingQty,
+      },
     });
+
+    res.json({ ok: true });
   } catch (err) {
-    try {
-      await conn.rollback();
-    } catch {}
+    await conn.rollback();
     console.error("PRODUCT UPDATE ERROR:", err);
-    return res.status(500).json({ message: "Database error" });
+    res.status(500).json({ message: "Database error" });
   } finally {
     conn.release();
   }
 });
 
-
 /** =========================
  * DELETE /api/products/:id
- * owner only
+ * owner/admin only
+ * (SOFT delete)
  * ========================= */
-router.delete("/:id", requireRole("owner"), async (req, res) => {
+router.delete("/:id", requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
   const id = Number(req.params.id);
 
   try {
-    if (!id) return res.status(400).json({ message: "Invalid id" });
+    const [r] = await db.query(
+      `
+      UPDATE products
+      SET deleted_at = NOW(), updated_at = NOW()
+      WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL
+      `,
+      [id, tenantId]
+    );
 
-    const [r] = await db.query(`DELETE FROM products WHERE id = ? AND tenant_id = ?`, [id, tenantId]);
-
-    if (r.affectedRows === 0) return res.status(404).json({ message: "Not found" });
+    if (r.affectedRows === 0) {
+      return res.status(404).json({ ok: false, message: "Product not found (or already deleted)" });
+    }
 
     await logAudit(req, {
-      action: "PRODUCT_DELETE",
+      action: "PRODUCT_DELETE_SOFT",
       entity_type: "product",
       entity_id: id,
-      details: { id },
       user_id: req.user?.id ?? null,
       user_email: req.user?.email ?? null,
+      details: { id },
     });
 
     return res.json({ ok: true });
-  } catch (err) {
-    console.error("PRODUCT DELETE ERROR:", err);
-    return res.status(500).json({ message: "Database error" });
+  } catch (e) {
+    console.error("PRODUCT DELETE ERROR:", e);
+    return res.status(500).json({ ok: false, message: "Failed to delete product" });
+  }
+});
+
+/** =========================
+ * PATCH /api/products/:id/restore
+ * owner/admin only
+ * ========================= */
+router.patch("/:id/restore", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const id = Number(req.params.id);
+
+  try {
+    const [r] = await db.query(
+      `
+      UPDATE products
+      SET deleted_at = NULL, updated_at = NOW()
+      WHERE id = ? AND tenant_id = ?
+      `,
+      [id, tenantId]
+    );
+
+    if (r.affectedRows === 0) {
+      return res.status(404).json({ ok: false, message: "Product not found" });
+    }
+
+    await logAudit(req, {
+      action: "PRODUCT_RESTORE",
+      entity_type: "product",
+      entity_id: id,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      details: { id },
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("PRODUCT RESTORE ERROR:", e);
+    return res.status(500).json({ ok: false, message: "Failed to restore product" });
   }
 });
 

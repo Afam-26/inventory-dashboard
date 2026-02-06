@@ -1,0 +1,90 @@
+// routes/settings.js
+import express from "express";
+import { db } from "../config/db.js";
+import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
+import { logAudit } from "../utils/audit.js";
+
+const router = express.Router();
+
+// must be tenant scoped
+router.use(requireAuth, requireTenant);
+
+/**
+ * Ensure a row exists for this tenant (lazy create)
+ */
+async function ensureSettingsRow(tenantId) {
+  await db.query(
+    `
+    INSERT INTO settings (tenant_id, low_stock_threshold)
+    VALUES (?, 10)
+    ON DUPLICATE KEY UPDATE tenant_id = tenant_id
+    `,
+    [tenantId]
+  );
+}
+
+/**
+ * GET /api/settings
+ * Returns per-tenant settings
+ */
+router.get("/", async (req, res) => {
+  const tenantId = req.tenantId;
+
+  try {
+    await ensureSettingsRow(tenantId);
+
+    const [[row]] = await db.query(
+      `SELECT low_stock_threshold FROM settings WHERE tenant_id=? LIMIT 1`,
+      [tenantId]
+    );
+
+    const low = Number(row?.low_stock_threshold ?? 10);
+    return res.json({ low_stock_threshold: Number.isFinite(low) && low > 0 ? low : 10 });
+  } catch (e) {
+    console.error("GET SETTINGS ERROR:", e?.message || e);
+    return res.status(500).json({ message: "Database error" });
+  }
+});
+
+/**
+ * PUT /api/settings/low-stock-threshold
+ * owner/admin only
+ * Body: { value: number }
+ */
+router.put("/low-stock-threshold", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = req.tenantId;
+
+  const value = Number(req.body?.value);
+  if (!Number.isFinite(value) || value < 1 || value > 99999) {
+    return res.status(400).json({ message: "value must be a number >= 1" });
+  }
+
+  try {
+    await ensureSettingsRow(tenantId);
+
+    await db.query(
+      `
+      UPDATE settings
+      SET low_stock_threshold = ?
+      WHERE tenant_id = ?
+      `,
+      [Math.floor(value), tenantId]
+    );
+
+    await logAudit(req, {
+      action: "TENANT_SETTING_UPDATE",
+      entity_type: "tenant",
+      entity_id: tenantId,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      details: { key: "low_stock_threshold", value: Math.floor(value) },
+    });
+
+    return res.json({ ok: true, low_stock_threshold: Math.floor(value) });
+  } catch (e) {
+    console.error("PUT SETTINGS ERROR:", e?.message || e);
+    return res.status(500).json({ message: "Database error" });
+  }
+});
+
+export default router;

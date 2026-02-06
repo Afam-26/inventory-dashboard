@@ -5,9 +5,13 @@ import {
   addProduct,
   getCategories,
   updateProduct,
-  deleteProduct,
+  deleteProduct, // ✅ now SOFT delete
+  restoreProduct, // ✅ add this in api.js
   downloadProductsCsv,
   importProductsRows,
+  // ✅ add these in api.js
+  getSettings,
+  updateLowStockThreshold,
 } from "../services/api";
 
 /* ============================
@@ -115,30 +119,51 @@ function guessMapping(headers) {
 
 /* ============================
    LOW stock + urgency sorting
-   - LOW first
-   - Most urgent first: (quantity - reorder_level) asc
-   - Then alphabetical
+   - If product.reorder_level > 0 => use it
+   - Else => use tenant default threshold
 ============================ */
-
-function isLowStock(p) {
-  const qty = Number(p?.quantity ?? 0);
-  const reorder = Number(p?.reorder_level ?? 0);
-  return reorder > 0 && qty <= reorder;
+function getThresholdForProduct(p, tenantDefault = 10) {
+  const r = Number(p?.reorder_level ?? 0);
+  return Number.isFinite(r) && r > 0 ? r : tenantDefault;
 }
 
-function sortProductsLowFirst(list) {
-  return [...list].sort((a, b) => {
-    const aLow = isLowStock(a) ? 1 : 0;
-    const bLow = isLowStock(b) ? 1 : 0;
+function isLowStock(p, tenantDefault = 10) {
+  if (p?.deleted_at) return false; // ✅ deleted shouldn't show low stock urgency
+  const qty = Number(p?.quantity ?? 0);
+  const threshold = getThresholdForProduct(p, tenantDefault);
+  return qty <= threshold;
+}
 
-    // LOW items first
+function urgencyScore(p, tenantDefault = 10) {
+  // smaller = more urgent
+  const qty = Number(p?.quantity ?? 0);
+  const threshold = getThresholdForProduct(p, tenantDefault);
+  return qty - threshold;
+}
+
+function sortProductsUrgentFirst(list, tenantDefault = 10) {
+  return [...list].sort((a, b) => {
+    const aDel = a?.deleted_at ? 1 : 0;
+    const bDel = b?.deleted_at ? 1 : 0;
+
+    // ✅ deleted always last
+    if (aDel !== bDel) return aDel - bDel;
+
+    const aLow = isLowStock(a, tenantDefault) ? 1 : 0;
+    const bLow = isLowStock(b, tenantDefault) ? 1 : 0;
+
+    // LOW first
     if (aLow !== bLow) return bLow - aLow;
 
-    // then alphabetical by name
+    // then most urgent first
+    const au = urgencyScore(a, tenantDefault);
+    const bu = urgencyScore(b, tenantDefault);
+    if (au !== bu) return au - bu;
+
+    // then alphabetical
     return String(a.name || "").localeCompare(String(b.name || ""));
   });
 }
-
 
 export default function Products({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
@@ -151,7 +176,7 @@ export default function Products({ user }) {
   const [loading, setLoading] = useState(true);
 
   const [savingId, setSavingId] = useState(null);
-  const [rowErrors, setRowErrors] = useState({}); // { [productId]: string }
+  const [rowErrors, setRowErrors] = useState({});
 
   const [search, setSearch] = useState("");
 
@@ -159,7 +184,16 @@ export default function Products({ user }) {
   const [editForm, setEditForm] = useState(null);
 
   const [confirmDelete, setConfirmDelete] = useState(null);
+
+  // ✅ SOFT delete undo (restore)
   const [undo, setUndo] = useState(null);
+
+  // ✅ show deleted toggle
+  const [showDeleted, setShowDeleted] = useState(false);
+
+  // ✅ tenant default low threshold (owner can change)
+  const [lowThreshold, setLowThreshold] = useState(10);
+  const [savingThreshold, setSavingThreshold] = useState(false);
 
   const [form, setForm] = useState({
     name: "",
@@ -169,7 +203,7 @@ export default function Products({ user }) {
     quantity: "",
     cost_price: "",
     selling_price: "",
-    reorder_level: "",
+    reorder_level: "", // optional now
   });
 
   /* ============================
@@ -224,7 +258,14 @@ export default function Products({ user }) {
           constraints: { facingMode: "environment" },
         },
         decoder: {
-          readers: ["ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_128_reader", "code_39_reader"],
+          readers: [
+            "ean_reader",
+            "ean_8_reader",
+            "upc_reader",
+            "upc_e_reader",
+            "code_128_reader",
+            "code_39_reader",
+          ],
         },
         locate: true,
       },
@@ -279,49 +320,72 @@ export default function Products({ user }) {
   // optional: shake animation toggles
   const [shake, setShake] = useState({});
 
-  async function loadAll(searchQuery = "") {
-  setLoading(true);
-  setError("");
+  // ✅ load tenant settings once
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await getSettings?.();
+        const v = Number(s?.low_stock_threshold);
+        if (Number.isFinite(v) && v > 0) setLowThreshold(v);
+      } catch {
+        // keep default 10
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  try {
-    const [p, c] = await Promise.all([getProducts(searchQuery), getCategories()]);
-
-    const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
-
-    // ✅ IMPORTANT: sort low stock first
-    setProducts(sortProductsLowFirst(list));
-
-    const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
-    setCategories(cats);
-  } catch (e2) {
-    setError(e2?.message || "Failed to load");
-  } finally {
-    setLoading(false);
+  // ✅ wrapper: getProducts supports NEW signature:
+  // getProducts({ q, includeDeleted, onlyDeleted })
+  async function fetchProducts(searchQuery = "") {
+    const q = String(searchQuery || "").trim();
+    const res = await getProducts({ q, includeDeleted: showDeleted, onlyDeleted: false });
+    return res;
   }
-}
 
+  async function loadAll(searchQuery = "") {
+    setLoading(true);
+    setError("");
 
+    try {
+      const [p, c] = await Promise.all([fetchProducts(searchQuery), getCategories()]);
+
+      const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
+      setProducts(sortProductsUrgentFirst(list, lowThreshold));
+
+      const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
+      setCategories(cats);
+    } catch (e2) {
+      setError(e2?.message || "Failed to load");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     loadAll("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ✅ if threshold changes, re-sort current list immediately
+  useEffect(() => {
+    setProducts((prev) => sortProductsUrgentFirst(prev, lowThreshold));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lowThreshold]);
+
+  // ✅ reload when search OR showDeleted changes
   useEffect(() => {
     const t = window.setTimeout(() => loadAll(search), 250);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search]);
+  }, [search, showDeleted]);
 
-  const anyBusy = loading || importing || savingId != null;
+  const anyBusy = loading || importing || savingId != null || savingThreshold;
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
 
-    // clear page error as they type
     if (error) setError("");
 
-    // clear per-field error when they type in that field
     setFieldErrors((prev) => {
       if (!prev?.[key]) return prev;
       const next = { ...prev };
@@ -329,7 +393,6 @@ export default function Products({ user }) {
       return next;
     });
 
-    // remove shake on that field
     setShake((prev) => ({ ...prev, [key]: false }));
   }
 
@@ -338,7 +401,6 @@ export default function Products({ user }) {
     setError("");
     setFieldErrors({});
 
-    // ✅ Frontend validation (prevents "Database error")
     const name = String(form.name || "").trim();
     const sku = String(form.sku || "").trim();
 
@@ -348,16 +410,12 @@ export default function Products({ user }) {
 
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
-
       const firstKey = Object.keys(errs)[0];
       setError(errs[firstKey]);
-
       if (firstKey === "name") nameRef.current?.focus();
       if (firstKey === "sku") skuRef.current?.focus();
-
       setShake({ name: !!errs.name, sku: !!errs.sku });
       window.setTimeout(() => setShake({}), 420);
-
       return;
     }
 
@@ -365,12 +423,13 @@ export default function Products({ user }) {
       await addProduct({
         ...form,
         name,
-        sku, // ✅ required
+        sku,
         barcode: String(form.barcode || "").trim() || null,
         category_id: form.category_id ? Number(form.category_id) : null,
         quantity: Number(form.quantity) || 0,
         cost_price: Number(form.cost_price) || 0,
         selling_price: Number(form.selling_price) || 0,
+        // ✅ if blank -> 0 => uses tenant default threshold
         reorder_level: Number(form.reorder_level) || 0,
       });
 
@@ -379,10 +438,10 @@ export default function Products({ user }) {
         sku: "",
         barcode: "",
         category_id: "",
-        quantity: "", // ✅ keep empty so it doesn't prefill 0
-        cost_price: "", // ✅ keep empty so it doesn't prefill 0
-        selling_price: "", // ✅ keep empty so it doesn't prefill 0
-        reorder_level: 10,
+        quantity: "",
+        cost_price: "",
+        selling_price: "",
+        reorder_level: "", // keep optional
       });
 
       setFieldErrors({});
@@ -427,10 +486,12 @@ export default function Products({ user }) {
         name: String(editForm.name || "").trim(),
         sku: String(editForm.sku || "").trim() || null,
         barcode: String(editForm.barcode || "").trim() || null,
-        category_id: editForm.category_id === "" || editForm.category_id == null ? null : Number(editForm.category_id),
+        category_id:
+          editForm.category_id === "" || editForm.category_id == null ? null : Number(editForm.category_id),
         quantity: Number(editForm.quantity) || 0,
         cost_price: Number(editForm.cost_price) || 0,
         selling_price: Number(editForm.selling_price) || 0,
+        // ✅ allow 0 => uses tenant default
         reorder_level: Number(editForm.reorder_level) || 0,
       };
 
@@ -458,23 +519,16 @@ export default function Products({ user }) {
     setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
     setError("");
 
-    const undoPayload = {
-      name: p.name,
-      sku: p.sku || null,
-      barcode: p.barcode || null,
-      category_id: p.category_id ?? null,
-      quantity: p.quantity ?? 0,
-      cost_price: p.cost_price ?? 0,
-      selling_price: p.selling_price ?? 0,
-      reorder_level: p.reorder_level ?? 0,
-    };
-
     try {
+      // ✅ SOFT delete
       await deleteProduct(p.id);
-      setProducts((prev) => prev.filter((x) => x.id !== p.id));
+
+      // remove from UI if not showing deleted
+      if (!showDeleted) setProducts((prev) => prev.filter((x) => x.id !== p.id));
+      else setProducts((prev) => prev.map((x) => (x.id === p.id ? { ...x, deleted_at: new Date().toISOString() } : x)));
 
       const expiresAt = Date.now() + 10_000;
-      setUndo({ payload: undoPayload, expiresAt });
+      setUndo({ id: p.id, name: p.name, expiresAt });
 
       window.setTimeout(() => {
         setUndo((u) => {
@@ -491,14 +545,30 @@ export default function Products({ user }) {
 
   async function undoDelete() {
     if (!undo) return;
-
     setError("");
+    setSavingId(undo.id);
     try {
-      await addProduct(undo.payload);
+      await restoreProduct(undo.id);
       setUndo(null);
       await loadAll(search);
     } catch (e2) {
       setError(e2?.message || "Undo failed");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  async function handleRestore(p) {
+    setError("");
+    setSavingId(p.id);
+    setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
+    try {
+      await restoreProduct(p.id);
+      await loadAll(search);
+    } catch (e2) {
+      setRowErrors((prev) => ({ ...prev, [p.id]: e2?.message || "Restore failed" }));
+    } finally {
+      setSavingId(null);
     }
   }
 
@@ -654,7 +724,7 @@ export default function Products({ user }) {
       cost_price: mapping.cost_price >= 0 ? Number(obj.cost_price) || 0 : 0,
       selling_price: mapping.selling_price >= 0 ? Number(obj.selling_price) || 0 : 0,
       reorder_level:
-        mapping.reorder_level >= 0 ? (obj.reorder_level === "" ? 10 : Number(obj.reorder_level) || 0) : 10,
+        mapping.reorder_level >= 0 ? (obj.reorder_level === "" ? 0 : Number(obj.reorder_level) || 0) : 0,
     };
   }
 
@@ -782,12 +852,30 @@ export default function Products({ user }) {
     border: "1px solid rgba(17,24,39,.08)",
   };
 
+  async function saveThreshold() {
+    const v = Math.floor(Number(lowThreshold) || 10);
+    if (!Number.isFinite(v) || v < 1) return setError("Low stock threshold must be >= 1");
+
+    setSavingThreshold(true);
+    setError("");
+    try {
+      const res = await updateLowStockThreshold?.(v);
+      const saved = Number(res?.low_stock_threshold ?? v);
+      setLowThreshold(Number.isFinite(saved) && saved > 0 ? saved : v);
+      // re-sort immediately
+      setProducts((prev) => sortProductsUrgentFirst(prev, Number.isFinite(saved) ? saved : v));
+    } catch (e) {
+      setError(e?.message || "Failed to save threshold");
+    } finally {
+      setSavingThreshold(false);
+    }
+  }
+
   return (
     <div className="products-page">
       <div className="products-header">
         <div>
           <h1 className="products-title">Products</h1>
-
           {!isAdmin && <div className="products-pill">Read-only (Staff)</div>}
         </div>
 
@@ -799,6 +887,17 @@ export default function Products({ user }) {
             onChange={(e) => setSearch(e.target.value)}
             disabled={anyBusy}
           />
+
+          {/* ✅ show deleted toggle */}
+          <label className="products-check" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={showDeleted}
+              onChange={(e) => setShowDeleted(e.target.checked)}
+              disabled={anyBusy}
+            />
+            Show deleted
+          </label>
 
           <button className="btn" onClick={handleExportCsv} disabled={anyBusy}>
             Export CSV
@@ -831,6 +930,30 @@ export default function Products({ user }) {
       <br />
       {error && <p style={{ color: "red" }}>{error}</p>}
       {importMsg && <p style={{ color: "green" }}>{importMsg}</p>}
+
+      {/* ✅ Low stock threshold control */}
+      {isAdmin && (
+        <div className="card" style={{ marginTop: 12, background: "#f9fafb" }}>
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>Low stock threshold</div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              value={lowThreshold}
+              onChange={(e) => setLowThreshold(Number(e.target.value) || 10)}
+              style={{ width: 160 }}
+              disabled={anyBusy}
+            />
+            <button className="btn" type="button" onClick={saveThreshold} disabled={anyBusy}>
+              {savingThreshold ? "Saving..." : "Save"}
+            </button>
+            <div style={{ fontSize: 12, color: "#6b7280" }}>
+              Used when a product’s Reorder level is blank/0.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* CSV Import Panel (admin only) */}
       {isAdmin && (
@@ -889,6 +1012,7 @@ export default function Products({ user }) {
             </div>
           )}
 
+          {/* (rest of your CSV UI unchanged) */}
           {csvHeaders.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Column Mapping</div>
@@ -1013,7 +1137,6 @@ export default function Products({ user }) {
       {isAdmin && (
         <form onSubmit={handleCreate} className="products-create card">
           <div className="products-formGrid">
-            {/* Product name */}
             <div className="field">
               <input
                 ref={nameRef}
@@ -1027,7 +1150,6 @@ export default function Products({ user }) {
               {fieldErrors.name ? <div className="field-errorText">{fieldErrors.name}</div> : null}
             </div>
 
-            {/* SKU */}
             <div className="field">
               <input
                 ref={skuRef}
@@ -1041,7 +1163,6 @@ export default function Products({ user }) {
               {fieldErrors.sku ? <div className="field-errorText">{fieldErrors.sku}</div> : null}
             </div>
 
-            {/* Barcode */}
             <div className="field">
               <input
                 className="input"
@@ -1052,7 +1173,6 @@ export default function Products({ user }) {
               />
             </div>
 
-            {/* Category */}
             <div className="field">
               <select
                 className="input"
@@ -1069,7 +1189,6 @@ export default function Products({ user }) {
               </select>
             </div>
 
-            {/* Quantity */}
             <div className="field">
               <input
                 className="input"
@@ -1082,7 +1201,6 @@ export default function Products({ user }) {
               />
             </div>
 
-            {/* Cost price */}
             <div className="field">
               <input
                 className="input"
@@ -1095,7 +1213,6 @@ export default function Products({ user }) {
               />
             </div>
 
-            {/* Selling price */}
             <div className="field">
               <input
                 className="input"
@@ -1108,12 +1225,11 @@ export default function Products({ user }) {
               />
             </div>
 
-            {/* Reorder level */}
             <div className="field">
               <input
                 className="input"
                 type="number"
-                placeholder="Reorder level"
+                placeholder={`Reorder level (optional, default ${lowThreshold})`}
                 value={form.reorder_level}
                 onChange={(e) => updateField("reorder_level", e.target.value)}
                 disabled={anyBusy}
@@ -1127,7 +1243,12 @@ export default function Products({ user }) {
               Add Product
             </button>
 
-            <button className="btn products-smallBtn" type="button" disabled={anyBusy} onClick={() => setScannerOpen(true)}>
+            <button
+              className="btn products-smallBtn"
+              type="button"
+              disabled={anyBusy}
+              onClick={() => setScannerOpen(true)}
+            >
               Scan barcode
             </button>
 
@@ -1212,7 +1333,9 @@ export default function Products({ user }) {
         <div style={overlayStyle} onMouseDown={() => (savingId ? null : setConfirmDelete(null))}>
           <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
             <h2 style={{ margin: "0 0 8px" }}>Delete product?</h2>
-            <p style={{ marginTop: 0, color: "#374151" }}>This will permanently delete:</p>
+            <p style={{ marginTop: 0, color: "#374151" }}>
+              This will move the product to <b>Deleted</b> (soft delete). You can restore it later.
+            </p>
 
             <div
               style={{
@@ -1265,10 +1388,13 @@ export default function Products({ user }) {
               const isEditing = editingId === p.id;
               const isSaving = savingId === p.id;
               const inlineErr = rowErrors[p.id];
-              const low = isLowStock(p);
+
+              const threshold = getThresholdForProduct(p, lowThreshold);
+              const low = isLowStock(p, lowThreshold);
+              const isDeleted = Boolean(p?.deleted_at);
 
               return (
-                <tr key={p.id}>
+                <tr key={p.id} style={isDeleted ? { opacity: 0.65 } : undefined}>
                   <td>
                     {isEditing ? (
                       <input
@@ -1280,7 +1406,25 @@ export default function Products({ user }) {
                     ) : (
                       <>
                         {p.name}
-                        {low && (
+                        {isDeleted && (
+                          <span
+                            style={{
+                              marginLeft: 8,
+                              padding: "2px 8px",
+                              borderRadius: 999,
+                              fontSize: 11,
+                              fontWeight: 800,
+                              background: "#e5e7eb",
+                              color: "#111827",
+                              border: "1px solid #d1d5db",
+                              verticalAlign: "middle",
+                            }}
+                            title={`Deleted at: ${p.deleted_at}`}
+                          >
+                            DELETED
+                          </span>
+                        )}
+                        {!isDeleted && low && (
                           <span
                             style={{
                               marginLeft: 8,
@@ -1293,7 +1437,7 @@ export default function Products({ user }) {
                               border: "1px solid #fecaca",
                               verticalAlign: "middle",
                             }}
-                            title={`LOW: qty ${Number(p?.quantity ?? 0)} ≤ reorder ${Number(p?.reorder_level ?? 0)}`}
+                            title={`LOW: qty ${Number(p?.quantity ?? 0)} ≤ threshold ${threshold}`}
                           >
                             LOW
                           </span>
@@ -1393,16 +1537,35 @@ export default function Products({ user }) {
                     )}
                   </td>
 
-                  <td>{p.reorder_level}</td>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        type="number"
+                        inputMode="numeric"
+                        value={editForm?.reorder_level ?? 0}
+                        onChange={(e) => setEditForm((f) => ({ ...f, reorder_level: e.target.value }))}
+                        disabled={isSaving}
+                        placeholder={`0 = default ${lowThreshold}`}
+                        title={`Set 0 to use tenant default (${lowThreshold})`}
+                      />
+                    ) : Number(p.reorder_level || 0) > 0 ? (
+                      p.reorder_level
+                    ) : (
+                      <span title={`Using default ${lowThreshold}`}>0*</span>
+                    )}
+                  </td>
 
                   {isAdmin && (
-                    <td style={{ minWidth: 240 }}>
+                    <td style={{ minWidth: 260 }}>
                       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                        {!isEditing ? (
+                        {!isDeleted && !isEditing ? (
                           <button className="btn" onClick={() => startEdit(p)} disabled={anyBusy}>
                             Edit
                           </button>
-                        ) : (
+                        ) : null}
+
+                        {!isDeleted && isEditing ? (
                           <>
                             <button className="btn" onClick={() => saveEdit(p.id)} disabled={isSaving}>
                               {isSaving ? "Saving..." : "Save"}
@@ -1411,14 +1574,22 @@ export default function Products({ user }) {
                               Cancel
                             </button>
                           </>
-                        )}
+                        ) : null}
 
-                        <button className="btn" onClick={() => askDelete(p)} disabled={anyBusy}>
-                          Delete
-                        </button>
+                        {!isDeleted ? (
+                          <button className="btn" onClick={() => askDelete(p)} disabled={anyBusy}>
+                            Delete
+                          </button>
+                        ) : (
+                          <button className="btn" onClick={() => handleRestore(p)} disabled={anyBusy}>
+                            Restore
+                          </button>
+                        )}
                       </div>
 
-                      {inlineErr ? <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div> : null}
+                      {inlineErr ? (
+                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div>
+                      ) : null}
                     </td>
                   )}
                 </tr>
@@ -1434,6 +1605,10 @@ export default function Products({ user }) {
             )}
           </tbody>
         </table>
+
+        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+          * Reorder “0” means “use tenant default threshold ({lowThreshold})”.
+        </div>
       </div>
     </div>
   );

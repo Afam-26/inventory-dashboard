@@ -304,8 +304,16 @@ router.post("/", requireRole("owner", "admin"), async (req, res) => {
     });
 
     return res.status(201).json({ id: r.insertId });
-  } catch (err) {
-    console.error("PRODUCT CREATE ERROR:", err);
+  } catch (e) {
+    // ✅ Duplicate SKU (MySQL)
+    if (e?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "Duplicate SKU not allowed",
+        field: "sku",
+      });
+    }
+
+    console.error("PRODUCT CREATE ERROR:", e);
     return res.status(500).json({ message: "Database error" });
   }
 });
@@ -736,11 +744,17 @@ router.put("/:id", requireRole("owner", "admin"), async (req, res) => {
     });
 
     res.json({ ok: true });
-  } catch (err) {
-    await conn.rollback();
-    console.error("PRODUCT UPDATE ERROR:", err);
-    res.status(500).json({ message: "Database error" });
-  } finally {
+  } catch (e) {
+    if (e?.code === "ER_DUP_ENTRY") {
+      return res.status(409).json({
+        message: "Duplicate SKU not allowed",
+        field: "sku",
+      });
+    }
+
+    console.error("PRODUCT UPDATE ERROR:", e);
+    return res.status(500).json({ message: "Database error" });
+  }finally {
     conn.release();
   }
 });

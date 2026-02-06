@@ -10,7 +10,7 @@ import {
   importProductsRows,
   getSettings,
   updateLowStockThreshold,
-  // ✅ NEW
+  // ✅ soft delete restore + hard delete
   restoreProduct,
   hardDeleteProduct,
   // ✅ RECONCILE
@@ -180,6 +180,13 @@ function isReconWarning(p, driftThreshold) {
   return a > 0 && a < t;
 }
 
+/* ============================
+   Duplicate SKU helpers
+============================ */
+function normSku(v) {
+  return String(v || "").trim().toLowerCase();
+}
+
 export default function Products({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = role === "admin" || role === "owner";
@@ -231,6 +238,17 @@ export default function Products({ user }) {
     selling_price: "",
     reorder_level: "",
   });
+
+  // field validation UI
+  const [fieldErrors, setFieldErrors] = useState({});
+  const nameRef = useRef(null);
+  const skuRef = useRef(null);
+
+  // ✅ NEW: edit refs (for auto-focus + inline duplicate)
+  const editSkuRef = useRef(null);
+
+  // optional: shake animation toggles
+  const [shake, setShake] = useState({});
 
   /* ============================
      Barcode scanner (Quagga global)
@@ -284,14 +302,7 @@ export default function Products({ user }) {
           constraints: { facingMode: "environment" },
         },
         decoder: {
-          readers: [
-            "ean_reader",
-            "ean_8_reader",
-            "upc_reader",
-            "upc_e_reader",
-            "code_128_reader",
-            "code_39_reader",
-          ],
+          readers: ["ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_128_reader", "code_39_reader"],
         },
         locate: true,
       },
@@ -338,15 +349,36 @@ export default function Products({ user }) {
   const [importErrors, setImportErrors] = useState([]);
   const previewCount = 20;
 
-  // field validation UI
-  const [fieldErrors, setFieldErrors] = useState({});
-  const nameRef = useRef(null);
-  const skuRef = useRef(null);
+  /* ============================
+     SKU Index (include deleted)
+     - Used for "warning as you type"
+============================ */
+  const [skuIndex, setSkuIndex] = useState(() => new Map()); // Map<skuLower, { count:number, ids:number[] }>
+  const [skuIndexReady, setSkuIndexReady] = useState(false);
 
-  // optional: shake animation toggles
-  const [shake, setShake] = useState({});
+  async function refreshSkuIndex() {
+    try {
+      const p = await getProducts("", { includeDeleted: true });
+      const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
+      const m = new Map();
+      for (const x of list) {
+        const s = normSku(x?.sku);
+        if (!s) continue;
+        const prev = m.get(s);
+        if (!prev) m.set(s, { count: 1, ids: [x.id] });
+        else m.set(s, { count: prev.count + 1, ids: [...prev.ids, x.id] });
+      }
+      setSkuIndex(m);
+      setSkuIndexReady(true);
+    } catch {
+      // fallback: at least allow UI to work without index
+      setSkuIndexReady(false);
+    }
+  }
 
-  // ✅ load tenant settings once
+  /* ============================
+     Load settings + SKU index once
+  ============================ */
   useEffect(() => {
     (async () => {
       try {
@@ -358,6 +390,9 @@ export default function Products({ user }) {
         if (Number.isFinite(d) && d > 0) setDriftThreshold(d);
       } catch {
         // keep defaults
+      } finally {
+        // load sku index after settings attempt
+        refreshSkuIndex();
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -371,19 +406,13 @@ export default function Products({ user }) {
       const onlyDeleted = mode === "deleted";
       const includeDeleted = mode === "all";
 
-      // ✅ getProducts MUST support (search, options)
-      const [p, c] = await Promise.all([
-        getProducts(searchQuery, { onlyDeleted, includeDeleted }),
-        getCategories(),
-      ]);
+      const [p, c] = await Promise.all([getProducts(searchQuery, { onlyDeleted, includeDeleted }), getCategories()]);
 
       const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
       const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
 
       const finalList =
-        mode === "active"
-          ? sortProductsUrgentFirst(list, lowThreshold)
-          : [...list].sort((a, b) => b.id - a.id);
+        mode === "active" ? sortProductsUrgentFirst(list, lowThreshold) : [...list].sort((a, b) => b.id - a.id);
 
       setProducts(finalList);
       setCategories(cats);
@@ -429,10 +458,42 @@ export default function Products({ user }) {
     setShake((prev) => ({ ...prev, [key]: false }));
   }
 
+  /* ============================
+     Live duplicate SKU warning (Create)
+============================ */
+  const createSkuWarning = useMemo(() => {
+    const s = normSku(form?.sku);
+    if (!s) return "";
+    if (!skuIndexReady) return ""; // if index not ready, don't warn (avoid false positives)
+    const hit = skuIndex.get(s);
+    if (!hit) return "";
+    return "Duplicate SKU not allowed.";
+  }, [form?.sku, skuIndex, skuIndexReady]);
+
+  // keep create field error in sync with the live warning (but don't override "SKU is required")
+  useEffect(() => {
+    if (!createSkuWarning) {
+      setFieldErrors((prev) => {
+        if (prev?.sku === "Duplicate SKU not allowed.") {
+          const next = { ...prev };
+          delete next.sku;
+          return next;
+        }
+        return prev;
+      });
+      return;
+    }
+
+    setFieldErrors((prev) => {
+      // if another SKU error exists, keep it
+      if (prev?.sku && prev.sku !== "Duplicate SKU not allowed.") return prev;
+      return { ...prev, sku: "Duplicate SKU not allowed." };
+    });
+  }, [createSkuWarning]);
+
   async function handleCreate(e) {
     e.preventDefault();
     setError("");
-    setFieldErrors({});
 
     const name = String(form.name || "").trim();
     const sku = String(form.sku || "").trim();
@@ -440,6 +501,9 @@ export default function Products({ user }) {
     const errs = {};
     if (!name) errs.name = "Product name is required.";
     if (!sku) errs.sku = "SKU is required.";
+
+    // ✅ block create if live duplicate warning is present
+    if (!errs.sku && createSkuWarning) errs.sku = createSkuWarning;
 
     if (Object.keys(errs).length > 0) {
       setFieldErrors(errs);
@@ -462,7 +526,6 @@ export default function Products({ user }) {
         quantity: Number(form.quantity) || 0,
         cost_price: Number(form.cost_price) || 0,
         selling_price: Number(form.selling_price) || 0,
-        // ✅ blank -> 0 (uses tenant default threshold)
         reorder_level: Number(form.reorder_level) || 0,
       });
 
@@ -481,10 +544,22 @@ export default function Products({ user }) {
       setShake({});
       setError("");
 
+      // refresh sku index so typing warning stays accurate
+      refreshSkuIndex();
+
       if (viewMode !== "active") setViewMode("active");
       await loadAll(search, "active");
     } catch (e2) {
-      setError(e2?.message || "Create failed");
+      const msg = e2?.message || "Create failed";
+      setError(msg);
+
+      // ✅ Server duplicate SKU -> highlight + focus SKU
+      if (String(msg).toLowerCase().includes("duplicate sku")) {
+        setFieldErrors((prev) => ({ ...prev, sku: "Duplicate SKU not allowed." }));
+        skuRef.current?.focus();
+        setShake((prev) => ({ ...prev, sku: true }));
+        window.setTimeout(() => setShake((prev) => ({ ...prev, sku: false })), 420);
+      }
     }
   }
 
@@ -501,6 +576,9 @@ export default function Products({ user }) {
       selling_price: p.selling_price ?? 0,
       reorder_level: p.reorder_level ?? 0,
     });
+
+    // focus sku quickly (nice UX)
+    window.setTimeout(() => editSkuRef.current?.focus(), 0);
   }
 
   function cancelEdit() {
@@ -508,8 +586,35 @@ export default function Products({ user }) {
     setEditForm(null);
   }
 
+  function isDuplicateSkuMessage(msg) {
+    return String(msg || "").toLowerCase().includes("duplicate sku");
+  }
+
+  /* ============================
+     Live duplicate SKU warning (Edit)
+============================ */
+  const editSkuWarning = useMemo(() => {
+    if (!editForm || !editingId) return "";
+    const s = normSku(editForm?.sku);
+    if (!s) return "";
+    if (!skuIndexReady) return "";
+    const hit = skuIndex.get(s);
+    if (!hit) return "";
+    // allow keeping same SKU for the same product
+    const otherIds = hit.ids.filter((id) => Number(id) !== Number(editingId));
+    if (!otherIds.length) return "";
+    return "Duplicate SKU not allowed.";
+  }, [editForm, editingId, skuIndex, skuIndexReady]);
+
   async function saveEdit(id) {
     if (!editForm) return;
+
+    // ✅ block save if live duplicate warning is present
+    if (editSkuWarning) {
+      setRowErrors((prev) => ({ ...prev, [id]: editSkuWarning }));
+      window.setTimeout(() => editSkuRef.current?.focus(), 0);
+      return;
+    }
 
     setSavingId(id);
     setRowErrors((prev) => ({ ...prev, [id]: "" }));
@@ -520,8 +625,7 @@ export default function Products({ user }) {
         name: String(editForm.name || "").trim(),
         sku: String(editForm.sku || "").trim() || null,
         barcode: String(editForm.barcode || "").trim() || null,
-        category_id:
-          editForm.category_id === "" || editForm.category_id == null ? null : Number(editForm.category_id),
+        category_id: editForm.category_id === "" || editForm.category_id == null ? null : Number(editForm.category_id),
         quantity: Number(editForm.quantity) || 0,
         cost_price: Number(editForm.cost_price) || 0,
         selling_price: Number(editForm.selling_price) || 0,
@@ -529,10 +633,20 @@ export default function Products({ user }) {
       };
 
       await updateProduct(id, payload);
+
+      // refresh sku index so typing warning stays accurate
+      refreshSkuIndex();
+
       await loadAll(search, viewMode);
       cancelEdit();
     } catch (e2) {
-      setRowErrors((prev) => ({ ...prev, [id]: e2?.message || "Update failed" }));
+      const msg = e2?.message || "Update failed";
+      setRowErrors((prev) => ({ ...prev, [id]: msg }));
+
+      // ✅ Duplicate SKU -> focus edit SKU + show inline
+      if (isDuplicateSkuMessage(msg)) {
+        window.setTimeout(() => editSkuRef.current?.focus(), 0);
+      }
     } finally {
       setSavingId(null);
     }
@@ -555,8 +669,10 @@ export default function Products({ user }) {
     try {
       await deleteProduct(p.id);
 
+      // remove from UI (active view)
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
 
+      // Undo restore (10s)
       const expiresAt = Date.now() + 10_000;
       setUndo({ id: p.id, expiresAt });
 
@@ -578,6 +694,10 @@ export default function Products({ user }) {
     setError("");
     try {
       await restoreProduct(undo.id);
+
+      // refresh sku index (restore can reintroduce SKU conflicts)
+      refreshSkuIndex();
+
       setUndo(null);
       await loadAll(search, viewMode);
     } catch (e2) {
@@ -601,6 +721,10 @@ export default function Products({ user }) {
 
     try {
       await hardDeleteProduct(p.id);
+
+      // refresh sku index (hard delete removes SKU)
+      refreshSkuIndex();
+
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
     } catch (e2) {
       setRowErrors((prev) => ({ ...prev, [p.id]: e2?.message || "Permanent delete failed" }));
@@ -615,6 +739,10 @@ export default function Products({ user }) {
     setError("");
     try {
       await restoreProduct(p.id);
+
+      // refresh sku index
+      refreshSkuIndex();
+
       await loadAll(search, viewMode);
     } catch (e2) {
       setRowErrors((prev) => ({ ...prev, [p.id]: e2?.message || "Restore failed" }));
@@ -774,8 +902,7 @@ export default function Products({ user }) {
       quantity: mapping.quantity >= 0 ? Number(obj.quantity) || 0 : 0,
       cost_price: mapping.cost_price >= 0 ? Number(obj.cost_price) || 0 : 0,
       selling_price: mapping.selling_price >= 0 ? Number(obj.selling_price) || 0 : 0,
-      reorder_level:
-        mapping.reorder_level >= 0 ? (obj.reorder_level === "" ? 0 : Number(obj.reorder_level) || 0) : 0,
+      reorder_level: mapping.reorder_level >= 0 ? (obj.reorder_level === "" ? 0 : Number(obj.reorder_level) || 0) : 0,
     };
   }
 
@@ -851,6 +978,9 @@ export default function Products({ user }) {
           (allErrs.length ? ` (errors: ${allErrs.length})` : "")
       );
 
+      // refresh sku index after import changes SKUs
+      refreshSkuIndex();
+
       if (viewMode !== "active") setViewMode("active");
       await loadAll(search, "active");
 
@@ -914,8 +1044,7 @@ export default function Products({ user }) {
       const res = await updateLowStockThreshold?.(v);
       const saved = Number(res?.low_stock_threshold ?? v);
       setLowThreshold(Number.isFinite(saved) && saved > 0 ? saved : v);
-      if (viewMode === "active")
-        setProducts((prev) => sortProductsUrgentFirst(prev, Number.isFinite(saved) ? saved : v));
+      if (viewMode === "active") setProducts((prev) => sortProductsUrgentFirst(prev, Number.isFinite(saved) ? saved : v));
     } catch (e) {
       setError(e?.message || "Failed to save threshold");
     } finally {
@@ -1046,8 +1175,7 @@ export default function Products({ user }) {
               style={{
                 borderRadius: 999,
                 fontWeight: 900,
-                border:
-                  activeDriftCount > 0 ? "2px solid #991b1b" : "1px solid rgba(17,24,39,.12)",
+                border: activeDriftCount > 0 ? "2px solid #991b1b" : "1px solid rgba(17,24,39,.12)",
               }}
             >
               Reconcile stock
@@ -1108,20 +1236,13 @@ export default function Products({ user }) {
             }}
             title="Show only products that require reconcile"
           >
-            <input
-              type="checkbox"
-              checked={showReconOnly}
-              onChange={(e) => setShowReconOnly(e.target.checked)}
-              disabled={anyBusy}
-            />
+            <input type="checkbox" checked={showReconOnly} onChange={(e) => setShowReconOnly(e.target.checked)} disabled={anyBusy} />
             Show reconcile required ({activeDriftCount})
           </label>
         )}
 
         {viewMode !== "active" && (
-          <div style={{ fontSize: 12, color: "#6b7280", alignSelf: "center" }}>
-            Tip: Restore or permanently delete from this view.
-          </div>
+          <div style={{ fontSize: 12, color: "#6b7280", alignSelf: "center" }}>Tip: Restore or permanently delete from this view.</div>
         )}
       </div>
 
@@ -1131,19 +1252,10 @@ export default function Products({ user }) {
 
       {/* ✅ reconcile required banner */}
       {viewMode === "active" && activeDriftCount > 0 && (
-        <div
-          className="card"
-          style={{
-            marginTop: 12,
-            background: "#fff1f2",
-            border: "1px solid #fecaca",
-            color: "#991b1b",
-          }}
-        >
+        <div className="card" style={{ marginTop: 12, background: "#fff1f2", border: "1px solid #fecaca", color: "#991b1b" }}>
           <div style={{ fontWeight: 900 }}>Reconcile required</div>
           <div style={{ marginTop: 6, fontSize: 12, color: "#7f1d1d" }}>
-            {activeDriftCount} product(s) have drift ≥ {driftThreshold}. Use{" "}
-            <b>Reconcile stock</b> or reconcile per-row.
+            {activeDriftCount} product(s) have drift ≥ {driftThreshold}. Use <b>Reconcile stock</b> or reconcile per-row.
           </div>
         </div>
       )}
@@ -1170,9 +1282,7 @@ export default function Products({ user }) {
                   {savingThreshold ? "Saving..." : "Save"}
                 </button>
               </div>
-              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
-                Used when a product’s Reorder level is blank/0.
-              </div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>Used when a product’s Reorder level is blank/0.</div>
             </div>
 
             <div>
@@ -1212,12 +1322,7 @@ export default function Products({ user }) {
 
             <div className="products-importActions">
               <label className="products-check">
-                <input
-                  type="checkbox"
-                  checked={createMissingCategories}
-                  onChange={(e) => setCreateMissingCategories(e.target.checked)}
-                  disabled={anyBusy}
-                />
+                <input type="checkbox" checked={createMissingCategories} onChange={(e) => setCreateMissingCategories(e.target.checked)} disabled={anyBusy} />
                 Auto-create missing categories
               </label>
 
@@ -1245,10 +1350,7 @@ export default function Products({ user }) {
                 <div
                   style={{
                     height: "100%",
-                    width:
-                      importProgress.total > 0
-                        ? `${Math.round((importProgress.done / importProgress.total) * 100)}%`
-                        : "0%",
+                    width: importProgress.total > 0 ? `${Math.round((importProgress.done / importProgress.total) * 100)}%` : "0%",
                     background: "#111827",
                   }}
                 />
@@ -1306,11 +1408,7 @@ export default function Products({ user }) {
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Preview (first {previewCount} rows)</div>
                 <div className="products-tableWrap">
-                  <table
-                    border="1"
-                    cellPadding="8"
-                    style={{ width: "100%", borderCollapse: "collapse", background: "#fff" }}
-                  >
+                  <table border="1" cellPadding="8" style={{ width: "100%", borderCollapse: "collapse", background: "#fff" }}>
                     <thead style={{ background: "#f3f4f6" }}>
                       <tr>
                         <th>Line</th>
@@ -1352,9 +1450,7 @@ export default function Products({ user }) {
 
               {validation.issues.length > 0 && (
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#b45309" }}>
-                    Validation issues (first 10)
-                  </div>
+                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#b45309" }}>Validation issues (first 10)</div>
                   <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#92400e" }}>
                     {validation.issues.slice(0, 10).map((x, i) => (
                       <li key={i}>
@@ -1367,9 +1463,7 @@ export default function Products({ user }) {
 
               {importErrors.length > 0 && (
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#991b1b" }}>
-                    Import errors (first 10)
-                  </div>
+                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#991b1b" }}>Import errors (first 10)</div>
                   <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#991b1b" }}>
                     {importErrors.slice(0, 10).map((x, i) => (
                       <li key={i}>
@@ -1412,25 +1506,16 @@ export default function Products({ user }) {
                 aria-invalid={Boolean(fieldErrors.sku)}
               />
               {fieldErrors.sku ? <div className="field-errorText">{fieldErrors.sku}</div> : null}
+              {/* (Optional tiny hint if sku index isn't ready) */}
+              {!skuIndexReady ? <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>Checking SKUs…</div> : null}
             </div>
 
             <div className="field">
-              <input
-                className="input"
-                placeholder="Barcode"
-                value={form.barcode}
-                onChange={(e) => updateField("barcode", e.target.value)}
-                disabled={anyBusy}
-              />
+              <input className="input" placeholder="Barcode" value={form.barcode} onChange={(e) => updateField("barcode", e.target.value)} disabled={anyBusy} />
             </div>
 
             <div className="field">
-              <select
-                className="input"
-                value={form.category_id}
-                onChange={(e) => updateField("category_id", e.target.value)}
-                disabled={anyBusy}
-              >
+              <select className="input" value={form.category_id} onChange={(e) => updateField("category_id", e.target.value)} disabled={anyBusy}>
                 <option value="">Select category</option>
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -1441,39 +1526,15 @@ export default function Products({ user }) {
             </div>
 
             <div className="field">
-              <input
-                className="input"
-                type="number"
-                placeholder="Quantity"
-                value={form.quantity}
-                onChange={(e) => updateField("quantity", e.target.value)}
-                disabled={anyBusy}
-                inputMode="numeric"
-              />
+              <input className="input" type="number" placeholder="Quantity" value={form.quantity} onChange={(e) => updateField("quantity", e.target.value)} disabled={anyBusy} inputMode="numeric" />
             </div>
 
             <div className="field">
-              <input
-                className="input"
-                type="number"
-                placeholder="Cost price"
-                value={form.cost_price}
-                onChange={(e) => updateField("cost_price", e.target.value)}
-                disabled={anyBusy}
-                inputMode="decimal"
-              />
+              <input className="input" type="number" placeholder="Cost price" value={form.cost_price} onChange={(e) => updateField("cost_price", e.target.value)} disabled={anyBusy} inputMode="decimal" />
             </div>
 
             <div className="field">
-              <input
-                className="input"
-                type="number"
-                placeholder="Selling price"
-                value={form.selling_price}
-                onChange={(e) => updateField("selling_price", e.target.value)}
-                disabled={anyBusy}
-                inputMode="decimal"
-              />
+              <input className="input" type="number" placeholder="Selling price" value={form.selling_price} onChange={(e) => updateField("selling_price", e.target.value)} disabled={anyBusy} inputMode="decimal" />
             </div>
 
             <div className="field">
@@ -1490,16 +1551,11 @@ export default function Products({ user }) {
           </div>
 
           <div className="products-createActions">
-            <button className="btn products-smallBtn" type="submit" disabled={anyBusy}>
+            <button className="btn products-smallBtn" type="submit" disabled={anyBusy || Boolean(createSkuWarning)}>
               Add Product
             </button>
 
-            <button
-              className="btn products-smallBtn"
-              type="button"
-              disabled={anyBusy}
-              onClick={() => setScannerOpen(true)}
-            >
+            <button className="btn products-smallBtn" type="button" disabled={anyBusy} onClick={() => setScannerOpen(true)}>
               Scan barcode
             </button>
 
@@ -1586,15 +1642,7 @@ export default function Products({ user }) {
             <h2 style={{ margin: "0 0 8px" }}>Delete product?</h2>
             <p style={{ marginTop: 0, color: "#374151" }}>This will hide the product (soft delete):</p>
 
-            <div
-              style={{
-                border: "1px solid #e5e7eb",
-                borderRadius: 12,
-                padding: 12,
-                background: "#f9fafb",
-                marginBottom: 12,
-              }}
-            >
+            <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#f9fafb", marginBottom: 12 }}>
               <div style={{ fontWeight: 800 }}>{confirmDelete.name}</div>
               <div style={{ color: "#6b7280" }}>SKU: {confirmDelete.sku || "-"}</div>
               <div style={{ color: "#6b7280" }}>Barcode: {confirmDelete.barcode || "-"}</div>
@@ -1609,9 +1657,7 @@ export default function Products({ user }) {
               </button>
             </div>
 
-            {rowErrors[confirmDelete.id] ? (
-              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmDelete.id]}</div>
-            ) : null}
+            {rowErrors[confirmDelete.id] ? <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmDelete.id]}</div> : null}
           </div>
         </div>
       )}
@@ -1625,15 +1671,7 @@ export default function Products({ user }) {
               This is <b>permanent</b>. If the product has stock movement history, the server may block this.
             </p>
 
-            <div
-              style={{
-                border: "1px solid #fecaca",
-                borderRadius: 12,
-                padding: 12,
-                background: "#fff1f2",
-                marginBottom: 12,
-              }}
-            >
+            <div style={{ border: "1px solid #fecaca", borderRadius: 12, padding: 12, background: "#fff1f2", marginBottom: 12 }}>
               <div style={{ fontWeight: 800 }}>{confirmHardDelete.name}</div>
               <div style={{ color: "#6b7280" }}>SKU: {confirmHardDelete.sku || "-"}</div>
               <div style={{ color: "#6b7280" }}>Barcode: {confirmHardDelete.barcode || "-"}</div>
@@ -1648,9 +1686,7 @@ export default function Products({ user }) {
               </button>
             </div>
 
-            {rowErrors[confirmHardDelete.id] ? (
-              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmHardDelete.id]}</div>
-            ) : null}
+            {rowErrors[confirmHardDelete.id] ? <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmHardDelete.id]}</div> : null}
           </div>
         </div>
       )}
@@ -1676,9 +1712,7 @@ export default function Products({ user }) {
                 style={{ width: 180 }}
                 placeholder={`${driftThreshold}`}
               />
-              <div style={{ fontSize: 12, color: "#6b7280" }}>
-                Leave as {driftThreshold} to match your warning threshold.
-              </div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>Leave as {driftThreshold} to match your warning threshold.</div>
             </div>
 
             {reconMsg && <div style={{ marginTop: 10, fontSize: 12, color: "#111827" }}>{reconMsg}</div>}
@@ -1725,16 +1759,16 @@ export default function Products({ user }) {
               const reconReq = !deleted && viewMode === "active" ? isReconRequired(p, driftThreshold) : false;
               const reconWarn = !deleted && viewMode === "active" ? isReconWarning(p, driftThreshold) : false;
 
+              const editSkuError =
+                isEditing && (editSkuWarning || (inlineErr && isDuplicateSkuMessage(inlineErr)))
+                  ? (editSkuWarning || "Duplicate SKU not allowed.")
+                  : "";
+
               return (
                 <tr key={p.id} style={deleted ? { opacity: 0.75 } : undefined}>
                   <td>
                     {isEditing ? (
-                      <input
-                        className="input"
-                        value={editForm?.name ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
-                        disabled={isSaving}
-                      />
+                      <input className="input" value={editForm?.name ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} disabled={isSaving} />
                     ) : (
                       <>
                         {p.name}
@@ -1777,7 +1811,6 @@ export default function Products({ user }) {
                           </span>
                         )}
 
-                        {/* ✅ Drift badges */}
                         {!deleted && viewMode === "active" && reconReq && (
                           <span
                             style={{
@@ -1821,12 +1854,22 @@ export default function Products({ user }) {
 
                   <td>
                     {isEditing ? (
-                      <input
-                        className="input"
-                        value={editForm?.sku ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, sku: e.target.value }))}
-                        disabled={isSaving}
-                      />
+                      <div className="field">
+                        <input
+                          ref={editSkuRef}
+                          className={`input ${editSkuError ? "input-error" : ""}`}
+                          value={editForm?.sku ?? ""}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setEditForm((f) => ({ ...f, sku: v }));
+                            // clear server row error as user types
+                            if (rowErrors[p.id]) setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
+                          }}
+                          disabled={isSaving}
+                          aria-invalid={Boolean(editSkuError)}
+                        />
+                        {editSkuError ? <div className="field-errorText">{editSkuError}</div> : null}
+                      </div>
                     ) : (
                       p.sku || "-"
                     )}
@@ -1834,12 +1877,7 @@ export default function Products({ user }) {
 
                   <td>
                     {isEditing ? (
-                      <input
-                        className="input"
-                        value={editForm?.barcode ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, barcode: e.target.value }))}
-                        disabled={isSaving}
-                      />
+                      <input className="input" value={editForm?.barcode ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, barcode: e.target.value }))} disabled={isSaving} />
                     ) : (
                       p.barcode || "-"
                     )}
@@ -1847,12 +1885,7 @@ export default function Products({ user }) {
 
                   <td>
                     {isEditing ? (
-                      <select
-                        className="input"
-                        value={editForm?.category_id ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, category_id: e.target.value }))}
-                        disabled={isSaving}
-                      >
+                      <select className="input" value={editForm?.category_id ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, category_id: e.target.value }))} disabled={isSaving}>
                         <option value="">None</option>
                         {categories.map((c) => (
                           <option key={c.id} value={c.id}>
@@ -1878,7 +1911,6 @@ export default function Products({ user }) {
                     ) : (
                       <>
                         {p.quantity}
-                        {/* show drift hint */}
                         {!deleted && viewMode === "active" && abs(drift) > 0 && (
                           <div style={{ fontSize: 11, color: reconReq ? "#991b1b" : "#92400e", marginTop: 4 }}>
                             drift: {drift > 0 ? "+" : ""}
@@ -1891,14 +1923,7 @@ export default function Products({ user }) {
 
                   <td>
                     {isEditing ? (
-                      <input
-                        className="input"
-                        type="number"
-                        inputMode="decimal"
-                        value={editForm?.cost_price ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))}
-                        disabled={isSaving}
-                      />
+                      <input className="input" type="number" inputMode="decimal" value={editForm?.cost_price ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))} disabled={isSaving} />
                     ) : (
                       p.cost_price
                     )}
@@ -1941,7 +1966,6 @@ export default function Products({ user }) {
                   {isAdmin && (
                     <td style={{ minWidth: 320 }}>
                       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                        {/* Active rows (admin/owner) */}
                         {!deleted ? (
                           <>
                             {!isEditing ? (
@@ -1950,7 +1974,7 @@ export default function Products({ user }) {
                               </button>
                             ) : (
                               <>
-                                <button className="btn" onClick={() => saveEdit(p.id)} disabled={isSaving}>
+                                <button className="btn" onClick={() => saveEdit(p.id)} disabled={isSaving || Boolean(editSkuWarning)}>
                                   {isSaving ? "Saving..." : "Save"}
                                 </button>
                                 <button className="btn" onClick={cancelEdit} disabled={isSaving}>
@@ -1963,7 +1987,6 @@ export default function Products({ user }) {
                               Delete
                             </button>
 
-                            {/* ✅ reconcile per row */}
                             {viewMode === "active" && abs(drift) > 0 && (
                               <button
                                 className="btn"
@@ -1982,8 +2005,7 @@ export default function Products({ user }) {
                           </>
                         ) : (
                           <>
-                            {/* Deleted rows */}
-                            {isOwner && (
+                            {isOwner ? (
                               <>
                                 <button className="btn" onClick={() => handleRestore(p)} disabled={anyBusy}>
                                   Restore
@@ -1992,19 +2014,14 @@ export default function Products({ user }) {
                                   Delete permanently
                                 </button>
                               </>
-                            )}
-                            {!isOwner && (
-                              <span style={{ fontSize: 12, color: "#6b7280" }}>
-                                Owner required to restore/delete permanently
-                              </span>
+                            ) : (
+                              <span style={{ fontSize: 12, color: "#6b7280" }}>Owner required to restore/delete permanently</span>
                             )}
                           </>
                         )}
                       </div>
 
-                      {inlineErr ? (
-                        <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div>
-                      ) : null}
+                      {inlineErr && !isEditing ? <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div> : null}
                     </td>
                   )}
                 </tr>
@@ -2021,9 +2038,7 @@ export default function Products({ user }) {
           </tbody>
         </table>
 
-        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-          * Reorder “0” means “use tenant default threshold ({lowThreshold})”.
-        </div>
+        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>* Reorder “0” means “use tenant default threshold ({lowThreshold})”.</div>
       </div>
     </div>
   );

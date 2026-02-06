@@ -817,3 +817,33 @@ export async function updateLowStockThreshold(value) {
     { useAuth: true }
   );
 }
+
+// ✅ reconcile one product
+export async function reconcileProductStock(id) {
+  return baseFetch(`${API_BASE}/products/${id}/reconcile`, { method: "POST" }, { useAuth: true });
+}
+
+// ✅ bulk reconcile
+export async function reconcileAllStock(minAbsDrift = 1) {
+  return baseFetch(
+    `${API_BASE}/stock/reconcile-all`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ minAbsDrift }),
+    },
+    { useAuth: true }
+  );
+}
+
+export async function updateStockDriftThreshold(value) {
+  return baseFetch(
+    `${API_BASE}/settings/stock-drift-threshold`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value }),
+    },
+    { useAuth: true }
+  );
+}

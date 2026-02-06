@@ -165,11 +165,12 @@ router.get("/by-code/:code", requireRole("owner", "admin", "staff"), async (req,
  *  - ?includeDeleted=true
  *  - ?onlyDeleted=true
  * ========================= */
+// GET /api/products
 router.get("/", async (req, res) => {
   const tenantId = req.tenantId;
 
   try {
-    const q = String(req.query.q || req.query.search || "").trim();
+    const search = String(req.query.search || "").trim();
 
     const includeDeleted = String(req.query.includeDeleted || "").toLowerCase() === "true";
     const onlyDeleted = String(req.query.onlyDeleted || "").toLowerCase() === "true";
@@ -177,12 +178,12 @@ router.get("/", async (req, res) => {
     const where = ["p.tenant_id = ?"];
     const params = [tenantId];
 
-    // deleted filter rules
+    // ✅ default excludes deleted
+    if (!includeDeleted && !onlyDeleted) where.push("p.deleted_at IS NULL");
     if (onlyDeleted) where.push("p.deleted_at IS NOT NULL");
-    else if (!includeDeleted) where.push("p.deleted_at IS NULL");
 
-    if (q) {
-      const like = `%${q}%`;
+    if (search) {
+      const like = `%${search}%`;
       where.push("(p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? OR c.name LIKE ?)");
       params.push(like, like, like, like);
     }
@@ -201,14 +202,31 @@ router.get("/", async (req, res) => {
         p.selling_price,
         p.reorder_level,
         p.created_at,
-        p.deleted_at
+        p.updated_at,
+        p.deleted_at,
+
+        -- ✅ stock reconciliation fields:
+        COALESCE(m.movement_balance, 0) AS movement_balance,
+        (COALESCE(p.quantity,0) - COALESCE(m.movement_balance,0)) AS drift
+
       FROM products p
       LEFT JOIN categories c
         ON c.id = p.category_id AND c.tenant_id = p.tenant_id
+
+      LEFT JOIN (
+        SELECT
+          tenant_id,
+          product_id,
+          SUM(CASE WHEN type='IN' THEN quantity ELSE -quantity END) AS movement_balance
+        FROM stock_movements
+        WHERE tenant_id = ?
+        GROUP BY tenant_id, product_id
+      ) m ON m.tenant_id = p.tenant_id AND m.product_id = p.id
+
       WHERE ${where.join(" AND ")}
       ORDER BY p.id DESC
       `,
-      params
+      [tenantId, ...params]
     );
 
     return res.json({ products: rows || [] });
@@ -348,6 +366,94 @@ router.get("/export.csv", requireRole("owner", "admin", "staff"), async (req, re
     return res.status(500).json({ message: "Database error" });
   }
 });
+
+async function getTenantDriftSettings(tenantId) {
+  const [[s]] = await db.query(
+    `SELECT COALESCE(stock_drift_threshold, 5) AS stock_drift_threshold
+     FROM settings
+     WHERE tenant_id=? LIMIT 1`,
+    [tenantId]
+  );
+  return { stock_drift_threshold: Number(s?.stock_drift_threshold || 5) };
+}
+
+async function computeMovementBalance(conn, tenantId, productId) {
+  const [[r]] = await conn.query(
+    `
+    SELECT COALESCE(SUM(CASE WHEN type='IN' THEN quantity ELSE -quantity END),0) AS balance
+    FROM stock_movements
+    WHERE tenant_id=? AND product_id=?
+    `,
+    [tenantId, productId]
+  );
+  return Number(r?.balance || 0);
+}
+
+// POST /api/products/:id/reconcile  (admin/owner)
+router.post("/:id/reconcile", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const id = Number(req.params.id);
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [[p]] = await conn.query(
+      `SELECT id, quantity, deleted_at FROM products WHERE tenant_id=? AND id=? LIMIT 1 FOR UPDATE`,
+      [tenantId, id]
+    );
+    if (!p) {
+      await conn.rollback();
+      return res.status(404).json({ message: "Product not found" });
+    }
+    if (p.deleted_at) {
+      await conn.rollback();
+      return res.status(400).json({ message: "Cannot reconcile a deleted product. Restore it first." });
+    }
+
+    const desiredQty = Number(p.quantity || 0);
+    const movementBalance = await computeMovementBalance(conn, tenantId, id);
+
+    const driftBefore = desiredQty - movementBalance;
+    const absDrift = Math.abs(driftBefore);
+
+    if (absDrift === 0) {
+      await conn.commit();
+      return res.json({ ok: true, driftBefore: 0, adjustment: 0, message: "No reconcile needed" });
+    }
+
+    const type = driftBefore > 0 ? "IN" : "OUT";
+    const qty = absDrift;
+
+    await conn.query(
+      `
+      INSERT INTO stock_movements (tenant_id, product_id, type, quantity, reason, created_at)
+      VALUES (?, ?, ?, ?, ?, NOW())
+      `,
+      [tenantId, id, type, qty, `Reconcile: movements -> match product.quantity (${desiredQty})`]
+    );
+
+    await logAudit(req, {
+      action: "PRODUCT_STOCK_RECONCILE",
+      entity_type: "product",
+      entity_id: id,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      details: { driftBefore, adjustmentType: type, adjustmentQty: qty, desiredQty, movementBalance },
+    });
+
+    await conn.commit();
+
+    return res.json({ ok: true, driftBefore, adjustment: driftBefore });
+  } catch (e) {
+    await conn.rollback();
+    console.error("RECONCILE ERROR:", e);
+    return res.status(500).json({ message: "Database error" });
+  } finally {
+    conn.release();
+  }
+});
+
 
 /** =========================
  * ✅ Import rows endpoint used by your Products.jsx
@@ -584,6 +690,35 @@ router.put("/:id", requireRole("owner", "admin"), async (req, res) => {
         ]
       );
     }
+
+    // ✅ AUTO-RECONCILE: ensure movements sum matches products.quantity
+    // (useful if legacy data drift exists)
+    {
+      const [[p2]] = await conn.query(
+        `SELECT quantity, deleted_at FROM products WHERE tenant_id=? AND id=? LIMIT 1 FOR UPDATE`,
+        [tenantId, id]
+      );
+
+      if (!p2?.deleted_at) {
+        const desiredQty = Number(p2.quantity || 0);
+        const movementBalance = await computeMovementBalance(conn, tenantId, id);
+        const drift = desiredQty - movementBalance;
+
+        if (drift !== 0) {
+          const type = drift > 0 ? "IN" : "OUT";
+          const qty = Math.abs(drift);
+
+          await conn.query(
+            `
+            INSERT INTO stock_movements (tenant_id, product_id, type, quantity, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, NOW())
+            `,
+            [tenantId, id, type, qty, `Auto-reconcile on product edit (qty=${desiredQty})`]
+          );
+        }
+      }
+    }
+
 
     await conn.commit();
 

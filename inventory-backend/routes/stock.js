@@ -441,4 +441,79 @@ router.post("/reconcile", requireRole("owner", "admin"), async (req, res) => {
   }
 });
 
+// POST /api/stock/reconcile-all  (admin/owner)
+// Body: { minAbsDrift?: number }  // only reconcile if abs(drift) >= minAbsDrift
+router.post("/reconcile-all", requireRole("owner", "admin"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const minAbsDrift = Math.max(1, Number(req.body?.minAbsDrift || 1));
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [rows] = await conn.query(
+      `
+      SELECT
+        p.id,
+        COALESCE(p.quantity,0) AS quantity,
+        COALESCE(m.balance,0) AS balance,
+        (COALESCE(p.quantity,0) - COALESCE(m.balance,0)) AS drift
+      FROM products p
+      LEFT JOIN (
+        SELECT product_id, SUM(CASE WHEN type='IN' THEN quantity ELSE -quantity END) AS balance
+        FROM stock_movements
+        WHERE tenant_id=?
+        GROUP BY product_id
+      ) m ON m.product_id = p.id
+      WHERE p.tenant_id=?
+        AND p.deleted_at IS NULL
+      HAVING ABS(drift) >= ?
+      `,
+      [tenantId, tenantId, minAbsDrift]
+    );
+
+    let reconciled = 0;
+
+    for (const r of rows) {
+      const drift = Number(r.drift || 0);
+      if (!drift) continue;
+
+      await conn.query(
+        `
+        INSERT INTO stock_movements (tenant_id, product_id, type, quantity, reason, created_at)
+        VALUES (?, ?, ?, ?, ?, NOW())
+        `,
+        [
+          tenantId,
+          r.id,
+          drift > 0 ? "IN" : "OUT",
+          Math.abs(drift),
+          `Bulk reconcile (minAbsDrift=${minAbsDrift})`,
+        ]
+      );
+
+      reconciled++;
+    }
+
+    await logAudit(req, {
+      action: "TENANT_STOCK_RECONCILE_ALL",
+      entity_type: "tenant",
+      entity_id: tenantId,
+      user_id: req.user?.id ?? null,
+      user_email: req.user?.email ?? null,
+      details: { minAbsDrift, reconciled, candidates: rows.length },
+    });
+
+    await conn.commit();
+    return res.json({ ok: true, reconciled, candidates: rows.length });
+  } catch (e) {
+    await conn.rollback();
+    console.error("RECONCILE-ALL ERROR:", e);
+    return res.status(500).json({ message: "Database error" });
+  } finally {
+    conn.release();
+  }
+});
+
+
 export default router;

@@ -13,6 +13,10 @@ import {
   // ✅ NEW
   restoreProduct,
   hardDeleteProduct,
+  // ✅ RECONCILE
+  reconcileProductStock,
+  reconcileAllStock,
+  updateStockDriftThreshold,
 } from "../services/api";
 
 /* ============================
@@ -157,6 +161,25 @@ function isDeleted(p) {
   return Boolean(p?.deleted_at);
 }
 
+/* ============================
+   Drift helpers
+============================ */
+function getDrift(p) {
+  const d = Number(p?.drift ?? 0);
+  return Number.isFinite(d) ? d : 0;
+}
+function abs(n) {
+  return Math.abs(Number(n || 0));
+}
+function isReconRequired(p, driftThreshold) {
+  return abs(getDrift(p)) >= Number(driftThreshold || 5) && abs(getDrift(p)) > 0;
+}
+function isReconWarning(p, driftThreshold) {
+  const a = abs(getDrift(p));
+  const t = Number(driftThreshold || 5);
+  return a > 0 && a < t;
+}
+
 export default function Products({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = role === "admin" || role === "owner";
@@ -177,19 +200,26 @@ export default function Products({ user }) {
   const [editForm, setEditForm] = useState(null);
 
   const [confirmDelete, setConfirmDelete] = useState(null);
-
-  // ✅ NEW: permanent delete confirm modal (owner-only)
   const [confirmHardDelete, setConfirmHardDelete] = useState(null);
-
-  // ✅ NEW: Undo now restores a soft-deleted product (store id, not payload)
   const [undo, setUndo] = useState(null);
 
-  // ✅ NEW: View mode (Active / Deleted / All)
   const [viewMode, setViewMode] = useState("active"); // "active" | "deleted" | "all"
 
-  // ✅ tenant default low threshold (owner/admin can change)
+  // ✅ tenant default low threshold + drift threshold
   const [lowThreshold, setLowThreshold] = useState(10);
   const [savingThreshold, setSavingThreshold] = useState(false);
+
+  const [driftThreshold, setDriftThreshold] = useState(5);
+  const [savingDriftThreshold, setSavingDriftThreshold] = useState(false);
+
+  // ✅ UI: show only products needing reconcile
+  const [showReconOnly, setShowReconOnly] = useState(false);
+
+  // ✅ Bulk reconcile modal
+  const [reconModalOpen, setReconModalOpen] = useState(false);
+  const [bulkMinAbsDrift, setBulkMinAbsDrift] = useState("");
+  const [reconBusy, setReconBusy] = useState(false);
+  const [reconMsg, setReconMsg] = useState("");
 
   const [form, setForm] = useState({
     name: "",
@@ -323,8 +353,11 @@ export default function Products({ user }) {
         const s = await getSettings?.();
         const v = Number(s?.low_stock_threshold);
         if (Number.isFinite(v) && v > 0) setLowThreshold(v);
+
+        const d = Number(s?.stock_drift_threshold);
+        if (Number.isFinite(d) && d > 0) setDriftThreshold(d);
       } catch {
-        // keep default 10
+        // keep defaults
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -338,6 +371,7 @@ export default function Products({ user }) {
       const onlyDeleted = mode === "deleted";
       const includeDeleted = mode === "all";
 
+      // ✅ getProducts MUST support (search, options)
       const [p, c] = await Promise.all([
         getProducts(searchQuery, { onlyDeleted, includeDeleted }),
         getCategories(),
@@ -346,9 +380,10 @@ export default function Products({ user }) {
       const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
       const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
 
-      // For deleted/all views, do NOT urgency-sort (it’s weird for deleted rows)
       const finalList =
-        mode === "active" ? sortProductsUrgentFirst(list, lowThreshold) : [...list].sort((a, b) => b.id - a.id);
+        mode === "active"
+          ? sortProductsUrgentFirst(list, lowThreshold)
+          : [...list].sort((a, b) => b.id - a.id);
 
       setProducts(finalList);
       setCategories(cats);
@@ -377,7 +412,7 @@ export default function Products({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, viewMode]);
 
-  const anyBusy = loading || importing || savingId != null || savingThreshold;
+  const anyBusy = loading || importing || savingId != null || savingThreshold || savingDriftThreshold || reconBusy;
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -446,7 +481,6 @@ export default function Products({ user }) {
       setShake({});
       setError("");
 
-      // after create, bounce to active view
       if (viewMode !== "active") setViewMode("active");
       await loadAll(search, "active");
     } catch (e2) {
@@ -521,10 +555,8 @@ export default function Products({ user }) {
     try {
       await deleteProduct(p.id);
 
-      // remove from UI (active view)
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
 
-      // ✅ Undo now restores the deleted product (within 10s)
       const expiresAt = Date.now() + 10_000;
       setUndo({ id: p.id, expiresAt });
 
@@ -882,13 +914,90 @@ export default function Products({ user }) {
       const res = await updateLowStockThreshold?.(v);
       const saved = Number(res?.low_stock_threshold ?? v);
       setLowThreshold(Number.isFinite(saved) && saved > 0 ? saved : v);
-      if (viewMode === "active") setProducts((prev) => sortProductsUrgentFirst(prev, Number.isFinite(saved) ? saved : v));
+      if (viewMode === "active")
+        setProducts((prev) => sortProductsUrgentFirst(prev, Number.isFinite(saved) ? saved : v));
     } catch (e) {
       setError(e?.message || "Failed to save threshold");
     } finally {
       setSavingThreshold(false);
     }
   }
+
+  async function saveDriftThreshold() {
+    const v = Math.floor(Number(driftThreshold) || 5);
+    if (!Number.isFinite(v) || v < 1) return setError("Drift warning threshold must be >= 1");
+
+    setSavingDriftThreshold(true);
+    setError("");
+    try {
+      const res = await updateStockDriftThreshold?.(v);
+      const saved = Number(res?.stock_drift_threshold ?? v);
+      setDriftThreshold(Number.isFinite(saved) && saved > 0 ? saved : v);
+    } catch (e) {
+      setError(e?.message || "Failed to save drift threshold");
+    } finally {
+      setSavingDriftThreshold(false);
+    }
+  }
+
+  async function reconcileOne(p) {
+    if (!isAdmin) return;
+    setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
+    setSavingId(p.id);
+    setError("");
+    try {
+      await reconcileProductStock(p.id);
+      await loadAll(search, viewMode);
+    } catch (e) {
+      setRowErrors((prev) => ({ ...prev, [p.id]: e?.message || "Reconcile failed" }));
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  function openBulkReconModal() {
+    if (!isAdmin) return;
+    setReconMsg("");
+    setBulkMinAbsDrift(String(driftThreshold || 5));
+    setReconModalOpen(true);
+  }
+
+  async function runBulkReconcile() {
+    if (!isAdmin) return;
+    const vRaw = String(bulkMinAbsDrift || "").trim();
+    const v = vRaw === "" ? Number(driftThreshold || 5) : Math.floor(Number(vRaw));
+    if (!Number.isFinite(v) || v < 1) {
+      setReconMsg("Minimum absolute drift must be >= 1");
+      return;
+    }
+
+    setReconBusy(true);
+    setError("");
+    setReconMsg("");
+    try {
+      const r = await reconcileAllStock(v);
+      setReconMsg(`Reconciled ${Number(r?.reconciled || 0)} product(s).`);
+      await loadAll(search, viewMode);
+      window.setTimeout(() => {
+        setReconModalOpen(false);
+      }, 900);
+    } catch (e) {
+      setReconMsg(e?.message || "Bulk reconcile failed");
+    } finally {
+      setReconBusy(false);
+    }
+  }
+
+  // ✅ Derived UI counts
+  const activeDriftCount = useMemo(() => {
+    if (viewMode !== "active") return 0;
+    return products.filter((p) => !isDeleted(p) && isReconRequired(p, driftThreshold)).length;
+  }, [products, viewMode, driftThreshold]);
+
+  const filteredProducts = useMemo(() => {
+    if (!showReconOnly || viewMode !== "active") return products;
+    return products.filter((p) => !isDeleted(p) && isReconRequired(p, driftThreshold));
+  }, [products, showReconOnly, viewMode, driftThreshold]);
 
   return (
     <div className="products-page">
@@ -927,6 +1036,25 @@ export default function Products({ user }) {
             </label>
           )}
 
+          {/* ✅ Bulk reconcile button */}
+          {isAdmin && viewMode === "active" && (
+            <button
+              className="btn"
+              onClick={openBulkReconModal}
+              disabled={anyBusy}
+              title="Create stock movement adjustments so movements match product.quantity"
+              style={{
+                borderRadius: 999,
+                fontWeight: 900,
+                border:
+                  activeDriftCount > 0 ? "2px solid #991b1b" : "1px solid rgba(17,24,39,.12)",
+              }}
+            >
+              Reconcile stock
+              {activeDriftCount > 0 ? ` (${activeDriftCount})` : ""}
+            </button>
+          )}
+
           {undo && Date.now() < undo.expiresAt && (
             <button className="btn" onClick={undoDelete} disabled={anyBusy}>
               Undo delete
@@ -936,7 +1064,7 @@ export default function Products({ user }) {
       </div>
 
       {/* ✅ View mode tabs */}
-      <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
         {[
           { key: "active", label: "Active" },
           { key: "deleted", label: "Deleted" },
@@ -951,6 +1079,7 @@ export default function Products({ user }) {
               setEditingId(null);
               setEditForm(null);
               setRowErrors({});
+              setShowReconOnly(false);
               setViewMode(t.key);
             }}
             style={{
@@ -964,6 +1093,31 @@ export default function Products({ user }) {
             {t.label}
           </button>
         ))}
+
+        {/* ✅ reconcile-only toggle */}
+        {viewMode === "active" && (
+          <label
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              fontSize: 12,
+              color: "#374151",
+              marginLeft: 4,
+              userSelect: "none",
+            }}
+            title="Show only products that require reconcile"
+          >
+            <input
+              type="checkbox"
+              checked={showReconOnly}
+              onChange={(e) => setShowReconOnly(e.target.checked)}
+              disabled={anyBusy}
+            />
+            Show reconcile required ({activeDriftCount})
+          </label>
+        )}
+
         {viewMode !== "active" && (
           <div style={{ fontSize: 12, color: "#6b7280", alignSelf: "center" }}>
             Tip: Restore or permanently delete from this view.
@@ -975,25 +1129,71 @@ export default function Products({ user }) {
       {error && <p style={{ color: "red" }}>{error}</p>}
       {importMsg && <p style={{ color: "green" }}>{importMsg}</p>}
 
-      {/* ✅ Low stock threshold control */}
+      {/* ✅ reconcile required banner */}
+      {viewMode === "active" && activeDriftCount > 0 && (
+        <div
+          className="card"
+          style={{
+            marginTop: 12,
+            background: "#fff1f2",
+            border: "1px solid #fecaca",
+            color: "#991b1b",
+          }}
+        >
+          <div style={{ fontWeight: 900 }}>Reconcile required</div>
+          <div style={{ marginTop: 6, fontSize: 12, color: "#7f1d1d" }}>
+            {activeDriftCount} product(s) have drift ≥ {driftThreshold}. Use{" "}
+            <b>Reconcile stock</b> or reconcile per-row.
+          </div>
+        </div>
+      )}
+
+      {/* ✅ Low stock threshold + drift threshold control */}
       {isAdmin && (
         <div className="card" style={{ marginTop: 12, background: "#f9fafb" }}>
-          <div style={{ fontWeight: 900, marginBottom: 8 }}>Low stock threshold</div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              className="input"
-              type="number"
-              min={1}
-              value={lowThreshold}
-              onChange={(e) => setLowThreshold(Number(e.target.value) || 10)}
-              style={{ width: 160 }}
-              disabled={anyBusy}
-            />
-            <button className="btn" type="button" onClick={saveThreshold} disabled={anyBusy}>
-              {savingThreshold ? "Saving..." : "Save"}
-            </button>
-            <div style={{ fontSize: 12, color: "#6b7280" }}>
-              Used when a product’s Reorder level is blank/0.
+          <div style={{ fontWeight: 900, marginBottom: 8 }}>Inventory thresholds</div>
+
+          <div style={{ display: "flex", gap: 18, alignItems: "flex-end", flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Low stock threshold</div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  value={lowThreshold}
+                  onChange={(e) => setLowThreshold(Number(e.target.value) || 10)}
+                  style={{ width: 160 }}
+                  disabled={anyBusy}
+                />
+                <button className="btn" type="button" onClick={saveThreshold} disabled={anyBusy}>
+                  {savingThreshold ? "Saving..." : "Save"}
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+                Used when a product’s Reorder level is blank/0.
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Reconcile warning threshold</div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  value={driftThreshold}
+                  onChange={(e) => setDriftThreshold(Number(e.target.value) || 5)}
+                  style={{ width: 160 }}
+                  disabled={anyBusy}
+                />
+                <button className="btn" type="button" onClick={saveDriftThreshold} disabled={anyBusy}>
+                  {savingDriftThreshold ? "Saving..." : "Save"}
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+                Drift ≥ this value shows <b>RECONCILE REQUIRED</b>.
+              </div>
             </div>
           </div>
         </div>
@@ -1106,7 +1306,11 @@ export default function Products({ user }) {
               <div style={{ marginTop: 10 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>Preview (first {previewCount} rows)</div>
                 <div className="products-tableWrap">
-                  <table border="1" cellPadding="8" style={{ width: "100%", borderCollapse: "collapse", background: "#fff" }}>
+                  <table
+                    border="1"
+                    cellPadding="8"
+                    style={{ width: "100%", borderCollapse: "collapse", background: "#fff" }}
+                  >
                     <thead style={{ background: "#f3f4f6" }}>
                       <tr>
                         <th>Line</th>
@@ -1148,7 +1352,9 @@ export default function Products({ user }) {
 
               {validation.issues.length > 0 && (
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#b45309" }}>Validation issues (first 10)</div>
+                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#b45309" }}>
+                    Validation issues (first 10)
+                  </div>
                   <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#92400e" }}>
                     {validation.issues.slice(0, 10).map((x, i) => (
                       <li key={i}>
@@ -1161,7 +1367,9 @@ export default function Products({ user }) {
 
               {importErrors.length > 0 && (
                 <div style={{ marginTop: 10 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#991b1b" }}>Import errors (first 10)</div>
+                  <div style={{ fontWeight: 700, marginBottom: 6, color: "#991b1b" }}>
+                    Import errors (first 10)
+                  </div>
                   <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#991b1b" }}>
                     {importErrors.slice(0, 10).map((x, i) => (
                       <li key={i}>
@@ -1447,6 +1655,46 @@ export default function Products({ user }) {
         </div>
       )}
 
+      {/* ✅ Bulk reconcile modal */}
+      {reconModalOpen && (
+        <div style={overlayStyle} onMouseDown={() => (reconBusy ? null : setReconModalOpen(false))}>
+          <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
+            <h2 style={{ margin: "0 0 8px" }}>Reconcile stock (bulk)</h2>
+            <p style={{ marginTop: 0, color: "#374151" }}>
+              This will create adjustment movements so <b>stock_movements</b> matches <b>products.quantity</b>.
+            </p>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ fontSize: 12, fontWeight: 800 }}>Minimum abs drift</div>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                value={bulkMinAbsDrift}
+                onChange={(e) => setBulkMinAbsDrift(e.target.value)}
+                disabled={reconBusy}
+                style={{ width: 180 }}
+                placeholder={`${driftThreshold}`}
+              />
+              <div style={{ fontSize: 12, color: "#6b7280" }}>
+                Leave as {driftThreshold} to match your warning threshold.
+              </div>
+            </div>
+
+            {reconMsg && <div style={{ marginTop: 10, fontSize: 12, color: "#111827" }}>{reconMsg}</div>}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 14 }}>
+              <button className="btn" onClick={() => setReconModalOpen(false)} disabled={reconBusy}>
+                Cancel
+              </button>
+              <button className="btn" onClick={runBulkReconcile} disabled={reconBusy}>
+                {reconBusy ? "Reconciling..." : "Run reconcile"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="products-tableWrap" style={{ marginTop: 14 }}>
         <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead style={{ background: "#f3f4f6" }}>
@@ -1464,7 +1712,7 @@ export default function Products({ user }) {
           </thead>
 
           <tbody>
-            {products.map((p) => {
+            {filteredProducts.map((p) => {
               const deleted = isDeleted(p);
               const isEditing = editingId === p.id;
               const isSaving = savingId === p.id;
@@ -1472,6 +1720,10 @@ export default function Products({ user }) {
 
               const threshold = getThresholdForProduct(p, lowThreshold);
               const low = !deleted && viewMode === "active" ? isLowStock(p, lowThreshold) : false;
+
+              const drift = getDrift(p);
+              const reconReq = !deleted && viewMode === "active" ? isReconRequired(p, driftThreshold) : false;
+              const reconWarn = !deleted && viewMode === "active" ? isReconWarning(p, driftThreshold) : false;
 
               return (
                 <tr key={p.id} style={deleted ? { opacity: 0.75 } : undefined}>
@@ -1486,6 +1738,7 @@ export default function Products({ user }) {
                     ) : (
                       <>
                         {p.name}
+
                         {deleted && (
                           <span
                             style={{
@@ -1504,6 +1757,7 @@ export default function Products({ user }) {
                             DELETED
                           </span>
                         )}
+
                         {low && (
                           <span
                             style={{
@@ -1520,6 +1774,45 @@ export default function Products({ user }) {
                             title={`LOW: qty ${Number(p?.quantity ?? 0)} ≤ threshold ${threshold}`}
                           >
                             LOW
+                          </span>
+                        )}
+
+                        {/* ✅ Drift badges */}
+                        {!deleted && viewMode === "active" && reconReq && (
+                          <span
+                            style={{
+                              marginLeft: 8,
+                              padding: "2px 8px",
+                              borderRadius: 999,
+                              fontSize: 11,
+                              fontWeight: 900,
+                              background: "#fff1f2",
+                              color: "#991b1b",
+                              border: "1px solid #fecaca",
+                              verticalAlign: "middle",
+                            }}
+                            title={`RECONCILE REQUIRED: drift ${drift} (>= ${driftThreshold}). Drift = products.quantity - movement_balance.`}
+                          >
+                            RECONCILE REQUIRED
+                          </span>
+                        )}
+
+                        {!deleted && viewMode === "active" && !reconReq && reconWarn && (
+                          <span
+                            style={{
+                              marginLeft: 8,
+                              padding: "2px 8px",
+                              borderRadius: 999,
+                              fontSize: 11,
+                              fontWeight: 900,
+                              background: "#fffbeb",
+                              color: "#92400e",
+                              border: "1px solid #fde68a",
+                              verticalAlign: "middle",
+                            }}
+                            title={`Drift detected: ${drift}. Threshold is ${driftThreshold}.`}
+                          >
+                            DRIFT
                           </span>
                         )}
                       </>
@@ -1583,35 +1876,48 @@ export default function Products({ user }) {
                         disabled={isSaving}
                       />
                     ) : (
-                      p.quantity
+                      <>
+                        {p.quantity}
+                        {/* show drift hint */}
+                        {!deleted && viewMode === "active" && abs(drift) > 0 && (
+                          <div style={{ fontSize: 11, color: reconReq ? "#991b1b" : "#92400e", marginTop: 4 }}>
+                            drift: {drift > 0 ? "+" : ""}
+                            {drift}
+                          </div>
+                        )}
+                      </>
                     )}
                   </td>
 
-                  <td>{isEditing ? (
-                    <input
-                      className="input"
-                      type="number"
-                      inputMode="decimal"
-                      value={editForm?.cost_price ?? ""}
-                      onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))}
-                      disabled={isSaving}
-                    />
-                  ) : (
-                    p.cost_price
-                  )}</td>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        type="number"
+                        inputMode="decimal"
+                        value={editForm?.cost_price ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))}
+                        disabled={isSaving}
+                      />
+                    ) : (
+                      p.cost_price
+                    )}
+                  </td>
 
-                  <td>{isEditing ? (
-                    <input
-                      className="input"
-                      type="number"
-                      inputMode="decimal"
-                      value={editForm?.selling_price ?? ""}
-                      onChange={(e) => setEditForm((f) => ({ ...f, selling_price: e.target.value }))}
-                      disabled={isSaving}
-                    />
-                  ) : (
-                    p.selling_price
-                  )}</td>
+                  <td>
+                    {isEditing ? (
+                      <input
+                        className="input"
+                        type="number"
+                        inputMode="decimal"
+                        value={editForm?.selling_price ?? ""}
+                        onChange={(e) => setEditForm((f) => ({ ...f, selling_price: e.target.value }))}
+                        disabled={isSaving}
+                      />
+                    ) : (
+                      p.selling_price
+                    )}
+                  </td>
 
                   <td>
                     {isEditing ? (
@@ -1625,13 +1931,15 @@ export default function Products({ user }) {
                         placeholder={`0 = default ${lowThreshold}`}
                         title={`Set 0 to use tenant default (${lowThreshold})`}
                       />
+                    ) : Number(p.reorder_level || 0) > 0 ? (
+                      p.reorder_level
                     ) : (
-                      Number(p.reorder_level || 0) > 0 ? p.reorder_level : <span title={`Using default ${lowThreshold}`}>0*</span>
+                      <span title={`Using default ${lowThreshold}`}>0*</span>
                     )}
                   </td>
 
                   {isAdmin && (
-                    <td style={{ minWidth: 280 }}>
+                    <td style={{ minWidth: 320 }}>
                       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                         {/* Active rows (admin/owner) */}
                         {!deleted ? (
@@ -1654,6 +1962,23 @@ export default function Products({ user }) {
                             <button className="btn" onClick={() => askDelete(p)} disabled={anyBusy || isEditing}>
                               Delete
                             </button>
+
+                            {/* ✅ reconcile per row */}
+                            {viewMode === "active" && abs(drift) > 0 && (
+                              <button
+                                className="btn"
+                                onClick={() => reconcileOne(p)}
+                                disabled={anyBusy || isEditing}
+                                title="Create adjustment movement so movements match products.quantity"
+                                style={{
+                                  borderRadius: 999,
+                                  border: reconReq ? "2px solid #991b1b" : "1px solid rgba(17,24,39,.12)",
+                                  fontWeight: 900,
+                                }}
+                              >
+                                Reconcile
+                              </button>
+                            )}
                           </>
                         ) : (
                           <>
@@ -1686,7 +2011,7 @@ export default function Products({ user }) {
               );
             })}
 
-            {!loading && products.length === 0 && (
+            {!loading && filteredProducts.length === 0 && (
               <tr>
                 <td colSpan={isAdmin ? 9 : 8} style={{ textAlign: "center" }}>
                   No products found

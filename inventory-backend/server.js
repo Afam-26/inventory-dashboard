@@ -29,7 +29,6 @@ import tenantsRouter from "./routes/tenants.js";
 import healthRoutes from "./routes/health.js";
 import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
 import invitesRouter from "./routes/invites.js";
-import billingRoutes from "./routes/billing.js";
 import billingRouter, { billingWebhookHandler } from "./routes/billing.js";
 import publicRoutes from "./routes/public.js";
 import settingsRoutes from "./routes/settings.js";
@@ -118,6 +117,13 @@ const apiLimiter = rateLimit({
 });
 app.use("/api", apiLimiter);
 
+// Stripe webhook must be raw BEFORE json parser for this route
+app.post(
+  "/api/billing/stripe/webhook",
+  express.raw({ type: "application/json" }),
+  billingWebhookHandler
+);
+
 /**
  * Health
  */
@@ -136,19 +142,9 @@ app.use("/api/users", usersRoutes);
 app.use("/api/tenants", tenantsRouter);
 app.use("/api/health", healthRoutes);
 app.use("/api/invites", invitesRouter);
-app.use("/api/billing", billingRoutes);
 app.use("/api/public", publicRoutes);
 app.use("/api/settings", settingsRoutes);
 
-// Normal JSON for everything else:
-app.use(express.json());
-
-// Stripe webhook must be raw BEFORE json parser for this route
-app.post(
-  "/api/billing/stripe/webhook",
-  express.raw({ type: "application/json" }),
-  billingWebhookHandler
-);
 
 // server.js (or your routes file)
 app.post("/api/public/request-access", async (req, res) => {

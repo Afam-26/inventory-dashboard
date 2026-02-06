@@ -5,13 +5,14 @@ import {
   addProduct,
   getCategories,
   updateProduct,
-  deleteProduct, // ✅ now SOFT delete
-  restoreProduct, // ✅ add this in api.js
+  deleteProduct,
   downloadProductsCsv,
   importProductsRows,
-  // ✅ add these in api.js
   getSettings,
   updateLowStockThreshold,
+  // ✅ NEW
+  restoreProduct,
+  hardDeleteProduct,
 } from "../services/api";
 
 /* ============================
@@ -119,8 +120,6 @@ function guessMapping(headers) {
 
 /* ============================
    LOW stock + urgency sorting
-   - If product.reorder_level > 0 => use it
-   - Else => use tenant default threshold
 ============================ */
 function getThresholdForProduct(p, tenantDefault = 10) {
   const r = Number(p?.reorder_level ?? 0);
@@ -128,14 +127,12 @@ function getThresholdForProduct(p, tenantDefault = 10) {
 }
 
 function isLowStock(p, tenantDefault = 10) {
-  if (p?.deleted_at) return false; // ✅ deleted shouldn't show low stock urgency
   const qty = Number(p?.quantity ?? 0);
   const threshold = getThresholdForProduct(p, tenantDefault);
   return qty <= threshold;
 }
 
 function urgencyScore(p, tenantDefault = 10) {
-  // smaller = more urgent
   const qty = Number(p?.quantity ?? 0);
   const threshold = getThresholdForProduct(p, tenantDefault);
   return qty - threshold;
@@ -143,31 +140,27 @@ function urgencyScore(p, tenantDefault = 10) {
 
 function sortProductsUrgentFirst(list, tenantDefault = 10) {
   return [...list].sort((a, b) => {
-    const aDel = a?.deleted_at ? 1 : 0;
-    const bDel = b?.deleted_at ? 1 : 0;
-
-    // ✅ deleted always last
-    if (aDel !== bDel) return aDel - bDel;
-
     const aLow = isLowStock(a, tenantDefault) ? 1 : 0;
     const bLow = isLowStock(b, tenantDefault) ? 1 : 0;
 
-    // LOW first
     if (aLow !== bLow) return bLow - aLow;
 
-    // then most urgent first
     const au = urgencyScore(a, tenantDefault);
     const bu = urgencyScore(b, tenantDefault);
     if (au !== bu) return au - bu;
 
-    // then alphabetical
     return String(a.name || "").localeCompare(String(b.name || ""));
   });
+}
+
+function isDeleted(p) {
+  return Boolean(p?.deleted_at);
 }
 
 export default function Products({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
   const isAdmin = role === "admin" || role === "owner";
+  const isOwner = role === "owner";
 
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -185,13 +178,16 @@ export default function Products({ user }) {
 
   const [confirmDelete, setConfirmDelete] = useState(null);
 
-  // ✅ SOFT delete undo (restore)
+  // ✅ NEW: permanent delete confirm modal (owner-only)
+  const [confirmHardDelete, setConfirmHardDelete] = useState(null);
+
+  // ✅ NEW: Undo now restores a soft-deleted product (store id, not payload)
   const [undo, setUndo] = useState(null);
 
-  // ✅ show deleted toggle
-  const [showDeleted, setShowDeleted] = useState(false);
+  // ✅ NEW: View mode (Active / Deleted / All)
+  const [viewMode, setViewMode] = useState("active"); // "active" | "deleted" | "all"
 
-  // ✅ tenant default low threshold (owner can change)
+  // ✅ tenant default low threshold (owner/admin can change)
   const [lowThreshold, setLowThreshold] = useState(10);
   const [savingThreshold, setSavingThreshold] = useState(false);
 
@@ -203,7 +199,7 @@ export default function Products({ user }) {
     quantity: "",
     cost_price: "",
     selling_price: "",
-    reorder_level: "", // optional now
+    reorder_level: "",
   });
 
   /* ============================
@@ -334,25 +330,27 @@ export default function Products({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ wrapper: getProducts supports NEW signature:
-  // getProducts({ q, includeDeleted, onlyDeleted })
-  async function fetchProducts(searchQuery = "") {
-    const q = String(searchQuery || "").trim();
-    const res = await getProducts({ q, includeDeleted: showDeleted, onlyDeleted: false });
-    return res;
-  }
-
-  async function loadAll(searchQuery = "") {
+  async function loadAll(searchQuery = "", mode = viewMode) {
     setLoading(true);
     setError("");
 
     try {
-      const [p, c] = await Promise.all([fetchProducts(searchQuery), getCategories()]);
+      const onlyDeleted = mode === "deleted";
+      const includeDeleted = mode === "all";
+
+      const [p, c] = await Promise.all([
+        getProducts(searchQuery, { onlyDeleted, includeDeleted }),
+        getCategories(),
+      ]);
 
       const list = Array.isArray(p?.products) ? p.products : Array.isArray(p) ? p : [];
-      setProducts(sortProductsUrgentFirst(list, lowThreshold));
-
       const cats = Array.isArray(c?.categories) ? c.categories : Array.isArray(c) ? c : [];
+
+      // For deleted/all views, do NOT urgency-sort (it’s weird for deleted rows)
+      const finalList =
+        mode === "active" ? sortProductsUrgentFirst(list, lowThreshold) : [...list].sort((a, b) => b.id - a.id);
+
+      setProducts(finalList);
       setCategories(cats);
     } catch (e2) {
       setError(e2?.message || "Failed to load");
@@ -362,22 +360,22 @@ export default function Products({ user }) {
   }
 
   useEffect(() => {
-    loadAll("");
+    loadAll("", viewMode);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [viewMode]);
 
-  // ✅ if threshold changes, re-sort current list immediately
+  // ✅ if threshold changes, re-sort current list immediately (active view only)
   useEffect(() => {
+    if (viewMode !== "active") return;
     setProducts((prev) => sortProductsUrgentFirst(prev, lowThreshold));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lowThreshold]);
+  }, [lowThreshold, viewMode]);
 
-  // ✅ reload when search OR showDeleted changes
   useEffect(() => {
-    const t = window.setTimeout(() => loadAll(search), 250);
+    const t = window.setTimeout(() => loadAll(search, viewMode), 250);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, showDeleted]);
+  }, [search, viewMode]);
 
   const anyBusy = loading || importing || savingId != null || savingThreshold;
 
@@ -429,7 +427,7 @@ export default function Products({ user }) {
         quantity: Number(form.quantity) || 0,
         cost_price: Number(form.cost_price) || 0,
         selling_price: Number(form.selling_price) || 0,
-        // ✅ if blank -> 0 => uses tenant default threshold
+        // ✅ blank -> 0 (uses tenant default threshold)
         reorder_level: Number(form.reorder_level) || 0,
       });
 
@@ -441,14 +439,16 @@ export default function Products({ user }) {
         quantity: "",
         cost_price: "",
         selling_price: "",
-        reorder_level: "", // keep optional
+        reorder_level: "",
       });
 
       setFieldErrors({});
       setShake({});
       setError("");
 
-      await loadAll(search);
+      // after create, bounce to active view
+      if (viewMode !== "active") setViewMode("active");
+      await loadAll(search, "active");
     } catch (e2) {
       setError(e2?.message || "Create failed");
     }
@@ -491,12 +491,11 @@ export default function Products({ user }) {
         quantity: Number(editForm.quantity) || 0,
         cost_price: Number(editForm.cost_price) || 0,
         selling_price: Number(editForm.selling_price) || 0,
-        // ✅ allow 0 => uses tenant default
         reorder_level: Number(editForm.reorder_level) || 0,
       };
 
       await updateProduct(id, payload);
-      await loadAll(search);
+      await loadAll(search, viewMode);
       cancelEdit();
     } catch (e2) {
       setRowErrors((prev) => ({ ...prev, [id]: e2?.message || "Update failed" }));
@@ -520,15 +519,14 @@ export default function Products({ user }) {
     setError("");
 
     try {
-      // ✅ SOFT delete
       await deleteProduct(p.id);
 
-      // remove from UI if not showing deleted
-      if (!showDeleted) setProducts((prev) => prev.filter((x) => x.id !== p.id));
-      else setProducts((prev) => prev.map((x) => (x.id === p.id ? { ...x, deleted_at: new Date().toISOString() } : x)));
+      // remove from UI (active view)
+      setProducts((prev) => prev.filter((x) => x.id !== p.id));
 
+      // ✅ Undo now restores the deleted product (within 10s)
       const expiresAt = Date.now() + 10_000;
-      setUndo({ id: p.id, name: p.name, expiresAt });
+      setUndo({ id: p.id, expiresAt });
 
       window.setTimeout(() => {
         setUndo((u) => {
@@ -544,27 +542,48 @@ export default function Products({ user }) {
   }
 
   async function undoDelete() {
-    if (!undo) return;
+    if (!undo?.id) return;
     setError("");
-    setSavingId(undo.id);
     try {
       await restoreProduct(undo.id);
       setUndo(null);
-      await loadAll(search);
+      await loadAll(search, viewMode);
     } catch (e2) {
       setError(e2?.message || "Undo failed");
+    }
+  }
+
+  function askHardDelete(p) {
+    setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
+    setConfirmHardDelete(p);
+  }
+
+  async function confirmHardDeleteNow() {
+    if (!confirmHardDelete) return;
+    const p = confirmHardDelete;
+
+    setConfirmHardDelete(null);
+    setSavingId(p.id);
+    setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
+    setError("");
+
+    try {
+      await hardDeleteProduct(p.id);
+      setProducts((prev) => prev.filter((x) => x.id !== p.id));
+    } catch (e2) {
+      setRowErrors((prev) => ({ ...prev, [p.id]: e2?.message || "Permanent delete failed" }));
     } finally {
       setSavingId(null);
     }
   }
 
   async function handleRestore(p) {
-    setError("");
     setSavingId(p.id);
     setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
+    setError("");
     try {
       await restoreProduct(p.id);
-      await loadAll(search);
+      await loadAll(search, viewMode);
     } catch (e2) {
       setRowErrors((prev) => ({ ...prev, [p.id]: e2?.message || "Restore failed" }));
     } finally {
@@ -800,7 +819,8 @@ export default function Products({ user }) {
           (allErrs.length ? ` (errors: ${allErrs.length})` : "")
       );
 
-      await loadAll(search);
+      if (viewMode !== "active") setViewMode("active");
+      await loadAll(search, "active");
 
       window.setTimeout(() => {
         setImportMsg("");
@@ -862,8 +882,7 @@ export default function Products({ user }) {
       const res = await updateLowStockThreshold?.(v);
       const saved = Number(res?.low_stock_threshold ?? v);
       setLowThreshold(Number.isFinite(saved) && saved > 0 ? saved : v);
-      // re-sort immediately
-      setProducts((prev) => sortProductsUrgentFirst(prev, Number.isFinite(saved) ? saved : v));
+      if (viewMode === "active") setProducts((prev) => sortProductsUrgentFirst(prev, Number.isFinite(saved) ? saved : v));
     } catch (e) {
       setError(e?.message || "Failed to save threshold");
     } finally {
@@ -887,17 +906,6 @@ export default function Products({ user }) {
             onChange={(e) => setSearch(e.target.value)}
             disabled={anyBusy}
           />
-
-          {/* ✅ show deleted toggle */}
-          <label className="products-check" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={showDeleted}
-              onChange={(e) => setShowDeleted(e.target.checked)}
-              disabled={anyBusy}
-            />
-            Show deleted
-          </label>
 
           <button className="btn" onClick={handleExportCsv} disabled={anyBusy}>
             Export CSV
@@ -925,6 +933,42 @@ export default function Products({ user }) {
             </button>
           )}
         </div>
+      </div>
+
+      {/* ✅ View mode tabs */}
+      <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+        {[
+          { key: "active", label: "Active" },
+          { key: "deleted", label: "Deleted" },
+          { key: "all", label: "All" },
+        ].map((t) => (
+          <button
+            key={t.key}
+            className="btn"
+            type="button"
+            disabled={anyBusy}
+            onClick={() => {
+              setEditingId(null);
+              setEditForm(null);
+              setRowErrors({});
+              setViewMode(t.key);
+            }}
+            style={{
+              borderRadius: 999,
+              fontWeight: 900,
+              opacity: viewMode === t.key ? 1 : 0.7,
+              outline: viewMode === t.key ? "2px solid #111827" : "none",
+            }}
+            title={t.key === "deleted" ? "Show soft-deleted products" : t.key === "all" ? "Show active + deleted" : ""}
+          >
+            {t.label}
+          </button>
+        ))}
+        {viewMode !== "active" && (
+          <div style={{ fontSize: 12, color: "#6b7280", alignSelf: "center" }}>
+            Tip: Restore or permanently delete from this view.
+          </div>
+        )}
       </div>
 
       <br />
@@ -1012,7 +1056,6 @@ export default function Products({ user }) {
             </div>
           )}
 
-          {/* (rest of your CSV UI unchanged) */}
           {csvHeaders.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>Column Mapping</div>
@@ -1328,14 +1371,12 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* Delete confirm modal */}
+      {/* Soft Delete confirm modal */}
       {confirmDelete && (
         <div style={overlayStyle} onMouseDown={() => (savingId ? null : setConfirmDelete(null))}>
           <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
             <h2 style={{ margin: "0 0 8px" }}>Delete product?</h2>
-            <p style={{ marginTop: 0, color: "#374151" }}>
-              This will move the product to <b>Deleted</b> (soft delete). You can restore it later.
-            </p>
+            <p style={{ marginTop: 0, color: "#374151" }}>This will hide the product (soft delete):</p>
 
             <div
               style={{
@@ -1367,6 +1408,45 @@ export default function Products({ user }) {
         </div>
       )}
 
+      {/* Hard Delete confirm modal (OWNER only) */}
+      {confirmHardDelete && (
+        <div style={overlayStyle} onMouseDown={() => (savingId ? null : setConfirmHardDelete(null))}>
+          <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
+            <h2 style={{ margin: "0 0 8px", color: "#991b1b" }}>Permanently delete?</h2>
+            <p style={{ marginTop: 0, color: "#374151" }}>
+              This is <b>permanent</b>. If the product has stock movement history, the server may block this.
+            </p>
+
+            <div
+              style={{
+                border: "1px solid #fecaca",
+                borderRadius: 12,
+                padding: 12,
+                background: "#fff1f2",
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ fontWeight: 800 }}>{confirmHardDelete.name}</div>
+              <div style={{ color: "#6b7280" }}>SKU: {confirmHardDelete.sku || "-"}</div>
+              <div style={{ color: "#6b7280" }}>Barcode: {confirmHardDelete.barcode || "-"}</div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button className="btn" onClick={() => setConfirmHardDelete(null)} disabled={savingId != null}>
+                Cancel
+              </button>
+              <button className="btn" onClick={confirmHardDeleteNow} disabled={savingId != null}>
+                {savingId === confirmHardDelete.id ? "Deleting..." : "Yes, delete permanently"}
+              </button>
+            </div>
+
+            {rowErrors[confirmHardDelete.id] ? (
+              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmHardDelete.id]}</div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       <div className="products-tableWrap" style={{ marginTop: 14 }}>
         <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead style={{ background: "#f3f4f6" }}>
@@ -1385,16 +1465,16 @@ export default function Products({ user }) {
 
           <tbody>
             {products.map((p) => {
+              const deleted = isDeleted(p);
               const isEditing = editingId === p.id;
               const isSaving = savingId === p.id;
               const inlineErr = rowErrors[p.id];
 
               const threshold = getThresholdForProduct(p, lowThreshold);
-              const low = isLowStock(p, lowThreshold);
-              const isDeleted = Boolean(p?.deleted_at);
+              const low = !deleted && viewMode === "active" ? isLowStock(p, lowThreshold) : false;
 
               return (
-                <tr key={p.id} style={isDeleted ? { opacity: 0.65 } : undefined}>
+                <tr key={p.id} style={deleted ? { opacity: 0.75 } : undefined}>
                   <td>
                     {isEditing ? (
                       <input
@@ -1406,14 +1486,14 @@ export default function Products({ user }) {
                     ) : (
                       <>
                         {p.name}
-                        {isDeleted && (
+                        {deleted && (
                           <span
                             style={{
                               marginLeft: 8,
                               padding: "2px 8px",
                               borderRadius: 999,
                               fontSize: 11,
-                              fontWeight: 800,
+                              fontWeight: 900,
                               background: "#e5e7eb",
                               color: "#111827",
                               border: "1px solid #d1d5db",
@@ -1424,7 +1504,7 @@ export default function Products({ user }) {
                             DELETED
                           </span>
                         )}
-                        {!isDeleted && low && (
+                        {low && (
                           <span
                             style={{
                               marginLeft: 8,
@@ -1507,35 +1587,31 @@ export default function Products({ user }) {
                     )}
                   </td>
 
-                  <td>
-                    {isEditing ? (
-                      <input
-                        className="input"
-                        type="number"
-                        inputMode="decimal"
-                        value={editForm?.cost_price ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))}
-                        disabled={isSaving}
-                      />
-                    ) : (
-                      p.cost_price
-                    )}
-                  </td>
+                  <td>{isEditing ? (
+                    <input
+                      className="input"
+                      type="number"
+                      inputMode="decimal"
+                      value={editForm?.cost_price ?? ""}
+                      onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))}
+                      disabled={isSaving}
+                    />
+                  ) : (
+                    p.cost_price
+                  )}</td>
 
-                  <td>
-                    {isEditing ? (
-                      <input
-                        className="input"
-                        type="number"
-                        inputMode="decimal"
-                        value={editForm?.selling_price ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, selling_price: e.target.value }))}
-                        disabled={isSaving}
-                      />
-                    ) : (
-                      p.selling_price
-                    )}
-                  </td>
+                  <td>{isEditing ? (
+                    <input
+                      className="input"
+                      type="number"
+                      inputMode="decimal"
+                      value={editForm?.selling_price ?? ""}
+                      onChange={(e) => setEditForm((f) => ({ ...f, selling_price: e.target.value }))}
+                      disabled={isSaving}
+                    />
+                  ) : (
+                    p.selling_price
+                  )}</td>
 
                   <td>
                     {isEditing ? (
@@ -1549,41 +1625,55 @@ export default function Products({ user }) {
                         placeholder={`0 = default ${lowThreshold}`}
                         title={`Set 0 to use tenant default (${lowThreshold})`}
                       />
-                    ) : Number(p.reorder_level || 0) > 0 ? (
-                      p.reorder_level
                     ) : (
-                      <span title={`Using default ${lowThreshold}`}>0*</span>
+                      Number(p.reorder_level || 0) > 0 ? p.reorder_level : <span title={`Using default ${lowThreshold}`}>0*</span>
                     )}
                   </td>
 
                   {isAdmin && (
-                    <td style={{ minWidth: 260 }}>
+                    <td style={{ minWidth: 280 }}>
                       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                        {!isDeleted && !isEditing ? (
-                          <button className="btn" onClick={() => startEdit(p)} disabled={anyBusy}>
-                            Edit
-                          </button>
-                        ) : null}
-
-                        {!isDeleted && isEditing ? (
+                        {/* Active rows (admin/owner) */}
+                        {!deleted ? (
                           <>
-                            <button className="btn" onClick={() => saveEdit(p.id)} disabled={isSaving}>
-                              {isSaving ? "Saving..." : "Save"}
-                            </button>
-                            <button className="btn" onClick={cancelEdit} disabled={isSaving}>
-                              Cancel
+                            {!isEditing ? (
+                              <button className="btn" onClick={() => startEdit(p)} disabled={anyBusy}>
+                                Edit
+                              </button>
+                            ) : (
+                              <>
+                                <button className="btn" onClick={() => saveEdit(p.id)} disabled={isSaving}>
+                                  {isSaving ? "Saving..." : "Save"}
+                                </button>
+                                <button className="btn" onClick={cancelEdit} disabled={isSaving}>
+                                  Cancel
+                                </button>
+                              </>
+                            )}
+
+                            <button className="btn" onClick={() => askDelete(p)} disabled={anyBusy || isEditing}>
+                              Delete
                             </button>
                           </>
-                        ) : null}
-
-                        {!isDeleted ? (
-                          <button className="btn" onClick={() => askDelete(p)} disabled={anyBusy}>
-                            Delete
-                          </button>
                         ) : (
-                          <button className="btn" onClick={() => handleRestore(p)} disabled={anyBusy}>
-                            Restore
-                          </button>
+                          <>
+                            {/* Deleted rows */}
+                            {isOwner && (
+                              <>
+                                <button className="btn" onClick={() => handleRestore(p)} disabled={anyBusy}>
+                                  Restore
+                                </button>
+                                <button className="btn" onClick={() => askHardDelete(p)} disabled={anyBusy}>
+                                  Delete permanently
+                                </button>
+                              </>
+                            )}
+                            {!isOwner && (
+                              <span style={{ fontSize: 12, color: "#6b7280" }}>
+                                Owner required to restore/delete permanently
+                              </span>
+                            )}
+                          </>
                         )}
                       </div>
 
@@ -1599,7 +1689,7 @@ export default function Products({ user }) {
             {!loading && products.length === 0 && (
               <tr>
                 <td colSpan={isAdmin ? 9 : 8} style={{ textAlign: "center" }}>
-                  No products yet
+                  No products found
                 </td>
               </tr>
             )}

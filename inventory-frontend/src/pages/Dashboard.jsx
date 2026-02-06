@@ -58,7 +58,7 @@ export default function Dashboard({ user }) {
         ) : (
           <div className="card">
             <h3>Inventory Value</h3>
-            <p style={{ fontSize: 14, color: "#6b7280" }}>Owner view only</p>
+            <p style={{ fontSize: 14, color: "#6b7280" }}>Restricted view</p>
           </div>
         )}
       </div>

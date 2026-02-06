@@ -442,30 +442,18 @@ export async function restoreCategory(id) {
  *  - DELETE /api/products/:id          => soft delete (sets deleted_at)
  *  - PATCH /api/products/:id/restore   => restore (sets deleted_at NULL)
  */
-export async function getProducts(arg = "") {
-  // Backward compatible:
-  // - string => search text
-  // - object => { q, includeDeleted, onlyDeleted }
-  let q = "";
-  let includeDeleted = false;
-  let onlyDeleted = false;
+export async function getProducts(search = "", opts = {}) {
+  const q = String(search || "").trim();
 
-  if (arg && typeof arg === "object") {
-    q = String(arg.q || "").trim();
-    includeDeleted = Boolean(arg.includeDeleted);
-    onlyDeleted = Boolean(arg.onlyDeleted);
-  } else {
-    q = String(arg || "").trim();
-  }
+  const includeDeleted = Boolean(opts?.includeDeleted);
+  const onlyDeleted = Boolean(opts?.onlyDeleted);
 
   const qs = new URLSearchParams();
-  if (q) qs.set("q", q);
-
-  // onlyDeleted wins
+  if (q) qs.set("search", q);
+  if (includeDeleted) qs.set("includeDeleted", "true");
   if (onlyDeleted) qs.set("onlyDeleted", "true");
-  else if (includeDeleted) qs.set("includeDeleted", "true");
 
-  const url = `${API_BASE}/products${qs.toString() ? `?${qs}` : ""}`;
+  const url = `${API_BASE}/products${qs.toString() ? `?${qs.toString()}` : ""}`;
   return baseFetch(url, {}, { useAuth: true });
 }
 
@@ -501,6 +489,11 @@ export async function deleteProduct(id) {
 // ✅ restore soft-deleted product
 export async function restoreProduct(id) {
   return baseFetch(`${API_BASE}/products/${id}/restore`, { method: "PATCH" }, { useAuth: true });
+}
+
+// ✅ permanently delete (owner-only backend)
+export async function hardDeleteProduct(id) {
+  return baseFetch(`${API_BASE}/products/${id}/hard`, { method: "DELETE" }, { useAuth: true });
 }
 
 // ✅ Used by Stock.jsx scanner — now matches SKU OR barcode via backend /by-sku route

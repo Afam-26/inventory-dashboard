@@ -649,6 +649,37 @@ router.delete("/:id", requireRole("owner", "admin"), async (req, res) => {
   }
 });
 
+// DELETE /api/products/:id/hard  (HARD delete - owner only)
+// Safer: only allow if there are NO stock movements (prevents FK issues)
+router.delete("/:id/hard", requireRole("owner"), async (req, res) => {
+  const tenantId = req.tenantId;
+  const id = Number(req.params.id);
+
+  try {
+    const [[m]] = await db.query(
+      `SELECT COUNT(*) AS c FROM stock_movements WHERE tenant_id=? AND product_id=?`,
+      [tenantId, id]
+    );
+
+    if (Number(m?.c || 0) > 0) {
+      return res.status(409).json({
+        message:
+          "Cannot permanently delete: product has stock movement history. Keep as deleted or delete movements first.",
+      });
+    }
+
+    const [r] = await db.query(`DELETE FROM products WHERE id=? AND tenant_id=?`, [id, tenantId]);
+
+    if (r.affectedRows === 0) return res.status(404).json({ message: "Product not found" });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("PRODUCT HARD DELETE ERROR:", e);
+    return res.status(500).json({ message: "Database error" });
+  }
+});
+
+
 /** =========================
  * PATCH /api/products/:id/restore
  * owner/admin only

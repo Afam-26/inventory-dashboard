@@ -31,7 +31,6 @@ router.get("/", requireAuth, requireTenant, async (req, res) => {
       `SELECT COUNT(*) AS c FROM products WHERE tenant_id=? AND deleted_at IS NULL`,
       [tenantId]
     );
-
     // ✅ match Products.jsx logic:
     // threshold = (reorder_level > 0 ? reorder_level : settings.low_stock_threshold)
     // low if quantity <= threshold
@@ -39,7 +38,7 @@ router.get("/", requireAuth, requireTenant, async (req, res) => {
       `
       SELECT COUNT(*) AS c
       FROM products p
-      LEFT JOIN settings s ON s.tenant_id = p.tenant_id
+      LEFT JOIN settings s ON s.tenant_id = ?
       WHERE p.tenant_id=?
         AND p.deleted_at IS NULL
         AND COALESCE(p.quantity,0) <= (
@@ -49,14 +48,14 @@ router.get("/", requireAuth, requireTenant, async (req, res) => {
           END
         )
       `,
-      [tenantId]
+      [tenantId, tenantId]
     );
-
-
+    
     const [[categories]] = await db.query(
-      `SELECT COUNT(*) AS c FROM categories WHERE tenant_id=?`,
+      `SELECT COUNT(*) AS c FROM categories WHERE tenant_id=? AND deleted_at IS NULL`,
       [tenantId]
     );
+
 
     const [[members]] = await db.query(
       `SELECT COUNT(*) AS c FROM tenant_members WHERE tenant_id=? AND status='active'`,

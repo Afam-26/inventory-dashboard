@@ -49,7 +49,7 @@ export default function AppLayout({ user, setUser }) {
   return (
     <div className="app-shell">
       {/* ✅ Session features */}
-      <SessionGuard />
+      <SessionGuard enabled={true}/>
 
       <div className="app-topbar">
         <p className="app-topbar-left">

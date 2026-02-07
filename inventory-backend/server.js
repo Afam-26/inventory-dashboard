@@ -34,8 +34,15 @@ import publicRoutes from "./routes/public.js";
 import settingsRoutes from "./routes/settings.js";
 
 
-
 const app = express();
+
+// ✅ Stripe webhook must be RAW
+app.post("/api/billing/stripe/webhook", express.raw({ type: "application/json" }), billingWebhookHandler);
+
+app.use(express.json({ limit: "1mb" }));
+
+// Billing router
+app.use("/api/billing", billingRouter);
 
 /**
  * Behind Railway/Proxies:
@@ -90,7 +97,6 @@ app.options(/.*/, cors());
 /**
  * ✅ Body + cookies
  */
-app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
 /**
@@ -165,9 +171,6 @@ app.post("/api/public/request-access", async (req, res) => {
   }
 });
 
-
-// Billing router
-app.use("/api/billing", billingRouter);
 
 // start scheduler once
 scheduleDailySnapshots(db, { hourUtc: 0, minuteUtc: 5 });

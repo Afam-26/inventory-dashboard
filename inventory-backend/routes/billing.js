@@ -3,7 +3,12 @@ import express from "express";
 import { db } from "../config/db.js";
 import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
 import { requireBillingAdmin } from "../middleware/billing.js";
-import { PLANS, normalizePlanKey, makeUsageLine } from "../utils/plans.js";
+import { PLANS, getTenantEntitlements } from "../config/plans.js";
+import {
+  normalizePlanKey,
+  planKeyFromSubscription,
+  priceIdForPlan,
+} from "../config/stripePlans.js";
 import { logAudit, SEVERITY } from "../utils/audit.js";
 import { getStripe, stripeIsEnabled } from "../services/stripe/stripe.js";
 
@@ -15,11 +20,11 @@ router.use(requireAuth, requireTenant);
 // helper: current plan from tenant
 async function getTenantPlan(tenantId) {
   const [[t]] = await db.query(
-    "SELECT id, plan_key, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan_status, current_period_end FROM tenants WHERE id=? LIMIT 1",
+    "SELECT id, plan_key, status, stripe_customer_id, stripe_subscription_id, stripe_price_id, plan_status, current_period_end FROM tenants WHERE id=? LIMIT 1",
     [tenantId]
   );
   const planKey = normalizePlanKey(t?.plan_key);
-  return { ...t, planKey, plan: PLANS[planKey] };
+  return { ...t, planKey, plan: PLANS[planKey] || PLANS.starter };
 }
 
 async function getTenantUsage(tenantId) {
@@ -47,6 +52,22 @@ async function getTenantUsage(tenantId) {
   };
 }
 
+function makeUsageLine({ used, limit }) {
+  const lim = limit === Infinity || limit == null ? null : Number(limit);
+  return {
+    used: Number(used || 0),
+    limit: lim,
+    pct: lim ? Math.min(100, Math.round((Number(used || 0) / lim) * 100)) : null,
+    ok: lim ? Number(used || 0) <= lim : true,
+  };
+}
+
+function mapTenantStatusFromStripe(subStatus) {
+  if (subStatus === "active" || subStatus === "trialing") return "active";
+  if (subStatus === "past_due" || subStatus === "unpaid") return "past_due";
+  return "canceled";
+}
+
 /**
  * GET /api/billing/plans
  * anyone in tenant can view
@@ -56,12 +77,14 @@ router.get("/plans", async (req, res) => {
     plans: Object.values(PLANS).map((p) => ({
       key: p.key,
       name: p.name,
-      priceLabel: p.priceLabel,
+      priceLabel: p.priceLabel || null,
       limits: {
-        categories: p.limits.categories === Infinity ? null : p.limits.categories,
-        products: p.limits.products === Infinity ? null : p.limits.products,
-        users: p.limits.users === Infinity ? null : p.limits.users,
+        locations: p.limits?.locations ?? null,
+        products: p.limits?.products ?? null,
+        users: p.limits?.users ?? null,
+        auditDays: p.limits?.auditDays ?? null,
       },
+      features: p.features || {},
     })),
     stripeEnabled: stripeIsEnabled(),
   });
@@ -76,21 +99,25 @@ router.get("/current", async (req, res) => {
     const tenantId = req.tenantId;
     const t = await getTenantPlan(tenantId);
     const usage = await getTenantUsage(tenantId);
+    const ent = getTenantEntitlements(t);
 
-    const limits = t.plan.limits;
+    const limits = ent?.limits || {};
 
     res.json({
       tenantId,
       planKey: t.planKey,
-      planName: t.plan.name,
-      priceLabel: t.plan.priceLabel,
+      planName: t.plan?.name || t.planKey,
+      priceLabel: t.plan?.priceLabel || null,
+      tenantStatus: t.status || "active",
       stripe: {
         enabled: stripeIsEnabled(),
         customerId: t.stripe_customer_id || null,
         subscriptionId: t.stripe_subscription_id || null,
         status: t.plan_status || null,
         currentPeriodEnd: t.current_period_end || null,
+        priceId: t.stripe_price_id || null,
       },
+      entitlements: ent,
       usage: {
         categories: makeUsageLine({ used: usage.categories, limit: limits.categories }),
         products: makeUsageLine({ used: usage.products, limit: limits.products }),
@@ -106,6 +133,7 @@ router.get("/current", async (req, res) => {
 /**
  * POST /api/billing/change-plan
  * ✅ OWNER ONLY
+ * Manual override (useful when Stripe is disabled)
  */
 router.post("/change-plan", requireRole("owner"), requireBillingAdmin, async (req, res) => {
   try {
@@ -136,6 +164,8 @@ router.post("/change-plan", requireRole("owner"), requireBillingAdmin, async (re
 /**
  * POST /api/billing/stripe/checkout
  * ✅ OWNER ONLY
+ * Body: { planKey }
+ * We DO NOT accept priceId from frontend anymore.
  */
 router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async (req, res) => {
   const stripe = getStripe();
@@ -146,10 +176,10 @@ router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async
     const t = await getTenantPlan(tenantId);
 
     const planKey = normalizePlanKey(req.body?.planKey);
-    const priceId = String(req.body?.priceId || "").trim();
-    if (!priceId) return res.status(400).json({ message: "priceId is required" });
+    const priceId = priceIdForPlan(planKey);
+    if (!priceId) return res.status(400).json({ message: `Missing Stripe price id for plan ${planKey}` });
 
-    const front = process.env.FRONTEND_URL || "http://localhost:5173";
+    const front = process.env.FRONTEND_URL || process.env.APP_URL || "http://localhost:5173";
     const successUrl = `${front}/billing?success=1`;
     const cancelUrl = `${front}/billing?canceled=1`;
 
@@ -169,6 +199,8 @@ router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: successUrl,
       cancel_url: cancelUrl,
+      allow_promotion_codes: true,
+      client_reference_id: String(tenantId),
       metadata: { tenantId: String(tenantId), planKey },
     });
 
@@ -192,7 +224,7 @@ router.post("/stripe/portal", requireRole("owner"), requireBillingAdmin, async (
     const t = await getTenantPlan(tenantId);
     if (!t.stripe_customer_id) return res.status(400).json({ message: "No Stripe customer" });
 
-    const front = process.env.FRONTEND_URL || "http://localhost:5173";
+    const front = process.env.FRONTEND_URL || process.env.APP_URL || "http://localhost:5173";
 
     const portal = await stripe.billingPortal.sessions.create({
       customer: t.stripe_customer_id,
@@ -208,6 +240,7 @@ router.post("/stripe/portal", requireRole("owner"), requireBillingAdmin, async (
 
 /**
  * POST /api/billing/stripe/webhook
+ * Exported handler so server.js can mount it with express.raw()
  */
 export async function billingWebhookHandler(req, res) {
   const stripe = getStripe();
@@ -225,40 +258,136 @@ export async function billingWebhookHandler(req, res) {
   }
 
   try {
-    if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {
-      const sub = event.data.object;
-      const customerId = sub.customer;
+    async function resolveTenantId({ subId, customerId, metadata }) {
+      if (subId) {
+        const [[tBySub]] = await db.query(
+          "SELECT id FROM tenants WHERE stripe_subscription_id=? LIMIT 1",
+          [subId]
+        );
+        if (tBySub?.id) return tBySub.id;
+      }
 
+      if (customerId) {
+        const [[tByCust]] = await db.query(
+          "SELECT id FROM tenants WHERE stripe_customer_id=? LIMIT 1",
+          [customerId]
+        );
+        if (tByCust?.id) return tByCust.id;
+      }
+
+      const metaTenantId = metadata?.tenantId || metadata?.tenant_id;
+      if (metaTenantId) return Number(metaTenantId) || null;
+
+      return null;
+    }
+
+    if (
+      event.type === "customer.subscription.updated" ||
+      event.type === "customer.subscription.created"
+    ) {
+      const sub = event.data.object;
+
+      const customerId = sub.customer;
+      const planKey = planKeyFromSubscription(sub);
       const priceId = sub.items?.data?.[0]?.price?.id || null;
-      const status = sub.status || null;
+
+      const plan_status = sub.status || null;
+      const status = mapTenantStatusFromStripe(plan_status);
       const periodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
 
-      const [[t]] = await db.query("SELECT id FROM tenants WHERE stripe_customer_id=? LIMIT 1", [customerId]);
-      if (t?.id) {
+      const tenantId = await resolveTenantId({
+        subId: sub.id,
+        customerId,
+        metadata: sub.metadata,
+      });
+
+      if (tenantId) {
         await db.query(
           `UPDATE tenants
-           SET stripe_subscription_id=?, stripe_price_id=?, plan_status=?, current_period_end=?
+           SET
+             plan_key=?,
+             status=?,
+             stripe_customer_id=?,
+             stripe_subscription_id=?,
+             stripe_price_id=?,
+             plan_status=?,
+             current_period_end=?
            WHERE id=?`,
-          [sub.id, priceId, status, periodEnd, t.id]
+          [planKey, status, customerId, sub.id, priceId, plan_status, periodEnd, tenantId]
         );
       }
+
+      return res.json({ received: true });
     }
 
     if (event.type === "customer.subscription.deleted") {
       const sub = event.data.object;
       const customerId = sub.customer;
-      const [[t]] = await db.query("SELECT id FROM tenants WHERE stripe_customer_id=? LIMIT 1", [customerId]);
-      if (t?.id) {
+
+      const tenantId = await resolveTenantId({
+        subId: sub.id,
+        customerId,
+        metadata: sub.metadata,
+      });
+
+      if (tenantId) {
         await db.query(
           `UPDATE tenants
-           SET plan_key='starter', stripe_subscription_id=NULL, stripe_price_id=NULL, plan_status=?, current_period_end=NULL
+           SET
+             status='canceled',
+             plan_status=?,
+             current_period_end=NULL
            WHERE id=?`,
-          [sub.status || "canceled", t.id]
+          [sub.status || "canceled", tenantId]
         );
       }
+
+      return res.json({ received: true });
     }
 
-    res.json({ received: true });
+    // Optional invoice events
+    if (event.type === "invoice.payment_failed" || event.type === "invoice.payment_succeeded") {
+      const inv = event.data.object;
+      const subId = inv.subscription || null;
+
+      if (subId) {
+        const subscription = await stripe.subscriptions.retrieve(subId);
+        const customerId = subscription.customer;
+
+        const planKey = planKeyFromSubscription(subscription);
+        const priceId = subscription.items?.data?.[0]?.price?.id || null;
+
+        const plan_status = subscription.status || null;
+        const status = mapTenantStatusFromStripe(plan_status);
+        const periodEnd = subscription.current_period_end ? new Date(subscription.current_period_end * 1000) : null;
+
+        const tenantId = await resolveTenantId({
+          subId: subscription.id,
+          customerId,
+          metadata: subscription.metadata,
+        });
+
+        if (tenantId) {
+          await db.query(
+            `UPDATE tenants
+             SET
+               plan_key=?,
+               status=?,
+               stripe_customer_id=?,
+               stripe_subscription_id=?,
+               stripe_price_id=?,
+               plan_status=?,
+               current_period_end=?
+             WHERE id=?`,
+            [planKey, status, customerId, subscription.id, priceId, plan_status, periodEnd, tenantId]
+          );
+        }
+      }
+
+      return res.json({ received: true });
+    }
+
+    return res.json({ received: true });
   } catch (e) {
     console.error("WEBHOOK PROCESS ERROR:", e);
     res.status(500).send("Webhook error");

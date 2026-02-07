@@ -1,4 +1,5 @@
-// src/config/plans.js
+// inventory-backend/config/plans.js
+
 export const PLANS = {
   starter: {
     key: "starter",
@@ -17,6 +18,7 @@ export const PLANS = {
       branding: false,
     },
   },
+
   growth: {
     key: "growth",
     name: "Growth",
@@ -34,6 +36,7 @@ export const PLANS = {
       branding: true,
     },
   },
+
   pro: {
     key: "pro",
     name: "Pro",
@@ -54,6 +57,6 @@ export const PLANS = {
 };
 
 export function getTenantEntitlements(tenant) {
-  const planKey = tenant?.plan_key || "starter";
+  const planKey = String(tenant?.plan_key || "starter").toLowerCase();
   return PLANS[planKey] || PLANS.starter;
 }

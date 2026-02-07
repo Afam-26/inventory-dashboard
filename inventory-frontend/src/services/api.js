@@ -223,12 +223,17 @@ async function baseFetch(
     const code = data?.code || "API_ERROR";
 
     // ✅ Tenant-required normalization
-    if (
-      String(msg).toLowerCase().includes("tenant") &&
-      String(msg).toLowerCase().includes("selected")
-    ) {
+    if (String(msg).toLowerCase().includes("tenant") && String(msg).toLowerCase().includes("selected")) {
+      try {
+        if (!window.location.pathname.startsWith("/select-tenant")) {
+          window.location.replace("/select-tenant");
+        }
+      } catch {
+        //empty
+      }
       throw makeApiError(msg, "TENANT_REQUIRED", res.status);
     }
+
 
     // ✅ Token expired / invalid → force login page (no “invalid token” UI)
     const lower = String(msg).toLowerCase();
@@ -753,6 +758,7 @@ export async function getCurrentPlan() {
     planKey: data?.planKey ?? "starter",
     planName: data?.planName ?? "Starter",
     priceLabel: data?.priceLabel ?? "",
+    tenantStatus: data?.tenantStatus ?? "active",
     stripe: {
       enabled: Boolean(data?.stripe?.enabled),
       customerId: data?.stripe?.customerId ?? null,
@@ -781,17 +787,18 @@ export async function updateCurrentPlan(planKey) {
  * STRIPE
  * ============================
  */
-export async function startStripeCheckout({ priceId, planKey }) {
+export async function startStripeCheckout({ planKey }) {
   return baseFetch(
     `${API_BASE}/billing/stripe/checkout`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ priceId, planKey }),
+      body: JSON.stringify({ planKey }),
     },
     { useAuth: true }
   );
 }
+
 
 export async function openStripePortal() {
   return baseFetch(`${API_BASE}/billing/stripe/portal`, { method: "POST" }, { useAuth: true });

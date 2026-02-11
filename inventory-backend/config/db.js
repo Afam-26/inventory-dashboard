@@ -39,3 +39,4 @@ export const db = url
       connectTimeout: 20000, // helps avoid instant fail on cold start
     });
 
+console.log("DB CONFIG:", { host, port, user, database, hasUrl: Boolean(url) });

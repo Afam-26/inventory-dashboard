@@ -28,6 +28,9 @@ import settingsRoutes from "./routes/settings.js";
 
 import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
 
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, ".env") });

@@ -1,12 +1,25 @@
-// src/pages/Billing.jsx
+// inventory-frontend/src/pages/Billing.jsx
 import { useEffect, useMemo, useState } from "react";
 import {
-  getPlans,
-  getCurrentPlan,
-  updateCurrentPlan,
-  startStripeCheckout,
-  openStripePortal,
-} from "../services/api";
+  fetchBillingPlans,
+  fetchBillingCurrent,
+  beginCheckout,
+  openBillingPortal,
+  setPlanManually,
+} from "../services/billing";
+import PlanBanner from "../components/billing/PlanBanner";
+import { getPlanBannerFromCurrent, getPlanBannerFromApiError } from "../utils/planUi";
+
+/**
+ * Local helpers so this page can fetch Stripe prices
+ * without relying on other service modules.
+ */
+const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:5000") + "/api";
+
+function authHeaders() {
+  const t = localStorage.getItem("token") || "";
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
 
 export default function Billing({ user }) {
   const role = String(user?.tenantRole || user?.role || "").toLowerCase();
@@ -16,21 +29,67 @@ export default function Billing({ user }) {
   const [stripeEnabled, setStripeEnabled] = useState(false);
   const [current, setCurrent] = useState(null);
 
+  const [interval, setInterval] = useState("month"); // "month" | "year"
+  const intervalKey = interval === "year" ? "yearly" : "monthly";
+
+  const [banner, setBanner] = useState(null);
+
   const [loading, setLoading] = useState(true);
   const [changing, setChanging] = useState(false);
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
 
+  const [stripePrices, setStripePrices] = useState(null);
+
+  const currentKey = String(current?.planKey || "").toLowerCase();
+  const tenantStatus = String(current?.tenantStatus || "active").toLowerCase();
+  const stripeStatus = String(current?.stripe?.status || "").toLowerCase();
+  const trialUsedAt = current?.trial?.usedAt || null;
+  const isTrialActive = stripeStatus === "trialing";
+
+  function limitLabel(v) {
+    if (v == null) return "Unlimited";
+    return String(v);
+  }
+
+  function fmtMoneyFromStripePrice(p) {
+    if (!p || typeof p.unit_amount !== "number") return "";
+    const dollars = p.unit_amount / 100;
+    const currency = String(p.currency || "usd").toUpperCase();
+    return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(dollars);
+  }
+
+  function priceTextFor(planKey, whichIntervalKey) {
+    const k = String(planKey || "").toLowerCase();
+    const p = stripePrices?.[k]?.[whichIntervalKey];
+    const money = fmtMoneyFromStripePrice(p);
+    if (!money) return "";
+    return `${money}${whichIntervalKey === "yearly" ? "/yr" : "/mo"}`;
+  }
+
+  const currentPriceText = useMemo(() => {
+    // Prefer backend-provided label if present, otherwise compute from Stripe price map
+    const label = String(current?.priceLabel || "").trim();
+    if (label) return label;
+
+    const t = priceTextFor(currentKey, intervalKey);
+    return t || "";
+  }, [current?.priceLabel, currentKey, intervalKey, stripePrices]);
+
   async function loadAll() {
     setLoading(true);
     setErr("");
     setMsg("");
+
     try {
-      const [p, c] = await Promise.all([getPlans(), getCurrentPlan()]);
+      const [p, c] = await Promise.all([fetchBillingPlans(), fetchBillingCurrent()]);
       setPlans(Array.isArray(p?.plans) ? p.plans : []);
       setStripeEnabled(Boolean(p?.stripeEnabled));
       setCurrent(c || null);
+      setBanner(getPlanBannerFromCurrent(c));
     } catch (e) {
+      const b = getPlanBannerFromApiError(e);
+      if (b) setBanner(b);
       setErr(e?.message || "Failed to load billing");
       setPlans([]);
       setCurrent(null);
@@ -39,46 +98,30 @@ export default function Billing({ user }) {
     }
   }
 
+  async function loadStripePrices() {
+    try {
+      // Route you added on backend: GET /api/billing/stripe/prices
+      const res = await fetch(`${API_BASE}/billing/stripe/prices`, {
+        method: "GET",
+        headers: { ...authHeaders() },
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // non-fatal: page still works without price display
+        return;
+      }
+      setStripePrices(data || null);
+    } catch {
+      // non-fatal
+    }
+  }
+
   useEffect(() => {
     loadAll();
+    loadStripePrices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  function limitLabel(v) {
-    if (v == null) return "Unlimited";
-    return String(v);
-  }
-
-  function usageLine(u) {
-    if (!u) return null;
-    const used = Number(u.used ?? 0);
-    const limit = u.limit == null ? null : Number(u.limit);
-    const pct =
-      typeof u.pct === "number"
-        ? Math.max(0, Math.min(100, u.pct))
-        : limit == null
-        ? 0
-        : Math.max(0, Math.min(100, Math.round((used / Math.max(1, limit)) * 100)));
-
-    return { used, limit, pct, label: u.label || "", ok: u.ok };
-  }
-
-  const currentKey = String(current?.planKey || "").toLowerCase();
-  const tenantStatus = String(current?.tenantStatus || "active").toLowerCase();
-
-  const overLimit = useMemo(() => {
-    const u = current?.usage;
-    if (!u) return false;
-
-    const lines = [
-      usageLine(u.categories),
-      usageLine(u.products),
-      usageLine(u.users),
-    ].filter(Boolean);
-
-    return lines.some((x) => x.limit != null && x.used > x.limit);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current]);
 
   async function choosePlan(planKey) {
     if (!isAdmin) {
@@ -93,23 +136,25 @@ export default function Billing({ user }) {
     try {
       const key = String(planKey || "").toLowerCase();
 
-      // ✅ Stripe upgrade path (backend maps planKey -> priceId)
-      const shouldStripe = stripeEnabled && key !== "starter";
-
-      if (shouldStripe) {
-        const r = await startStripeCheckout({ planKey: key });
-        if (r?.url) {
-          window.location.href = r.url;
-          return;
-        }
-        throw new Error("Stripe checkout not available");
+      // If Stripe disabled, allow manual switching
+      if (!stripeEnabled) {
+        await setPlanManually(key);
+        setMsg(`Plan updated to "${key}".`);
+        await loadAll();
+        return;
       }
 
-      // fallback (no Stripe)
-      await updateCurrentPlan(key);
-      setMsg(`Plan updated to "${key}".`);
-      await loadAll();
+      // Stripe checkout for ALL plans (Starter includes trial; Growth/Pro no trial)
+      const r = await beginCheckout({ planKey: key, interval });
+      if (r?.url) {
+        window.location.href = r.url;
+        return;
+      }
+
+      setErr("Stripe checkout not available");
     } catch (e) {
+      const b = getPlanBannerFromApiError(e);
+      if (b) setBanner(b);
       setErr(e?.message || "Failed to change plan");
     } finally {
       setChanging(false);
@@ -121,35 +166,26 @@ export default function Billing({ user }) {
     setErr("");
     setMsg("");
     try {
-      const r = await openStripePortal();
+      const r = await openBillingPortal();
       if (r?.url) window.location.href = r.url;
       else setErr("Stripe portal not available");
     } catch (e) {
+      const b = getPlanBannerFromApiError(e);
+      if (b) setBanner(b);
       setErr(e?.message || "Failed to open Stripe portal");
     } finally {
       setChanging(false);
     }
   }
 
-  // ✅ Responsive grids (no CSS file changes required)
-  const usageGridStyle = {
-    marginTop: 12,
-    display: "grid",
-    gap: 10,
-    gridTemplateColumns: "1fr",
-  };
-
-  const plansGridStyle = {
-    display: "grid",
-    gridTemplateColumns: "1fr",
-    gap: 14,
-  };
+  const usageGridStyle = { marginTop: 12, display: "grid", gap: 10, gridTemplateColumns: "1fr" };
+  const plansGridStyle = { display: "grid", gridTemplateColumns: "1fr", gap: 14 };
 
   return (
     <div style={{ width: "100%", maxWidth: 1100 }}>
       <h1 style={{ marginBottom: 6 }}>Billing Plans</h1>
-      <div style={{ color: "#6b7280", marginBottom: 16 }}>
-        Choose a plan for this tenant. Upgrades use Stripe (if enabled). Downgrades are managed in Stripe Portal.
+      <div style={{ color: "#6b7280", marginBottom: 14 }}>
+        Starter includes a 7-day free trial (first time only). Growth/Pro have no trial.
       </div>
 
       <style>{`
@@ -163,73 +199,47 @@ export default function Billing({ user }) {
         }
       `}</style>
 
+      <PlanBanner banner={banner} />
+
       {err && <div style={{ color: "#b91c1c", marginBottom: 10 }}>{err}</div>}
       {msg && <div style={{ color: "#065f46", marginBottom: 10 }}>{msg}</div>}
 
-      {/* ✅ BANNERS */}
-      {!loading && current ? (
-        <div style={{ display: "grid", gap: 10, marginBottom: 12 }}>
-          {tenantStatus === "past_due" ? (
-            <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: 12, color: "#78350f" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontWeight: 900 }}>Payment issue: account is past due</div>
-                  <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>
-                    Some actions may be restricted until payment is updated.
-                  </div>
-                </div>
-                <button
-                  className="btn"
-                  onClick={openPortal}
-                  disabled={!isAdmin || changing || !stripeEnabled || !current?.stripe?.customerId}
-                >
-                  Update payment
-                </button>
-              </div>
-            </div>
-          ) : null}
+      {/* Interval toggle */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <div style={{ fontWeight: 900 }}>Billing interval:</div>
 
-          {tenantStatus === "canceled" ? (
-            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 12, padding: 12, color: "#7f1d1d" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontWeight: 900 }}>Subscription canceled</div>
-                  <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>
-                    Choose a paid plan to reactivate.
-                  </div>
-                </div>
-                <button
-                  className="btn"
-                  onClick={() => choosePlan("growth")}
-                  disabled={!isAdmin || changing || !stripeEnabled}
-                >
-                  Reactivate
-                </button>
-              </div>
-            </div>
-          ) : null}
+        <button
+          className="btn"
+          type="button"
+          onClick={() => setInterval("month")}
+          disabled={changing}
+          style={{
+            background: interval === "month" ? "#111827" : "#fff",
+            color: interval === "month" ? "#fff" : "#111827",
+            border: "1px solid #e5e7eb",
+          }}
+        >
+          Monthly
+        </button>
 
-          {overLimit ? (
-            <div style={{ background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12, padding: 12, color: "#78350f" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-                <div>
-                  <div style={{ fontWeight: 900 }}>You’re over your plan limits</div>
-                  <div style={{ fontSize: 13, marginTop: 4, opacity: 0.9 }}>
-                    Creating new items may be blocked until you’re under the limit or you upgrade.
-                  </div>
-                </div>
-                <button
-                  className="btn"
-                  onClick={() => choosePlan("growth")}
-                  disabled={!isAdmin || changing || !stripeEnabled}
-                >
-                  Upgrade
-                </button>
-              </div>
-            </div>
-          ) : null}
+        <button
+          className="btn"
+          type="button"
+          onClick={() => setInterval("year")}
+          disabled={changing}
+          style={{
+            background: interval === "year" ? "#111827" : "#fff",
+            color: interval === "year" ? "#fff" : "#111827",
+            border: "1px solid #e5e7eb",
+          }}
+        >
+          Yearly
+        </button>
+
+        <div style={{ fontSize: 12, color: "#6b7280" }}>
+          Starter trial: {trialUsedAt ? "already used" : "available (7 days)"} {isTrialActive ? "• currently in trial" : ""}
         </div>
-      ) : null}
+      </div>
 
       {loading ? (
         <div>Loading…</div>
@@ -242,7 +252,14 @@ export default function Billing({ user }) {
                 <div>
                   <div style={{ fontWeight: 900 }}>
                     Current plan: <span style={{ textTransform: "capitalize" }}>{current.planKey}</span>{" "}
-                    <span style={{ color: "#6b7280", fontWeight: 600 }}>({current.priceLabel || ""})</span>
+                    <span style={{ color: "#6b7280", fontWeight: 600 }}>
+                      ({currentPriceText || (stripeEnabled ? "Price unavailable" : "Manual")})
+                    </span>
+                    {isTrialActive ? (
+                      <span style={{ marginLeft: 8, fontSize: 12, padding: "3px 8px", borderRadius: 999, background: "#111827", color: "#fff" }}>
+                        TRIAL
+                      </span>
+                    ) : null}
                   </div>
                   <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
                     Tenant ID: {current.tenantId} • Status: {tenantStatus}
@@ -250,40 +267,44 @@ export default function Billing({ user }) {
                 </div>
 
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  {stripeEnabled && current?.stripe?.customerId && (
+                  {stripeEnabled && current?.stripe?.customerId ? (
                     <button className="btn" onClick={openPortal} disabled={!isAdmin || changing}>
                       Manage Billing
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
 
+              {/* Usage meters */}
               {current?.usage && (
                 <div className="billing-usage-grid" style={usageGridStyle}>
                   {[
-                    ["Categories", usageLine(current.usage.categories)],
-                    ["Products", usageLine(current.usage.products)],
-                    ["Users", usageLine(current.usage.users)],
-                  ].map(([label, u]) => (
-                    <div key={label} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 10, background: "#f9fafb", minWidth: 0 }}>
-                      <div style={{ fontWeight: 800 }}>{label}</div>
-                      <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
-                        {u?.limit == null ? `${u?.used ?? 0} / Unlimited` : `${u?.used ?? 0} / ${u?.limit ?? 0}`}
-                      </div>
+                    ["Categories", current.usage.categories],
+                    ["Products", current.usage.products],
+                    ["Users", current.usage.users],
+                  ].map(([label, u]) => {
+                    const used = Number(u?.used ?? 0);
+                    const limit = u?.limit == null ? null : Number(u.limit);
+                    const pct =
+                      typeof u?.pct === "number"
+                        ? Math.max(0, Math.min(100, u.pct))
+                        : limit == null
+                        ? 0
+                        : Math.max(0, Math.min(100, Math.round((used / Math.max(1, limit)) * 100)));
 
-                      <div style={{ height: 10, background: "#e5e7eb", borderRadius: 999, overflow: "hidden", marginTop: 8 }}>
-                        <div
-                          style={{
-                            height: "100%",
-                            width: `${u?.limit == null ? 0 : u?.pct ?? 0}%`,
-                            background: u?.limit != null && u?.used > u?.limit ? "#b45309" : "#111827",
-                          }}
-                        />
-                      </div>
+                    return (
+                      <div key={label} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 10, background: "#f9fafb", minWidth: 0 }}>
+                        <div style={{ fontWeight: 800 }}>{label}</div>
+                        <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                          {limit == null ? `${used} / Unlimited` : `${used} / ${limit}`}
+                        </div>
 
-                      {u?.label ? <div style={{ marginTop: 6, fontSize: 12, color: "#374151" }}>{u.label}</div> : null}
-                    </div>
-                  ))}
+                        <div style={{ height: 10, background: "#e5e7eb", borderRadius: 999, overflow: "hidden", marginTop: 8 }}>
+                          <div style={{ height: "100%", width: `${limit == null ? 0 : pct}%`, background: "#111827" }} />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -294,6 +315,22 @@ export default function Billing({ user }) {
             {plans.map((p) => {
               const key = String(p.key || "").toLowerCase();
               const isCurrent = key === currentKey;
+
+              const disabledBecause =
+                !isAdmin
+                  ? "Owner/Admin only"
+                  : tenantStatus === "canceled"
+                  ? "Subscription canceled (upgrade to restore)"
+                  : tenantStatus === "past_due"
+                  ? "Past due (update payment)"
+                  : isCurrent
+                  ? "Already on this plan"
+                  : "";
+
+              const disabled = !isAdmin || tenantStatus === "canceled" || tenantStatus === "past_due" || isCurrent || changing;
+
+              const cardPrice = priceTextFor(key, intervalKey);
+              const intervalLabel = interval === "year" ? "Yearly" : "Monthly";
 
               return (
                 <div
@@ -309,37 +346,58 @@ export default function Billing({ user }) {
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
                     <div style={{ fontWeight: 900, fontSize: 18 }}>{p.name}</div>
-                    <div style={{ color: "#111827", fontWeight: 800 }}>{p.priceLabel}</div>
+                    <div style={{ color: "#111827", fontWeight: 800 }}>{intervalLabel}</div>
+                  </div>
+
+                  {/* ✅ Price row */}
+                  <div style={{ marginTop: 8, display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 22, fontWeight: 950, color: "#111827" }}>
+                      {cardPrice ? cardPrice : stripeEnabled ? "—" : "Manual"}
+                    </div>
+                    {stripeEnabled ? (
+                      <div style={{ fontSize: 12, color: "#6b7280" }}>
+                        {stripePrices ? "" : "Loading prices…"}
+                      </div>
+                    ) : null}
                   </div>
 
                   <div style={{ marginTop: 10, fontSize: 13, color: "#374151" }}>
-                    {"locations" in (p?.limits || {}) ? (
-                      <div>
-                        Locations limit: <b>{limitLabel(p?.limits?.locations)}</b>
-                      </div>
-                    ) : null}
+                    <div>
+                      Categories limit: <b>{limitLabel(p?.limits?.categories)}</b>
+                    </div>
                     <div>
                       Products limit: <b>{limitLabel(p?.limits?.products)}</b>
                     </div>
                     <div>
                       Users limit: <b>{limitLabel(p?.limits?.users)}</b>
                     </div>
-                    {"auditDays" in (p?.limits || {}) ? (
-                      <div>
-                        Audit retention: <b>{limitLabel(p?.limits?.auditDays)} days</b>
-                      </div>
-                    ) : null}
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+                      Audit days: <b>{limitLabel(p?.limits?.auditDays)}</b>
+                    </div>
                   </div>
 
                   <button
                     className="btn"
                     style={{ width: "100%", marginTop: 12 }}
                     onClick={() => choosePlan(key)}
-                    disabled={!isAdmin || changing || isCurrent}
-                    title={!isAdmin ? "Owner/Admin only" : isCurrent ? "Already on this plan" : ""}
+                    disabled={disabled}
+                    title={disabled ? disabledBecause : ""}
                   >
-                    {isCurrent ? "Current plan" : changing ? "Please wait..." : stripeEnabled && key !== "starter" ? "Upgrade (Stripe)" : "Choose plan"}
+                    {isCurrent ? "Current plan" : changing ? "Please wait..." : "Upgrade"}
                   </button>
+
+                  {/* Trial note only for starter */}
+                  {stripeEnabled && key === "starter" && !trialUsedAt ? (
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#065f46" }}>
+                      Includes a 7-day free trial (first time only).
+                    </div>
+                  ) : null}
+
+                  {stripeEnabled && key !== "starter" ? (
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+                      No trial on this plan.
+                    </div>
+                  ) : null}
                 </div>
               );
             })}

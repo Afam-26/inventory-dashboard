@@ -3,6 +3,7 @@ import express from "express";
 import { db } from "../config/db.js";
 import { logAudit } from "../utils/audit.js";
 import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
+import { requireFeature, requireLimit } from "../middleware/requireEntitlement.js";
 
 const router = express.Router();
 
@@ -77,7 +78,7 @@ function parseCsv(text) {
  * ========================= */
 
 // GET /api/products/by-sku/:sku (matches SKU OR barcode) — excludes deleted
-router.get("/by-sku/:sku", requireRole("owner", "admin", "staff"), async (req, res) => {
+router.get("/by-sku/:sku", requireFeature("barcode"), requireRole("owner", "admin", "staff"), async (req, res) => {
   const tenantId = req.tenantId;
   const code = String(req.params.sku || "").trim();
   if (!code) return res.status(400).json({ message: "SKU is required" });
@@ -117,7 +118,7 @@ router.get("/by-sku/:sku", requireRole("owner", "admin", "staff"), async (req, r
 });
 
 // GET /api/products/by-code/:code (also matches SKU OR barcode) — excludes deleted
-router.get("/by-code/:code", requireRole("owner", "admin", "staff"), async (req, res) => {
+router.get("/by-code/:code", requireFeature("barcode"), requireRole("owner", "admin", "staff"), async (req, res) => {
   const tenantId = req.tenantId;
   const code = String(req.params.code || "").trim();
   if (!code) return res.status(400).json({ message: "Code is required" });
@@ -242,7 +243,13 @@ router.get("/", async (req, res) => {
  * Body: { name, sku, barcode, category_id, quantity, cost_price, selling_price, reorder_level }
  * NOTE: reorder_level default is 0 (means "use tenant default threshold")
  * ========================= */
-router.post("/", requireRole("owner", "admin"), async (req, res) => {
+router.post("/", requireLimit("products", async (req) => {
+    const [[r]] = await db.query(
+      "SELECT COUNT(*) AS n FROM products WHERE tenant_id=? AND deleted_at IS NULL",
+      [req.tenantId]
+    );
+    return Number(r?.n || 0);
+  }), requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
 
   const name = String(req.body?.name ?? "").trim();
@@ -398,7 +405,7 @@ async function computeMovementBalance(conn, tenantId, productId) {
 }
 
 // POST /api/products/:id/reconcile  (admin/owner)
-router.post("/:id/reconcile", requireRole("owner", "admin"), async (req, res) => {
+router.post("/:id/reconcile", requireFeature("reconcile", { blockPastDue: true }), requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
   const id = Number(req.params.id);
 
@@ -468,7 +475,13 @@ router.post("/:id/reconcile", requireRole("owner", "admin"), async (req, res) =>
  * POST /api/products/import-rows
  * (default reorder_level = 0)
  * ========================= */
-router.post("/import-rows", requireRole("owner", "admin"), async (req, res) => {
+router.post("/import-rows", requireLimit("products", async (req) => {
+    const [[r]] = await db.query(
+      "SELECT COUNT(*) AS n FROM products WHERE tenant_id=? AND deleted_at IS NULL",
+      [req.tenantId]
+    );
+    return Number(r?.n || 0);
+  }), requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
 
   try {

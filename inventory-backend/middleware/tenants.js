@@ -3,6 +3,7 @@ import express from "express";
 import crypto from "crypto";
 import { db } from "../config/db.js";
 import { requireAuth, requireTenant, requireRole } from "./auth.js";
+import { requireFeature, requireLimit  } from "../middleware/requireEntitlement.js";
 import { logAudit, SEVERITY } from "../utils/audit.js";
 import { sendEmail } from "../services/mail/mailer.js";
 
@@ -115,7 +116,8 @@ router.get("/current", requireAuth, requireTenant, async (req, res) => {
  * Body: { name?, logo_url?, primary_color?, accent_color? }
  */
 router.patch(
-  "/current/branding",
+  "/current/branding",  
+  requireFeature("branding", { blockPastDue: true }),
   requireAuth,
   requireTenant,
   requireRole("owner", "admin"),
@@ -169,6 +171,14 @@ router.patch(
  */
 router.post(
   "/current/invite",
+  requireFeature("invites", { blockPastDue: true }),
+  requireLimit("users", async (req) => {
+    const [[r]] = await db.query(
+      "SELECT COUNT(*) AS n FROM tenant_members WHERE tenant_id=? AND status='active'",
+      [req.tenantId]
+    );
+    return Number(r?.n || 0);
+  }),
   requireAuth,
   requireTenant,
   requireRole("owner", "admin"),

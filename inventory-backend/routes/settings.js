@@ -2,6 +2,7 @@
 import express from "express";
 import { db } from "../config/db.js";
 import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
+import { requireFeature } from "../middleware/requireEntitlement.js";
 import { logAudit } from "../utils/audit.js";
 
 const router = express.Router();
@@ -61,7 +62,7 @@ router.get("/", async (req, res) => {
  * owner/admin only
  * Body: { value: number }
  */
-router.put("/low-stock-threshold", requireRole("owner", "admin"), async (req, res) => {
+router.put("/low-stock-threshold", requireFeature("advancedAlerts", { blockPastDue: true }), requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
 
   const value = Number(req.body?.value);
@@ -102,7 +103,7 @@ router.put("/low-stock-threshold", requireRole("owner", "admin"), async (req, re
  * owner/admin only
  * Body: { value: number }
  */
-router.put("/stock-drift-threshold", requireRole("owner", "admin"), async (req, res) => {
+router.put("/stock-drift-threshold", requireFeature("advancedAlerts", { blockPastDue: true }), requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
 
   const value = Math.floor(Number(req.body?.value));

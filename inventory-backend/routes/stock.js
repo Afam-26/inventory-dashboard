@@ -3,6 +3,7 @@ import express from "express";
 import { db } from "../config/db.js";
 import { logAudit } from "../utils/audit.js";
 import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
+import { requireFeature } from "../middleware/requireEntitlement.js";
 
 const router = express.Router();
 
@@ -443,7 +444,7 @@ router.post("/reconcile", requireRole("owner", "admin"), async (req, res) => {
 
 // POST /api/stock/reconcile-all  (admin/owner)
 // Body: { minAbsDrift?: number }  // only reconcile if abs(drift) >= minAbsDrift
-router.post("/reconcile-all", requireRole("owner", "admin"), async (req, res) => {
+router.post("/reconcile-all", requireFeature("reconcile", { blockPastDue: true }), requireRole("owner", "admin"), async (req, res) => {
   const tenantId = req.tenantId;
   const minAbsDrift = Math.max(1, Number(req.body?.minAbsDrift || 1));
 

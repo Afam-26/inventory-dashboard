@@ -787,13 +787,13 @@ export async function updateCurrentPlan(planKey) {
  * STRIPE
  * ============================
  */
-export async function startStripeCheckout({ planKey }) {
+export async function startStripeCheckout({ planKey, interval }) {
   return baseFetch(
     `${API_BASE}/billing/stripe/checkout`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ planKey }),
+      body: JSON.stringify({ planKey, interval }),
     },
     { useAuth: true }
   );

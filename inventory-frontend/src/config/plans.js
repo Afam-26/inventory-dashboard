@@ -12,14 +12,14 @@ export const UI_PLANS = [
       "1 location",
       "Up to 1,000 products",
       "Basic low-stock alerts",
-      "Audit logs (7 days)",
+      "Audit logs (30 days)",
     ],
     cta: "Choose Starter",
   },
   {
     key: "growth",
     name: "Growth",
-    price: "$49/mo",
+    price: "$29/mo",
     tagline: "Best for growing teams",
     highlight: true,
     bullets: [
@@ -35,7 +35,7 @@ export const UI_PLANS = [
   {
     key: "pro",
     name: "Pro",
-    price: "$99/mo",
+    price: "$49/mo",
     tagline: "For multi-location operations",
     bullets: [
       "Up to 10 locations",

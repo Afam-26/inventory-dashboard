@@ -1,9 +1,10 @@
-// routes/invites.js
+// inventory-backend/routes/invites.js
 import express from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { db } from "../config/db.js";
 import { logAudit, SEVERITY } from "../utils/audit.js";
+import { getTenantEntitlements } from "../config/plans.js";
 
 const router = express.Router();
 
@@ -22,6 +23,7 @@ async function safeAudit(req, entry) {
 /**
  * POST /api/invites/accept
  * Body: { email, token, full_name, password }
+ * Public endpoint — must enforce limits using inv.tenant_id (not req.tenantId)
  */
 router.post("/accept", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
@@ -62,6 +64,52 @@ router.post("/accept", async (req, res) => {
     if (Date.now() > new Date(inv.expires_at).getTime()) {
       await conn.rollback();
       return res.status(400).json({ message: "Invite expired" });
+    }
+
+    // ✅ Load tenant + entitlements using inv.tenant_id
+    const [[tenant]] = await conn.query(
+      "SELECT id, plan_key, status FROM tenants WHERE id=? LIMIT 1",
+      [inv.tenant_id]
+    );
+    if (!tenant) {
+      await conn.rollback();
+      return res.status(400).json({ message: "Tenant not found" });
+    }
+
+    const ent = getTenantEntitlements(tenant);
+
+    // ✅ If your plan doesn't allow invites, block acceptance too
+    if (!ent?.features?.invites) {
+      await conn.rollback();
+      return res.status(403).json({
+        message: "Invites not available on this plan",
+        code: "FEATURE_NOT_AVAILABLE",
+        feature: "invites",
+        plan: ent?.key || tenant.plan_key || "starter",
+      });
+    }
+
+    // ✅ Enforce user limit using tenant_members count (real tenant id)
+    const userLimit = ent?.limits?.users;
+    if (userLimit != null && userLimit !== Infinity) {
+      const [[r]] = await conn.query(
+        "SELECT COUNT(*) AS n FROM tenant_members WHERE tenant_id=? AND status='active'",
+        [inv.tenant_id]
+      );
+      const current = Number(r?.n || 0);
+      const lim = Number(userLimit);
+
+      if (Number.isFinite(lim) && current >= lim) {
+        await conn.rollback();
+        return res.status(402).json({
+          message: "Plan limit reached",
+          code: "PLAN_LIMIT_REACHED",
+          limitKey: "users",
+          limit: lim,
+          current,
+          plan: ent?.key || tenant.plan_key || "starter",
+        });
+      }
     }
 
     // find or create user

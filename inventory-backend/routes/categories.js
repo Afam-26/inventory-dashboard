@@ -1,8 +1,9 @@
-// routes/categories.js
+// inventory-backend/routes/categories.js
 import express from "express";
 import { db } from "../config/db.js";
 import { logAudit, SEVERITY } from "../utils/audit.js";
 import { requireAuth, requireTenant, requireRole } from "../middleware/auth.js";
+import { requireLimit } from "../middleware/requireEntitlement.js";
 
 const router = express.Router();
 
@@ -10,7 +11,6 @@ const router = express.Router();
 router.use(requireAuth, requireTenant);
 
 function normalizeCategoryName(input) {
-  // trim and collapse whitespace
   return String(input || "").trim().replace(/\s+/g, " ");
 }
 
@@ -20,55 +20,6 @@ async function safeAudit(req, entry) {
   } catch (e) {
     console.error("AUDIT FAILED (ignored):", e?.message || e);
   }
-}
-
-/**
- * Plan limits (per tenant)
- * Starter: 100
- * Pro: 200
- * Business: 500  (change to Infinity if you want unlimited)
- */
-const PLAN_CATEGORY_LIMITS = {
-  starter: 100,
-  pro: 200,
-  business: 500, // or Infinity for unlimited
-};
-
-async function getTenantPlanKey(tenantId) {
-  const [[t]] = await db.query("SELECT plan_key FROM tenants WHERE id=? LIMIT 1", [tenantId]);
-  return String(t?.plan_key || "starter").toLowerCase();
-}
-
-async function getActiveCategoryCount(tenantId) {
-  const [[cnt]] = await db.query(
-    `SELECT COUNT(*) AS c
-     FROM categories
-     WHERE tenant_id=? AND deleted_at IS NULL`,
-    [tenantId]
-  );
-  return Number(cnt?.c || 0);
-}
-
-async function enforceCategoryLimit(tenantId) {
-  const planKey = await getTenantPlanKey(tenantId);
-  const limit = PLAN_CATEGORY_LIMITS[planKey] ?? PLAN_CATEGORY_LIMITS.starter;
-
-  // treat Infinity as unlimited
-  if (limit === Infinity) return { ok: true, planKey, limit, current: await getActiveCategoryCount(tenantId) };
-
-  const current = await getActiveCategoryCount(tenantId);
-
-  if (current >= limit) {
-    return {
-      ok: false,
-      planKey,
-      limit,
-      current,
-      message: `Category limit reached for plan (${planKey}). Limit: ${limit}.`,
-    };
-  }
-
-  return { ok: true, planKey, limit, current };
 }
 
 /**
@@ -125,59 +76,52 @@ router.get("/deleted", requireRole("owner", "admin"), async (req, res) => {
  * Owner/Admin only
  * Body: { name }
  *
- * ✅ DB enforces uniqueness via:
- * UNIQUE (tenant_id, name_norm, is_deleted)
+ * ✅ Enforces plan limit via requireLimit("categories")
  */
-router.post("/", requireRole("owner", "admin"), async (req, res) => {
-  try {
-    const tenantId = req.tenantId;
-
-    const name = normalizeCategoryName(req.body?.name);
-    if (!name) return res.status(400).json({ message: "Name is required" });
-
-    // ✅ enforce plan limit
-    const limitCheck = await enforceCategoryLimit(tenantId);
-    if (!limitCheck.ok) {
-      return res.status(402).json({
-        message: limitCheck.message,
-        code: "PLAN_LIMIT",
-        planKey: limitCheck.planKey,
-        limit: limitCheck.limit,
-        current: limitCheck.current,
-      });
-    }
-
-    const [result] = await db.query(
-      `INSERT INTO categories (tenant_id, name)
-       VALUES (?, ?)`,
-      [tenantId, name]
+router.post(
+  "/",
+  requireRole("owner", "admin"),
+  requireLimit("categories", async (req) => {
+    const [[r]] = await db.query(
+      "SELECT COUNT(*) AS n FROM categories WHERE tenant_id=? AND deleted_at IS NULL",
+      [req.tenantId]
     );
+    return Number(r?.n || 0);
+  }),
+  async (req, res) => {
+    try {
+      const tenantId = req.tenantId;
 
-    await safeAudit(req, {
-      action: "CATEGORY_CREATE",
-      entity_type: "category",
-      entity_id: result.insertId,
-      details: {
-        name,
-        planKey: limitCheck.planKey,
-        limit: limitCheck.limit,
-        current: limitCheck.current,
-      },
-      user_id: req.user?.id ?? null,
-      user_email: req.user?.email ?? null,
-      severity: SEVERITY.INFO,
-    });
+      const name = normalizeCategoryName(req.body?.name);
+      if (!name) return res.status(400).json({ message: "Name is required" });
 
-    res.status(201).json({ message: "Category created", id: result.insertId });
-  } catch (err) {
-    if (err?.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({ message: "Category already exists in this tenant" });
+      const [result] = await db.query(
+        `INSERT INTO categories (tenant_id, name)
+         VALUES (?, ?)`,
+        [tenantId, name]
+      );
+
+      await safeAudit(req, {
+        action: "CATEGORY_CREATE",
+        entity_type: "category",
+        entity_id: result.insertId,
+        details: { name },
+        user_id: req.user?.id ?? null,
+        user_email: req.user?.email ?? null,
+        severity: SEVERITY.INFO,
+      });
+
+      res.status(201).json({ message: "Category created", id: result.insertId });
+    } catch (err) {
+      if (err?.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({ message: "Category already exists in this tenant" });
+      }
+
+      console.error("CATEGORIES POST ERROR:", err);
+      res.status(500).json({ message: "Database error" });
     }
-
-    console.error("CATEGORIES POST ERROR:", err);
-    res.status(500).json({ message: "Database error" });
   }
-});
+);
 
 /**
  * DELETE /api/categories/:id
@@ -247,68 +191,62 @@ router.delete("/:id", requireRole("owner", "admin"), async (req, res) => {
  *
  * Restoring counts toward the plan limit.
  */
-router.post("/:id/restore", requireRole("owner", "admin"), async (req, res) => {
-  try {
-    const tenantId = req.tenantId;
-    const id = Number(req.params.id);
-    if (!id) return res.status(400).json({ message: "Invalid category id" });
-
-    const [[current]] = await db.query(
-      `SELECT id, name, deleted_at
-       FROM categories
-       WHERE id = ? AND tenant_id = ?
-       LIMIT 1`,
-      [id, tenantId]
+router.post(
+  "/:id/restore",
+  requireRole("owner", "admin"),
+  requireLimit("categories", async (req) => {
+    const [[r]] = await db.query(
+      "SELECT COUNT(*) AS n FROM categories WHERE tenant_id=? AND deleted_at IS NULL",
+      [req.tenantId]
     );
+    return Number(r?.n || 0);
+  }),
+  async (req, res) => {
+    try {
+      const tenantId = req.tenantId;
+      const id = Number(req.params.id);
+      if (!id) return res.status(400).json({ message: "Invalid category id" });
 
-    if (!current) return res.status(404).json({ message: "Category not found" });
-    if (!current.deleted_at) return res.status(409).json({ message: "Category is already active" });
+      const [[current]] = await db.query(
+        `SELECT id, name, deleted_at
+         FROM categories
+         WHERE id = ? AND tenant_id = ?
+         LIMIT 1`,
+        [id, tenantId]
+      );
 
-    // ✅ enforce plan limit
-    const limitCheck = await enforceCategoryLimit(tenantId);
-    if (!limitCheck.ok) {
-      return res.status(402).json({
-        message: limitCheck.message,
-        code: "PLAN_LIMIT",
-        planKey: limitCheck.planKey,
-        limit: limitCheck.limit,
-        current: limitCheck.current,
+      if (!current) return res.status(404).json({ message: "Category not found" });
+      if (!current.deleted_at) return res.status(409).json({ message: "Category is already active" });
+
+      await db.query(
+        `UPDATE categories
+         SET deleted_at = NULL
+         WHERE id = ? AND tenant_id = ?`,
+        [id, tenantId]
+      );
+
+      await safeAudit(req, {
+        action: "CATEGORY_RESTORE",
+        entity_type: "category",
+        entity_id: id,
+        details: { restored: { id: current.id, name: current.name } },
+        user_id: req.user?.id ?? null,
+        user_email: req.user?.email ?? null,
+        severity: SEVERITY.INFO,
       });
+
+      res.json({ message: "Category restored", restored: { id, name: current.name } });
+    } catch (err) {
+      if (err?.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({
+          message: "Cannot restore: an active category with the same name already exists.",
+        });
+      }
+
+      console.error("CATEGORIES RESTORE ERROR:", err);
+      res.status(500).json({ message: "Database error" });
     }
-
-    await db.query(
-      `UPDATE categories
-       SET deleted_at = NULL
-       WHERE id = ? AND tenant_id = ?`,
-      [id, tenantId]
-    );
-
-    await safeAudit(req, {
-      action: "CATEGORY_RESTORE",
-      entity_type: "category",
-      entity_id: id,
-      details: {
-        restored: { id: current.id, name: current.name },
-        planKey: limitCheck.planKey,
-        limit: limitCheck.limit,
-        current: limitCheck.current,
-      },
-      user_id: req.user?.id ?? null,
-      user_email: req.user?.email ?? null,
-      severity: SEVERITY.INFO,
-    });
-
-    res.json({ message: "Category restored", restored: { id, name: current.name } });
-  } catch (err) {
-    if (err?.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({
-        message: "Cannot restore: an active category with the same name already exists.",
-      });
-    }
-
-    console.error("CATEGORIES RESTORE ERROR:", err);
-    res.status(500).json({ message: "Database error" });
   }
-});
+);
 
 export default router;

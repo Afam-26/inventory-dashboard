@@ -1,382 +1,398 @@
-// src/pages/Categories.jsx
-import React, { useEffect, useMemo, useState } from "react";
+// inventory-frontend/src/pages/Categories.jsx
+import { useEffect, useMemo, useState } from "react";
 import {
   getCategories,
   addCategory,
   deleteCategory,
   getDeletedCategories,
   restoreCategory,
+  getCurrentPlan,
 } from "../services/api";
+import PlanBanner from "../components/billing/PlanBanner";
+import {
+  getPlanBannerFromApiError,
+  getPlanBannerFromCurrent,
+  disabledReason,
+} from "../utils/planUi";
 
 export default function Categories({ user }) {
-  const uiRole = String(user?.tenantRole || user?.role || "").toLowerCase();
-  const isAdmin = uiRole === "admin" || uiRole === "owner";
+  const role = String(user?.tenantRole || user?.role || "").toLowerCase();
+  const isAdmin = role === "owner" || role === "admin";
 
-  const [tab, setTab] = useState("active"); // active | deleted
-  const [activeRows, setActiveRows] = useState([]);
+  const [tab, setTab] = useState("active"); // "active" | "deleted"
+
+  const [rows, setRows] = useState([]);
   const [deletedRows, setDeletedRows] = useState([]);
 
-  const [loading, setLoading] = useState(true);
-
-  // generic page error (red box)
-  const [pageErr, setPageErr] = useState("");
-
-  // plan limit banner (separate from generic errors)
-  const [planErr, setPlanErr] = useState(null); // { planKey, limit, current, message } | null
-
   const [name, setName] = useState("");
-  const [creating, setCreating] = useState(false);
 
-  const [query, setQuery] = useState("");
-  const [busyId, setBusyId] = useState(null);
+  const [current, setCurrent] = useState(null);
+  const [banner, setBanner] = useState(null);
 
-  const trimmedName = String(name || "").trim();
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
 
-  const filteredActive = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return activeRows;
-    return activeRows.filter((c) => String(c.name || "").toLowerCase().includes(q));
-  }, [activeRows, query]);
+  const tenantStatus = String(current?.tenantStatus || "active").toLowerCase();
 
-  const filteredDeleted = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return deletedRows;
-    return deletedRows.filter((c) => String(c.name || "").toLowerCase().includes(q));
-  }, [deletedRows, query]);
+  const canMutate = useMemo(() => {
+    // You can decide to allow writes on past_due; this is stricter
+    if (!isAdmin) return false;
+    if (tenantStatus === "canceled") return false;
+    if (tenantStatus === "past_due") return false;
+    return true;
+  }, [isAdmin, tenantStatus]);
 
-  async function loadActive() {
-    const rows = await getCategories();
-    setActiveRows(Array.isArray(rows) ? rows : []);
-  }
+  const whyDisabled = useMemo(() => {
+    return disabledReason({ isAdmin, tenantStatus, label: "Categories" });
+  }, [isAdmin, tenantStatus]);
 
-  async function loadDeleted() {
-    const rows = await getDeletedCategories();
-    setDeletedRows(Array.isArray(rows) ? rows : []);
-  }
-
-  async function load() {
+  async function loadAll({ keepMsgs = false } = {}) {
     setLoading(true);
-    setPageErr("");
-    setPlanErr(null);
+    if (!keepMsgs) {
+      setErr("");
+      setMsg("");
+    }
+
     try {
-      await loadActive();
-      if (isAdmin) await loadDeleted();
+      const [cur, active, del] = await Promise.all([
+        getCurrentPlan(),
+        getCategories(),
+        getDeletedCategories().catch(() => []), // if backend forbids for staff, don’t crash
+      ]);
+
+      setCurrent(cur || null);
+      setBanner(getPlanBannerFromCurrent(cur));
+
+      setRows(Array.isArray(active) ? active : Array.isArray(active?.categories) ? active.categories : []);
+      setDeletedRows(Array.isArray(del) ? del : Array.isArray(del?.categories) ? del.categories : []);
     } catch (e) {
-      setPageErr(e?.message || "Failed to load categories");
+      const b = getPlanBannerFromApiError(e);
+      if (b) setBanner(b);
+
+      setErr(e?.message || "Failed to load categories");
+      setRows([]);
+      setDeletedRows([]);
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    load();
+    loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function handleApiError(e, fallbackMsg) {
-    // if your api.js uses makeApiError(message, code, status)
-    const status = e?.status;
-    const code = e?.code;
+  async function onCreate(e) {
+    e?.preventDefault?.();
+    setErr("");
+    setMsg("");
 
-    // Plan limit (from backend)
-    // backend sends: status 402, { code: "PLAN_LIMIT", planKey, limit, current, message }
-    if (status === 402 || code === "PLAN_LIMIT") {
-      setPlanErr({
-        planKey: e?.planKey,
-        limit: e?.limit,
-        current: e?.current,
-        message: e?.message || "Plan limit reached.",
-      });
+    const trimmed = String(name || "").trim();
+    if (!trimmed) {
+      setErr("Category name is required");
       return;
     }
 
-    // Duplicate
-    if (status === 409) {
-      setPageErr(e?.message || "Category already exists");
+    if (!canMutate) {
+      setErr(whyDisabled || "Owner/Admin only");
       return;
     }
 
-    setPageErr(e?.message || fallbackMsg || "Something went wrong");
-  }
-
-  async function handleCreate(e) {
-    e.preventDefault();
-    setPageErr("");
-    setPlanErr(null);
-
-    if (!trimmedName) return;
-
-    setCreating(true);
+    setBusy(true);
     try {
-      await addCategory(trimmedName);
+      await addCategory(trimmed);
       setName("");
-      await loadActive();
+      setMsg("Category created.");
+      await loadAll({ keepMsgs: true });
     } catch (e2) {
-      handleApiError(e2, "Failed to create category");
+      const b = getPlanBannerFromApiError(e2);
+      if (b) setBanner(b);
+      setErr(e2?.message || "Failed to create category");
     } finally {
-      setCreating(false);
+      setBusy(false);
     }
   }
 
-  async function handleDelete(id) {
-    if (!isAdmin) return;
-    setPageErr("");
-    setPlanErr(null);
-    setBusyId(id);
+  async function onDelete(id) {
+    setErr("");
+    setMsg("");
+
+    if (!canMutate) {
+      setErr(whyDisabled || "Owner/Admin only");
+      return;
+    }
+
+    const ok = window.confirm("Delete this category? (It can be restored later)");
+    if (!ok) return;
+
+    setBusy(true);
     try {
       await deleteCategory(id);
-      await loadActive();
-      if (isAdmin) await loadDeleted();
-    } catch (e) {
-      handleApiError(e, "Failed to delete category");
+      setMsg("Category deleted.");
+      await loadAll({ keepMsgs: true });
+    } catch (e2) {
+      const b = getPlanBannerFromApiError(e2);
+      if (b) setBanner(b);
+      setErr(e2?.message || "Failed to delete category");
     } finally {
-      setBusyId(null);
+      setBusy(false);
     }
   }
 
-  async function handleRestore(id) {
-    if (!isAdmin) return;
-    setPageErr("");
-    setPlanErr(null);
-    setBusyId(id);
+  async function onRestore(id) {
+    setErr("");
+    setMsg("");
+
+    if (!canMutate) {
+      setErr(whyDisabled || "Owner/Admin only");
+      return;
+    }
+
+    setBusy(true);
     try {
       await restoreCategory(id);
-      await loadActive();
-      if (isAdmin) await loadDeleted();
-      setTab("active");
-    } catch (e) {
-      handleApiError(e, "Failed to restore category");
+      setMsg("Category restored.");
+      await loadAll({ keepMsgs: true });
+    } catch (e2) {
+      const b = getPlanBannerFromApiError(e2);
+      if (b) setBanner(b);
+      setErr(e2?.message || "Failed to restore category");
     } finally {
-      setBusyId(null);
+      setBusy(false);
     }
   }
 
-  function switchTab(next) {
-    setTab(next);
-    setPageErr("");
-    setPlanErr(null);
-  }
+  const activeList = rows;
+  const deletedList = deletedRows;
+
+  const cardStyle = {
+    border: "1px solid #e5e7eb",
+    borderRadius: 14,
+    padding: 14,
+    background: "#fff",
+    boxShadow: "0 8px 22px rgba(0,0,0,.06)",
+  };
+
+  const pillStyle = (active) => ({
+    border: "1px solid #e5e7eb",
+    background: active ? "#111827" : "#fff",
+    color: active ? "#fff" : "#111827",
+    borderRadius: 999,
+    padding: "6px 10px",
+    fontSize: 13,
+    fontWeight: 800,
+    cursor: "pointer",
+  });
 
   return (
-    <div style={{ maxWidth: 980 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "end" }}>
+    <div style={{ width: "100%", maxWidth: 1100 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
         <div>
           <h1 style={{ marginBottom: 6 }}>Categories</h1>
-          <p style={{ marginTop: 0, color: "#6b7280" }}>
-            Categories are tenant-scoped. Deleted categories can be restored.
-          </p>
-        </div>
-
-        <button className="btn" onClick={load} disabled={loading}>
-          {loading ? "Refreshing..." : "Refresh"}
-        </button>
-      </div>
-
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 8, marginTop: 12, marginBottom: 12 }}>
-        <button
-          className="btn"
-          onClick={() => switchTab("active")}
-          style={{
-            background: tab === "active" ? "#111827" : "transparent",
-            color: tab === "active" ? "#fff" : "inherit",
-            border: "1px solid rgba(0,0,0,0.14)",
-          }}
-        >
-          Active categories ({activeRows.length})
-        </button>
-
-        <button
-          className="btn"
-          onClick={() => switchTab("deleted")}
-          disabled={!isAdmin}
-          title={!isAdmin ? "Admin/Owner only" : ""}
-          style={{
-            background: tab === "deleted" ? "#111827" : "transparent",
-            color: tab === "deleted" ? "#fff" : "inherit",
-            border: "1px solid rgba(0,0,0,0.14)",
-            opacity: !isAdmin ? 0.6 : 1,
-          }}
-        >
-          Deleted categories ({deletedRows.length})
-        </button>
-      </div>
-
-      {/* Plan limit banner */}
-      {planErr ? (
-        <div
-          style={{
-            background: "#fff7ed",
-            border: "1px solid #fed7aa",
-            borderRadius: 12,
-            padding: 12,
-            marginBottom: 12,
-            color: "#9a3412",
-          }}
-        >
-          <b>Plan limit reached.</b>{" "}
-          <span>
-            {planErr.message}
-            {planErr.planKey ? ` (Plan: ${String(planErr.planKey).toUpperCase()})` : ""}
-            {Number.isFinite(planErr.limit) ? ` Limit: ${planErr.limit}.` : ""}
-            {Number.isFinite(planErr.current) ? ` Current: ${planErr.current}.` : ""}
-          </span>
-          <div style={{ marginTop: 6, fontSize: 12, color: "#7c2d12" }}>
-            Upgrade on the Billing page to increase limits.
+          <div style={{ color: "#6b7280" }}>
+            Manage categories for this tenant. (Soft delete + restore supported.)
           </div>
         </div>
-      ) : null}
 
-      {/* Page error */}
-      {pageErr ? (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setTab("active")}
+            style={pillStyle(tab === "active")}
+          >
+            Active ({activeList.length})
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setTab("deleted")}
+            style={pillStyle(tab === "deleted")}
+            disabled={!isAdmin}
+            title={!isAdmin ? "Owner/Admin only" : ""}
+          >
+            Deleted ({deletedList.length})
+          </button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <PlanBanner banner={banner} />
+      </div>
+
+      {err ? (
         <div
           style={{
+            marginTop: 10,
             background: "#fef2f2",
             border: "1px solid #fecaca",
             borderRadius: 12,
             padding: 12,
-            marginBottom: 12,
             color: "#991b1b",
           }}
         >
-          {pageErr}
+          {err}
         </div>
       ) : null}
 
-      {/* Create (admin/owner only) */}
-      {isAdmin && tab === "active" && (
+      {msg ? (
         <div
           style={{
-            padding: 14,
-            border: "1px solid #e5e7eb",
+            marginTop: 10,
+            background: "#ecfdf5",
+            border: "1px solid #bbf7d0",
             borderRadius: 12,
-            background: "#fff",
-            marginBottom: 12,
+            padding: 12,
+            color: "#065f46",
           }}
         >
-          <h3 style={{ marginTop: 0 }}>Create category</h3>
-          <form onSubmit={handleCreate} style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <input
-              className="input"
-              placeholder="e.g. Tyres"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              style={{ maxWidth: 420 }}
-            />
-            <button className="btn" type="submit" disabled={creating || !trimmedName}>
-              {creating ? "Creating..." : "Add"}
-            </button>
-          </form>
-          <div style={{ marginTop: 8, color: "#6b7280", fontSize: 12 }}>
-            Uniqueness is case-insensitive per tenant. Deleted items can be recreated.
-          </div>
+          {msg}
         </div>
-      )}
+      ) : null}
 
-      {/* Search */}
-      <div style={{ display: "flex", gap: 12, alignItems: "center", margin: "10px 0" }}>
-        <input
-          className="input"
-          placeholder="Search categories..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          style={{ maxWidth: 420 }}
-        />
-        <div style={{ fontSize: 13, color: "#6b7280" }}>
-          Showing{" "}
-          <b>{tab === "active" ? filteredActive.length : filteredDeleted.length}</b> of{" "}
-          <b>{tab === "active" ? activeRows.length : deletedRows.length}</b>
-        </div>
+      {/* Create */}
+      <div style={{ marginTop: 14, ...cardStyle }}>
+        <div style={{ fontWeight: 900, marginBottom: 8 }}>Add category</div>
+
+        <form onSubmit={onCreate} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Category name"
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              border: "1px solid #e5e7eb",
+              minWidth: 260,
+              flex: "1 1 260px",
+            }}
+            disabled={!canMutate || busy}
+            title={!canMutate ? whyDisabled : ""}
+          />
+
+          <button
+            className="btn"
+            type="submit"
+            disabled={!canMutate || busy}
+            title={!canMutate ? whyDisabled : ""}
+          >
+            {busy ? "Working..." : "Add"}
+          </button>
+
+          {!canMutate ? (
+            <div style={{ fontSize: 12, color: "#6b7280", alignSelf: "center" }}>
+              Tip: Hover disabled buttons to see why.
+            </div>
+          ) : null}
+        </form>
       </div>
 
-      {/* Table */}
-      <div style={{ overflowX: "auto" }}>
-        <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead style={{ background: "#f3f4f6" }}>
-            <tr>
-              <th align="left">ID</th>
-              <th align="left">Name</th>
-              {tab === "deleted" ? <th align="left">Deleted At</th> : null}
-              <th align="left">Actions</th>
-            </tr>
-          </thead>
+      {/* List */}
+      <div style={{ marginTop: 14, ...cardStyle }}>
+        {loading ? (
+          <div>Loading…</div>
+        ) : tab === "active" ? (
+          <>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>Active categories</div>
 
-          <tbody>
-            {loading && (
-              <tr>
-                <td colSpan={tab === "deleted" ? 4 : 3} style={{ textAlign: "center" }}>
-                  Loading...
-                </td>
-              </tr>
+            {!activeList.length ? (
+              <div style={{ color: "#6b7280" }}>No categories yet.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {activeList.map((c) => (
+                  <div
+                    key={c.id}
+                    style={{
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 12,
+                      padding: 12,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      background: "#f9fafb",
+                    }}
+                  >
+                    <div style={{ fontWeight: 800 }}>{c.name}</div>
+
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        className="btn"
+                        onClick={() => onDelete(c.id)}
+                        disabled={!canMutate || busy}
+                        title={!canMutate ? whyDisabled : "Soft delete"}
+                        style={{ background: "#6b7280" }}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
+          </>
+        ) : (
+          <>
+            <div style={{ fontWeight: 900, marginBottom: 10 }}>Deleted categories</div>
 
-            {!loading &&
-              tab === "active" &&
-              filteredActive.map((c) => {
-                const isBusy = busyId === c.id;
-                return (
-                  <tr key={c.id}>
-                    <td>{c.id}</td>
-                    <td>{c.name}</td>
-                    <td style={{ minWidth: 220 }}>
-                      {isAdmin ? (
-                        <button className="btn" disabled={isBusy} onClick={() => handleDelete(c.id)}>
-                          {isBusy ? "Deleting..." : "Delete"}
-                        </button>
-                      ) : (
-                        <span style={{ color: "#6b7280", fontSize: 12 }}>No actions</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
+            {!isAdmin ? (
+              <div style={{ color: "#6b7280" }}>
+                Owner/Admin only.
+              </div>
+            ) : !deletedList.length ? (
+              <div style={{ color: "#6b7280" }}>No deleted categories.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 10 }}>
+                {deletedList.map((c) => (
+                  <div
+                    key={c.id}
+                    style={{
+                      border: "1px solid #e5e7eb",
+                      borderRadius: 12,
+                      padding: 12,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      background: "#fff",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 800 }}>{c.name}</div>
+                      <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                        Deleted at: {c.deleted_at ? String(c.deleted_at) : "—"}
+                      </div>
+                    </div>
 
-            {!loading &&
-              tab === "deleted" &&
-              filteredDeleted.map((c) => {
-                const isBusy = busyId === c.id;
-                return (
-                  <tr key={c.id}>
-                    <td>{c.id}</td>
-                    <td>{c.name}</td>
-                    <td>{c.deleted_at ? new Date(c.deleted_at).toLocaleString() : "-"}</td>
-                    <td style={{ minWidth: 220 }}>
-                      {isAdmin ? (
-                        <button className="btn" disabled={isBusy} onClick={() => handleRestore(c.id)}>
-                          {isBusy ? "Restoring..." : "Restore"}
-                        </button>
-                      ) : (
-                        <span style={{ color: "#6b7280", fontSize: 12 }}>Admin/Owner only</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-
-            {!loading && tab === "active" && filteredActive.length === 0 && (
-              <tr>
-                <td colSpan={3} style={{ textAlign: "center" }}>
-                  No active categories found
-                </td>
-              </tr>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        className="btn"
+                        onClick={() => onRestore(c.id)}
+                        disabled={!canMutate || busy}
+                        title={!canMutate ? whyDisabled : "Restore (counts toward plan limit)"}
+                        type="button"
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
-
-            {!loading && tab === "deleted" && filteredDeleted.length === 0 && (
-              <tr>
-                <td colSpan={4} style={{ textAlign: "center" }}>
-                  No deleted categories found
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+          </>
+        )}
       </div>
 
-      {!isAdmin && (
-        <div style={{ marginTop: 10, color: "#6b7280", fontSize: 12 }}>
-          You can view active categories. Only Admin/Owner can create/delete/restore.
-        </div>
-      )}
+      {/* Tiny footer hint */}
+      <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+        Note: Category restore counts toward your plan limit. If you hit a limit, upgrade in Billing.
+      </div>
     </div>
   );
 }

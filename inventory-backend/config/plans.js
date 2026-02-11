@@ -5,13 +5,13 @@ export const PLANS = {
     key: "starter",
     name: "Starter",
     limits: {
-      locations: 1,
+      categories: 3,
       products: 1000,
-      users: 1,
-      auditDays: 7,
+      users: 3,
+      auditDays: 30,
     },
     features: {
-      barcode: false,
+      barcode: true,
       reconcile: false,
       invites: false,
       advancedAlerts: false,
@@ -23,7 +23,7 @@ export const PLANS = {
     key: "growth",
     name: "Growth",
     limits: {
-      locations: 3,
+      categories: 5,
       products: 10000,
       users: 5,
       auditDays: 90,
@@ -41,7 +41,7 @@ export const PLANS = {
     key: "pro",
     name: "Pro",
     limits: {
-      locations: 10,
+      categories: 10,
       products: 50000,
       users: 25, // or Infinity
       auditDays: 365,
@@ -57,6 +57,6 @@ export const PLANS = {
 };
 
 export function getTenantEntitlements(tenant) {
-  const planKey = String(tenant?.plan_key || "starter").toLowerCase();
+  const planKey = String(tenant?.plan_key || "starter").toLowerCase(); 
   return PLANS[planKey] || PLANS.starter;
 }

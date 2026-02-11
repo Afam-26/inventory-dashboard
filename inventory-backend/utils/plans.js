@@ -3,13 +3,13 @@ export const PLANS = Object.freeze({
   starter: {
     key: "starter",
     name: "Starter",
-    priceLabel: "$0",
+    priceLabel: "$19/mo",
     limits: { categories: 100, products: 200, users: 3 },
   },
   pro: {
     key: "pro",
     name: "Pro",
-    priceLabel: "$19/mo",
+    priceLabel: "$29/mo",
     limits: { categories: 200, products: 2000, users: 10 },
   },
   business: {

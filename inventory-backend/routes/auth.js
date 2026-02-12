@@ -401,7 +401,14 @@ router.post("/login", loginLimiter, async (req, res) => {
       tenants,
     });
   } catch (err) {
-    console.error("LOGIN ERROR:", err);
+    console.error("LOGIN ERROR:", err?.code, err?.message);
+
+    if (err?.code === "ETIMEDOUT" || err?.code === "ECONNREFUSED") {
+      return res.status(503).json({
+        message: "Service temporarily unavailable. Please try again.",
+      });
+    }
+
     return res.status(500).json({ message: "Server error" });
   }
 });

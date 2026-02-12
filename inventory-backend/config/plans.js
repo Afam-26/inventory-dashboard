@@ -20,8 +20,8 @@ export const PLANS = {
   },
 
   growth: {
-    key: "growth",
-    name: "Growth",
+    key: "business",
+    name: "Business",
     limits: {
       categories: 5,
       products: 10000,

@@ -11,6 +11,7 @@ import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 
 import { db } from "./config/db.js";
+import { waitForDbReady } from "./config/db.js";
 
 import productsRoutes from "./routes/products.js";
 import categoriesRoutes from "./routes/categories.js";
@@ -25,6 +26,7 @@ import invitesRouter from "./routes/invites.js";
 import billingRouter, { billingWebhookHandler } from "./routes/billing.js";
 import publicRoutes from "./routes/public.js";
 import settingsRoutes from "./routes/settings.js";
+
 
 import { scheduleDailySnapshots } from "./utils/auditSnapshots.js";
 
@@ -148,9 +150,33 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: "Server error" });
 });
 
+app.get("/api/health", async (req, res) => {
+  try {
+    await db.query("SELECT 1");
+    res.json({ status: "ok", db: "connected" });
+  } catch (err) {
+    console.error("HEALTH CHECK ERROR:", err?.code, err?.message);
+    res.status(503).json({ status: "degraded", db: "disconnected" });
+  }
+});
+
 /* ======================================================
    START
 ====================================================== */
-app.listen(process.env.PORT || 5000, () => {
-  console.log(`Backend running on http://localhost:${process.env.PORT || 5000}`);
-});
+
+const port = Number(process.env.PORT || 5000);
+
+(async () => {
+  const r = await waitForDbReady();
+  if (!r.ok) {
+    console.error("DB failed to become ready on startup. Starting anyway (health will show degraded).");
+  }
+
+  app.listen(port, () => {
+    console.log(`API listening on ${port}`);
+  });
+})();
+
+// app.listen(process.env.PORT || 5000, () => {
+//   console.log(`Backend running on http://localhost:${process.env.PORT || 5000}`);
+// });

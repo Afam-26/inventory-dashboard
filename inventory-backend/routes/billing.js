@@ -69,6 +69,7 @@ function makeUsageLine({ used, limit }) {
 function mapTenantStatusFromStripe(subStatus) {
   if (subStatus === "active" || subStatus === "trialing") return "active";
   if (subStatus === "past_due" || subStatus === "unpaid") return "past_due";
+  // treat anything else as canceled/locked
   return "canceled";
 }
 
@@ -161,7 +162,7 @@ router.get("/current", async (req, res) => {
  * Body: { planKey, interval }
  *
  * ✅ 7-day trial ONLY for Starter
- * ✅ Growth/Pro = NO trial
+ * ✅ Bussine/Pro = NO trial
  */
 router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async (req, res) => {
   const stripe = getStripe();
@@ -292,9 +293,9 @@ router.get("/stripe/prices", requireRole("owner"), requireBillingAdmin, async (r
         monthly: process.env.STRIPE_PRICE_STARTER_MONTHLY,
         yearly: process.env.STRIPE_PRICE_STARTER_YEARLY,
       },
-      growth: {
-        monthly: process.env.STRIPE_PRICE_GROWTH_MONTHLY,
-        yearly: process.env.STRIPE_PRICE_GROWTH_YEARLY,
+      business: {
+        monthly: process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
+        yearly: process.env.STRIPE_PRICE_BUSINESS_YEARLY,
       },
       pro: {
         monthly: process.env.STRIPE_PRICE_PRO_MONTHLY,
@@ -347,85 +348,123 @@ export async function billingWebhookHandler(req, res) {
     return res.status(400).send("Bad signature");
   }
 
+  // 1) Idempotency: record event id (dedupe)
   try {
-    async function resolveTenantId({ subId, customerId, metadata }) {
-      if (subId) {
-        const [[tBySub]] = await db.query(
-          "SELECT id FROM tenants WHERE stripe_subscription_id=? LIMIT 1",
-          [subId]
-        );
-        if (tBySub?.id) return tBySub.id;
-      }
-
-      if (customerId) {
-        const [[tByCust]] = await db.query(
-          "SELECT id FROM tenants WHERE stripe_customer_id=? LIMIT 1",
-          [customerId]
-        );
-        if (tByCust?.id) return tByCust.id;
-      }
-
-      const metaTenantId = metadata?.tenantId || metadata?.tenant_id;
-      if (metaTenantId) return Number(metaTenantId) || null;
-
-      return null;
-    }
-
-    if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {
-      const sub = event.data.object;
-
-      const customerId = sub.customer;
-      const planKey = planKeyFromSubscription(sub);
-      const priceId = sub.items?.data?.[0]?.price?.id || null;
-
-      const plan_status = sub.status || null;
-      const status = mapTenantStatusFromStripe(plan_status);
-      const periodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
-
-      const tenantId = await resolveTenantId({ subId: sub.id, customerId, metadata: sub.metadata });
-
-      if (tenantId) {
-        await db.query(
-          `UPDATE tenants
-           SET
-             plan_key=?,
-             status=?,
-             stripe_customer_id=?,
-             stripe_subscription_id=?,
-             stripe_price_id=?,
-             plan_status=?,
-             current_period_end=?
-           WHERE id=?`,
-          [planKey, status, customerId, sub.id, priceId, plan_status, periodEnd, tenantId]
-        );
-      }
-
-      return res.json({ received: true });
-    }
-
-    if (event.type === "customer.subscription.deleted") {
-      const sub = event.data.object;
-      const customerId = sub.customer;
-
-      const tenantId = await resolveTenantId({ subId: sub.id, customerId, metadata: sub.metadata });
-
-      if (tenantId) {
-        await db.query(
-          `UPDATE tenants
-           SET status='canceled', plan_status=?, current_period_end=NULL
-           WHERE id=?`,
-          [sub.status || "canceled", tenantId]
-        );
-      }
-
-      return res.json({ received: true });
-    }
-
-    return res.json({ received: true });
+    await db.query(
+      `INSERT INTO stripe_webhook_events (event_id, type, livemode, status)
+       VALUES (?, ?, ?, 'received')
+       ON DUPLICATE KEY UPDATE event_id = event_id`,
+      [event.id, event.type, event.livemode ? 1 : 0]
+    );
   } catch (e) {
-    console.error("WEBHOOK PROCESS ERROR:", e);
-    res.status(500).send("Webhook error");
+    // If DB is shaky, ACK 200 so Stripe doesn't hammer retries
+    console.error("WEBHOOK EVENT LOG INSERT ERROR (ack anyway):", e?.message || e);
+    return res.json({ received: true });
   }
+
+  // If already processed, ACK immediately
+  try {
+    const [[row]] = await db.query(
+      `SELECT status FROM stripe_webhook_events WHERE event_id=? LIMIT 1`,
+      [event.id]
+    );
+    if (row?.status === "processed") return res.json({ received: true, deduped: true });
+  } catch (e) {
+    // Even if this fails, continue; processing may still work
+    console.error("WEBHOOK EVENT STATUS READ ERROR:", e?.message || e);
+  }
+
+  // 2) ACK quickly (fast response to Stripe)
+  res.json({ received: true });
+
+  // 3) Process in background (best effort)
+  (async () => {
+    try {
+      async function resolveTenantId({ subId, customerId, metadata }) {
+        if (subId) {
+          const [[tBySub]] = await db.query(
+            "SELECT id FROM tenants WHERE stripe_subscription_id=? LIMIT 1",
+            [subId]
+          );
+          if (tBySub?.id) return tBySub.id;
+        }
+
+        if (customerId) {
+          const [[tByCust]] = await db.query(
+            "SELECT id FROM tenants WHERE stripe_customer_id=? LIMIT 1",
+            [customerId]
+          );
+          if (tByCust?.id) return tByCust.id;
+        }
+
+        const metaTenantId = metadata?.tenantId || metadata?.tenant_id;
+        if (metaTenantId) return Number(metaTenantId) || null;
+
+        return null;
+      }
+
+      if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {
+        const sub = event.data.object;
+
+        const customerId = sub.customer;
+        const planKey = planKeyFromSubscription(sub);
+        const priceId = sub.items?.data?.[0]?.price?.id || null;
+
+        const plan_status = sub.status || null;
+        const status = mapTenantStatusFromStripe(plan_status);
+        const periodEnd = sub.current_period_end ? new Date(sub.current_period_end * 1000) : null;
+
+        const tenantId = await resolveTenantId({ subId: sub.id, customerId, metadata: sub.metadata });
+
+        if (tenantId) {
+          await db.query(
+            `UPDATE tenants
+             SET
+               plan_key=?,
+               status=?,
+               stripe_customer_id=?,
+               stripe_subscription_id=?,
+               stripe_price_id=?,
+               plan_status=?,
+               current_period_end=?
+             WHERE id=?`,
+            [planKey, status, customerId, sub.id, priceId, plan_status, periodEnd, tenantId]
+          );
+        }
+      } else if (event.type === "customer.subscription.deleted") {
+        const sub = event.data.object;
+        const customerId = sub.customer;
+
+        const tenantId = await resolveTenantId({ subId: sub.id, customerId, metadata: sub.metadata });
+
+        if (tenantId) {
+          await db.query(
+            `UPDATE tenants
+             SET status='canceled', plan_status=?, current_period_end=NULL
+             WHERE id=?`,
+            [sub.status || "canceled", tenantId]
+          );
+        }
+      }
+
+      await db.query(
+        `UPDATE stripe_webhook_events
+         SET status='processed', processed_at=NOW(), error_message=NULL
+         WHERE event_id=?`,
+        [event.id]
+      );
+    } catch (e) {
+      console.error("WEBHOOK PROCESS ERROR:", e?.message || e);
+      try {
+        await db.query(
+          `UPDATE stripe_webhook_events
+           SET status='failed', processed_at=NOW(), error_message=?
+           WHERE event_id=?`,
+          [String(e?.message || e).slice(0, 500), event.id]
+        );
+      } catch {}
+    }
+  })();
 }
 
 export default router;

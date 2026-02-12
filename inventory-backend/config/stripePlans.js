@@ -7,7 +7,7 @@ function env(name) {
 
 export function normalizePlanKey(planKey) {
   const k = String(planKey || "").toLowerCase().trim();
-  if (!["starter", "growth", "pro"].includes(k)) return "starter";
+  if (!["starter", "business", "pro"].includes(k)) return "starter";
   return k;
 }
 
@@ -22,8 +22,8 @@ export function normalizeInterval(interval) {
  *
  * STRIPE_PRICE_STARTER_MONTHLY=price_...
  * STRIPE_PRICE_STARTER_YEARLY=price_...
- * STRIPE_PRICE_GROWTH_MONTHLY=price_...
- * STRIPE_PRICE_GROWTH_YEARLY=price_...
+ * STRIPE_PRICE_BUSINESS_MONTHLY=price_...
+ * STRIPE_PRICE_BUSINESS_YEARLY=price_...
  * STRIPE_PRICE_PRO_MONTHLY=price_...
  * STRIPE_PRICE_PRO_YEARLY=price_...
  */
@@ -32,9 +32,9 @@ export const PLAN_INTERVAL_TO_PRICE = {
     month: env("STRIPE_PRICE_STARTER_MONTHLY"),
     year: env("STRIPE_PRICE_STARTER_YEARLY"),
   },
-  growth: {
-    month: env("STRIPE_PRICE_GROWTH_MONTHLY"),
-    year: env("STRIPE_PRICE_GROWTH_YEARLY"),
+  business: {
+    month: env("STRIPE_PRICE_BUSINESS_MONTHLY"),
+    year: env("STRIPE_PRICE_BUSINESS_YEARLY"),
   },
   pro: {
     month: env("STRIPE_PRICE_PRO_MONTHLY"),
@@ -68,6 +68,7 @@ export function planKeyFromSubscription(sub) {
   const meta = STRIPE_PRICE_TO_META[priceId];
   return normalizePlanKey(meta?.planKey || "starter");
 }
+
 
 export function intervalFromSubscription(sub) {
   const priceId =

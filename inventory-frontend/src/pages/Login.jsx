@@ -26,7 +26,7 @@ function normalizeRedirectPath(path) {
   if (!p.startsWith("/")) return "/dashboard";
 
   return p;
-}
+} 
 
 export default function Login({ onSuccess }) {
   const navigate = useNavigate();

@@ -1,5 +1,25 @@
+// import mysql from "mysql2/promise";
+// import "dotenv/config";
+
+// export const db = mysql.createPool({
+//   host: process.env.DB_HOST,
+//   port: Number(process.env.DB_PORT || 3306),
+//   user: process.env.DB_USER,
+//   password: process.env.DB_PASSWORD,
+//   database: process.env.DB_NAME,
+//   waitForConnections: true,
+//   connectionLimit: 10,
+//   queueLimit: 0,
+// });
+
+
+// config/db.js
 import mysql from "mysql2/promise";
 import "dotenv/config";
+
+export function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 export const db = mysql.createPool({
   host: process.env.DB_HOST,
@@ -10,36 +30,37 @@ export const db = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
+  connectTimeout: 20000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
 });
 
-// config/db.js
-// import mysql from "mysql2/promise";
-// import "dotenv/config";
+/**
+ * Retry DB readiness on startup (handles Railway hiccups / DB restarts)
+ */
+export async function waitForDbReady({
+  maxAttempts = 12,
+  baseDelayMs = 800,
+  maxDelayMs = 8000,
+} = {}) {
+  let lastErr = null;
 
-// // Railway provides MYSQL_URL (private/internal)
-// const railwayUrl = process.env.MYSQL_URL || process.env.DATABASE_URL;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await db.query("SELECT 1");
+      return { ok: true, attempts: attempt };
+    } catch (e) {
+      lastErr = e;
+      const code = e?.code || "";
+      const delay = Math.min(maxDelayMs, baseDelayMs * Math.pow(1.6, attempt - 1));
 
-// const host = process.env.DB_HOST || process.env.MYSQLHOST;
-// const port = Number(process.env.DB_PORT || process.env.MYSQLPORT || 3306);
-// const user = process.env.DB_USER || process.env.MYSQLUSER;
-// const password = process.env.DB_PASSWORD || process.env.MYSQLPASSWORD;
-// const database = process.env.DB_NAME || process.env.MYSQLDATABASE;
+      console.error(
+        `DB not ready (attempt ${attempt}/${maxAttempts}) code=${code} msg=${e?.message}`
+      );
 
-// // Create pool using URL if present (recommended on Railway)
-// export const db = railwayUrl
-//   ? mysql.createPool(railwayUrl)
-//   : mysql.createPool({
-//       host,
-//       port,
-//       user,
-//       password,
-//       database,
-//       waitForConnections: true,
-//       connectionLimit: 10,
-//       queueLimit: 0,
-//       connectTimeout: 20000,
-//     });
+      await sleep(delay);
+    }
+  }
 
-
-// console.log("DB using URL:", Boolean(railwayUrl));
-// console.log("DB host:", host, "port:", port, "db:", database);
+  return { ok: false, attempts: maxAttempts, error: lastErr };
+}

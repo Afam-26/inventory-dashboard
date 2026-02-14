@@ -129,24 +129,20 @@ function getThresholdForProduct(p, tenantDefault = 10) {
   const r = Number(p?.reorder_level ?? 0);
   return Number.isFinite(r) && r > 0 ? r : tenantDefault;
 }
-
 function isLowStock(p, tenantDefault = 10) {
   const qty = Number(p?.quantity ?? 0);
   const threshold = getThresholdForProduct(p, tenantDefault);
   return qty <= threshold;
 }
-
 function urgencyScore(p, tenantDefault = 10) {
   const qty = Number(p?.quantity ?? 0);
   const threshold = getThresholdForProduct(p, tenantDefault);
   return qty - threshold;
 }
-
 function sortProductsUrgentFirst(list, tenantDefault = 10) {
   return [...list].sort((a, b) => {
     const aLow = isLowStock(a, tenantDefault) ? 1 : 0;
     const bLow = isLowStock(b, tenantDefault) ? 1 : 0;
-
     if (aLow !== bLow) return bLow - aLow;
 
     const au = urgencyScore(a, tenantDefault);
@@ -156,7 +152,6 @@ function sortProductsUrgentFirst(list, tenantDefault = 10) {
     return String(a.name || "").localeCompare(String(b.name || ""));
   });
 }
-
 function isDeleted(p) {
   return Boolean(p?.deleted_at);
 }
@@ -185,6 +180,190 @@ function isReconWarning(p, driftThreshold) {
 ============================ */
 function normSku(v) {
   return String(v || "").trim().toLowerCase();
+}
+
+/* ============================
+   UI helpers (formatting)
+============================ */
+function shortText(s, max = 24) {
+  const str = String(s ?? "");
+  if (str.length <= max) return str;
+  return str.slice(0, Math.max(0, max - 1)) + "…";
+}
+function intComma(n) {
+  const v = Number(n ?? 0);
+  if (!Number.isFinite(v)) return "0";
+  return Math.round(v).toLocaleString("en-US");
+}
+function moneyUSD(n) {
+  const v = Number(n ?? 0);
+  const safe = Number.isFinite(v) ? v : 0;
+  return safe.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+/* ============================
+   Category color (stable per name)
+============================ */
+function hashToHue(str) {
+  const s = String(str || "");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+function getCategoryColor(catName) {
+  const name = String(catName || "").trim();
+  if (!name) return { bg: "rgba(107,114,128,.10)", text: "#6b7280", border: "rgba(107,114,128,.18)" };
+
+  const hue = hashToHue(name);
+  // premium-ish soft pill
+  return {
+    bg: `hsla(${hue}, 80%, 92%, 1)`,
+    text: `hsl(${hue}, 55%, 28%)`,
+    border: `hsla(${hue}, 55%, 55%, .22)`,
+  };
+}
+
+/* ============================
+   Icon components (no deps)
+============================ */
+function IconButton({ className = "", title, disabled, onClick, children }) {
+  return (
+    <button className={`iconBtn ${className}`} title={title} disabled={disabled} onClick={onClick} type="button">
+      {children}
+    </button>
+  );
+}
+function IconEdit() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M12 20h9"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+function IconTrash() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M3 6h18"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M8 6V4h8v2"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M19 6l-1 14H6L5 6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M10 11v6M14 11v6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+function IconRestore() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M3 12a9 9 0 0 1 15.364-6.364"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M18 4v6h-6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M21 12a9 9 0 0 1-15.364 6.364"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+function IconCheck() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M20 6 9 17l-5-5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+function IconX() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M18 6 6 18M6 6l12 12"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+function IconSync() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M21 12a9 9 0 0 0-15.364-6.364"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M6 4v6h6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3 12a9 9 0 0 0 15.364 6.364"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M18 20v-6h-6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 export default function Products({ user }) {
@@ -228,6 +407,9 @@ export default function Products({ user }) {
   const [reconBusy, setReconBusy] = useState(false);
   const [reconMsg, setReconMsg] = useState("");
 
+  // ✅ selection (for “Select” column)
+  const [selected, setSelected] = useState({}); // { [id]: true }
+
   const [form, setForm] = useState({
     name: "",
     sku: "",
@@ -244,7 +426,7 @@ export default function Products({ user }) {
   const nameRef = useRef(null);
   const skuRef = useRef(null);
 
-  // ✅ NEW: edit refs (for auto-focus + inline duplicate)
+  // ✅ edit refs
   const editSkuRef = useRef(null);
 
   // optional: shake animation toggles
@@ -351,7 +533,6 @@ export default function Products({ user }) {
 
   /* ============================
      SKU Index (include deleted)
-     - Used for "warning as you type"
 ============================ */
   const [skuIndex, setSkuIndex] = useState(() => new Map()); // Map<skuLower, { count:number, ids:number[] }>
   const [skuIndexReady, setSkuIndexReady] = useState(false);
@@ -371,7 +552,6 @@ export default function Products({ user }) {
       setSkuIndex(m);
       setSkuIndexReady(true);
     } catch {
-      // fallback: at least allow UI to work without index
       setSkuIndexReady(false);
     }
   }
@@ -391,7 +571,6 @@ export default function Products({ user }) {
       } catch {
         // keep defaults
       } finally {
-        // load sku index after settings attempt
         refreshSkuIndex();
       }
     })();
@@ -416,6 +595,9 @@ export default function Products({ user }) {
 
       setProducts(finalList);
       setCategories(cats);
+
+      // reset selection when reloading
+      setSelected({});
     } catch (e2) {
       setError(e2?.message || "Failed to load");
     } finally {
@@ -445,7 +627,6 @@ export default function Products({ user }) {
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
-
     if (error) setError("");
 
     setFieldErrors((prev) => {
@@ -464,13 +645,12 @@ export default function Products({ user }) {
   const createSkuWarning = useMemo(() => {
     const s = normSku(form?.sku);
     if (!s) return "";
-    if (!skuIndexReady) return ""; // if index not ready, don't warn (avoid false positives)
+    if (!skuIndexReady) return "";
     const hit = skuIndex.get(s);
     if (!hit) return "";
     return "Duplicate SKU not allowed.";
   }, [form?.sku, skuIndex, skuIndexReady]);
 
-  // keep create field error in sync with the live warning (but don't override "SKU is required")
   useEffect(() => {
     if (!createSkuWarning) {
       setFieldErrors((prev) => {
@@ -485,7 +665,6 @@ export default function Products({ user }) {
     }
 
     setFieldErrors((prev) => {
-      // if another SKU error exists, keep it
       if (prev?.sku && prev.sku !== "Duplicate SKU not allowed.") return prev;
       return { ...prev, sku: "Duplicate SKU not allowed." };
     });
@@ -501,8 +680,6 @@ export default function Products({ user }) {
     const errs = {};
     if (!name) errs.name = "Product name is required.";
     if (!sku) errs.sku = "SKU is required.";
-
-    // ✅ block create if live duplicate warning is present
     if (!errs.sku && createSkuWarning) errs.sku = createSkuWarning;
 
     if (Object.keys(errs).length > 0) {
@@ -544,7 +721,6 @@ export default function Products({ user }) {
       setShake({});
       setError("");
 
-      // refresh sku index so typing warning stays accurate
       refreshSkuIndex();
 
       if (viewMode !== "active") setViewMode("active");
@@ -553,7 +729,6 @@ export default function Products({ user }) {
       const msg = e2?.message || "Create failed";
       setError(msg);
 
-      // ✅ Server duplicate SKU -> highlight + focus SKU
       if (String(msg).toLowerCase().includes("duplicate sku")) {
         setFieldErrors((prev) => ({ ...prev, sku: "Duplicate SKU not allowed." }));
         skuRef.current?.focus();
@@ -577,7 +752,6 @@ export default function Products({ user }) {
       reorder_level: p.reorder_level ?? 0,
     });
 
-    // focus sku quickly (nice UX)
     window.setTimeout(() => editSkuRef.current?.focus(), 0);
   }
 
@@ -600,7 +774,6 @@ export default function Products({ user }) {
     if (!skuIndexReady) return "";
     const hit = skuIndex.get(s);
     if (!hit) return "";
-    // allow keeping same SKU for the same product
     const otherIds = hit.ids.filter((id) => Number(id) !== Number(editingId));
     if (!otherIds.length) return "";
     return "Duplicate SKU not allowed.";
@@ -609,7 +782,6 @@ export default function Products({ user }) {
   async function saveEdit(id) {
     if (!editForm) return;
 
-    // ✅ block save if live duplicate warning is present
     if (editSkuWarning) {
       setRowErrors((prev) => ({ ...prev, [id]: editSkuWarning }));
       window.setTimeout(() => editSkuRef.current?.focus(), 0);
@@ -634,19 +806,13 @@ export default function Products({ user }) {
 
       await updateProduct(id, payload);
 
-      // refresh sku index so typing warning stays accurate
       refreshSkuIndex();
-
       await loadAll(search, viewMode);
       cancelEdit();
     } catch (e2) {
       const msg = e2?.message || "Update failed";
       setRowErrors((prev) => ({ ...prev, [id]: msg }));
-
-      // ✅ Duplicate SKU -> focus edit SKU + show inline
-      if (isDuplicateSkuMessage(msg)) {
-        window.setTimeout(() => editSkuRef.current?.focus(), 0);
-      }
+      if (isDuplicateSkuMessage(msg)) window.setTimeout(() => editSkuRef.current?.focus(), 0);
     } finally {
       setSavingId(null);
     }
@@ -668,14 +834,10 @@ export default function Products({ user }) {
 
     try {
       await deleteProduct(p.id);
-
-      // remove from UI (active view)
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
 
-      // Undo restore (10s)
       const expiresAt = Date.now() + 10_000;
       setUndo({ id: p.id, expiresAt });
-
       window.setTimeout(() => {
         setUndo((u) => {
           if (!u) return null;
@@ -694,10 +856,7 @@ export default function Products({ user }) {
     setError("");
     try {
       await restoreProduct(undo.id);
-
-      // refresh sku index (restore can reintroduce SKU conflicts)
       refreshSkuIndex();
-
       setUndo(null);
       await loadAll(search, viewMode);
     } catch (e2) {
@@ -721,10 +880,7 @@ export default function Products({ user }) {
 
     try {
       await hardDeleteProduct(p.id);
-
-      // refresh sku index (hard delete removes SKU)
       refreshSkuIndex();
-
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
     } catch (e2) {
       setRowErrors((prev) => ({ ...prev, [p.id]: e2?.message || "Permanent delete failed" }));
@@ -739,10 +895,7 @@ export default function Products({ user }) {
     setError("");
     try {
       await restoreProduct(p.id);
-
-      // refresh sku index
       refreshSkuIndex();
-
       await loadAll(search, viewMode);
     } catch (e2) {
       setRowErrors((prev) => ({ ...prev, [p.id]: e2?.message || "Restore failed" }));
@@ -978,7 +1131,6 @@ export default function Products({ user }) {
           (allErrs.length ? ` (errors: ${allErrs.length})` : "")
       );
 
-      // refresh sku index after import changes SKUs
       refreshSkuIndex();
 
       if (viewMode !== "active") setViewMode("active");
@@ -1107,9 +1259,7 @@ export default function Products({ user }) {
       const r = await reconcileAllStock(v);
       setReconMsg(`Reconciled ${Number(r?.reconciled || 0)} product(s).`);
       await loadAll(search, viewMode);
-      window.setTimeout(() => {
-        setReconModalOpen(false);
-      }, 900);
+      window.setTimeout(() => setReconModalOpen(false), 900);
     } catch (e) {
       setReconMsg(e?.message || "Bulk reconcile failed");
     } finally {
@@ -1128,8 +1278,31 @@ export default function Products({ user }) {
     return products.filter((p) => !isDeleted(p) && isReconRequired(p, driftThreshold));
   }, [products, showReconOnly, viewMode, driftThreshold]);
 
+  // ✅ checkbox helpers
+  function toggleRow(id) {
+    setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+  function allVisibleSelectableIds() {
+    return filteredProducts
+      .filter((p) => !isDeleted(p)) // no deleted
+      .map((p) => Number(p.id))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+  function toggleAllVisible() {
+    const ids = allVisibleSelectableIds();
+    if (!ids.length) return;
+
+    const allOn = ids.every((id) => selected[id]);
+    setSelected((prev) => {
+      const copy = { ...prev };
+      ids.forEach((id) => (copy[id] = !allOn));
+      return copy;
+    });
+  }
+
   return (
     <div className="products-page">
+      {/* Header */}
       <div className="products-header">
         <div>
           <h1 className="products-title">Products</h1>
@@ -1145,12 +1318,12 @@ export default function Products({ user }) {
             disabled={anyBusy}
           />
 
-          <button className="btn" onClick={handleExportCsv} disabled={anyBusy}>
+          <button className="btn products-smallBtn" onClick={handleExportCsv} disabled={anyBusy}>
             Export CSV
           </button>
 
           {isAdmin && (
-            <label className="btn products-fileBtn">
+            <label className="btn products-fileBtn products-smallBtn">
               Choose CSV
               <input
                 type="file"
@@ -1165,10 +1338,10 @@ export default function Products({ user }) {
             </label>
           )}
 
-          {/* ✅ Bulk reconcile button */}
+          {/* Bulk reconcile */}
           {isAdmin && viewMode === "active" && (
             <button
-              className="btn"
+              className="btn products-smallBtn"
               onClick={openBulkReconModal}
               disabled={anyBusy}
               title="Create stock movement adjustments so movements match product.quantity"
@@ -1178,8 +1351,7 @@ export default function Products({ user }) {
                 border: activeDriftCount > 0 ? "2px solid #991b1b" : "1px solid rgba(17,24,39,.12)",
               }}
             >
-              Reconcile stock
-              {activeDriftCount > 0 ? ` (${activeDriftCount})` : ""}
+              Reconcile stock{activeDriftCount > 0 ? ` (${activeDriftCount})` : ""}
             </button>
           )}
 
@@ -1191,7 +1363,7 @@ export default function Products({ user }) {
         </div>
       </div>
 
-      {/* ✅ View mode tabs */}
+      {/* View mode tabs */}
       <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
         {[
           { key: "active", label: "Active" },
@@ -1200,7 +1372,7 @@ export default function Products({ user }) {
         ].map((t) => (
           <button
             key={t.key}
-            className="btn"
+            className="btn products-smallBtn"
             type="button"
             disabled={anyBusy}
             onClick={() => {
@@ -1216,13 +1388,11 @@ export default function Products({ user }) {
               opacity: viewMode === t.key ? 1 : 0.7,
               outline: viewMode === t.key ? "2px solid #111827" : "none",
             }}
-            title={t.key === "deleted" ? "Show soft-deleted products" : t.key === "all" ? "Show active + deleted" : ""}
           >
             {t.label}
           </button>
         ))}
 
-        {/* ✅ reconcile-only toggle */}
         {viewMode === "active" && (
           <label
             style={{
@@ -1236,13 +1406,20 @@ export default function Products({ user }) {
             }}
             title="Show only products that require reconcile"
           >
-            <input type="checkbox" checked={showReconOnly} onChange={(e) => setShowReconOnly(e.target.checked)} disabled={anyBusy} />
+            <input
+              type="checkbox"
+              checked={showReconOnly}
+              onChange={(e) => setShowReconOnly(e.target.checked)}
+              disabled={anyBusy}
+            />
             Show reconcile required ({activeDriftCount})
           </label>
         )}
 
         {viewMode !== "active" && (
-          <div style={{ fontSize: 12, color: "#6b7280", alignSelf: "center" }}>Tip: Restore or permanently delete from this view.</div>
+          <div style={{ fontSize: 12, color: "#6b7280", alignSelf: "center" }}>
+            Tip: Restore or permanently delete from this view.
+          </div>
         )}
       </div>
 
@@ -1250,7 +1427,7 @@ export default function Products({ user }) {
       {error && <p style={{ color: "red" }}>{error}</p>}
       {importMsg && <p style={{ color: "green" }}>{importMsg}</p>}
 
-      {/* ✅ reconcile required banner */}
+      {/* Reconcile banner */}
       {viewMode === "active" && activeDriftCount > 0 && (
         <div className="card" style={{ marginTop: 12, background: "#fff1f2", border: "1px solid #fecaca", color: "#991b1b" }}>
           <div style={{ fontWeight: 900 }}>Reconcile required</div>
@@ -1260,7 +1437,7 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* ✅ Low stock threshold + drift threshold control */}
+      {/* Inventory thresholds */}
       {isAdmin && (
         <div className="card" style={{ marginTop: 12, background: "#f9fafb" }}>
           <div style={{ fontWeight: 900, marginBottom: 8 }}>Inventory thresholds</div>
@@ -1278,7 +1455,7 @@ export default function Products({ user }) {
                   style={{ width: 160 }}
                   disabled={anyBusy}
                 />
-                <button className="btn" type="button" onClick={saveThreshold} disabled={anyBusy}>
+                <button className="btn products-smallBtn" type="button" onClick={saveThreshold} disabled={anyBusy}>
                   {savingThreshold ? "Saving..." : "Save"}
                 </button>
               </div>
@@ -1297,7 +1474,7 @@ export default function Products({ user }) {
                   style={{ width: 160 }}
                   disabled={anyBusy}
                 />
-                <button className="btn" type="button" onClick={saveDriftThreshold} disabled={anyBusy}>
+                <button className="btn products-smallBtn" type="button" onClick={saveDriftThreshold} disabled={anyBusy}>
                   {savingDriftThreshold ? "Saving..." : "Save"}
                 </button>
               </div>
@@ -1309,9 +1486,9 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* CSV Import Panel (admin only) */}
+      {/* CSV Import Panel */}
       {isAdmin && (
-        <div className="products-import card" style={{ background: "#f9fafb" }}>
+        <div className="products-import card" style={{ background: "#f9fafb", marginTop: 12 }}>
           <div className="products-importTop">
             <div>
               <div style={{ fontWeight: 800 }}>CSV Import</div>
@@ -1322,16 +1499,21 @@ export default function Products({ user }) {
 
             <div className="products-importActions">
               <label className="products-check">
-                <input type="checkbox" checked={createMissingCategories} onChange={(e) => setCreateMissingCategories(e.target.checked)} disabled={anyBusy} />
+                <input
+                  type="checkbox"
+                  checked={createMissingCategories}
+                  onChange={(e) => setCreateMissingCategories(e.target.checked)}
+                  disabled={anyBusy}
+                />
                 Auto-create missing categories
               </label>
 
-              <button className="btn" onClick={startImport} disabled={anyBusy || !csvRows.length}>
+              <button className="btn products-smallBtn" onClick={startImport} disabled={anyBusy || !csvRows.length}>
                 {importing ? "Importing..." : "Start Import"}
               </button>
 
               <button
-                className="btn"
+                className="btn products-smallBtn"
                 onClick={downloadErrorReport}
                 disabled={anyBusy || (!importErrors.length && !validation.issues.length)}
                 title="Download validation + server errors"
@@ -1478,9 +1660,11 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* Admin create form */}
+      {/* Add Product */}
       {isAdmin && (
-        <form onSubmit={handleCreate} className="products-create card">
+        <form onSubmit={handleCreate} className="products-create card" style={{ marginTop: 12 }}>
+          <div style={{ fontWeight: 900, marginBottom: 10 }}>Add product</div>
+
           <div className="products-formGrid">
             <div className="field">
               <input
@@ -1506,16 +1690,26 @@ export default function Products({ user }) {
                 aria-invalid={Boolean(fieldErrors.sku)}
               />
               {fieldErrors.sku ? <div className="field-errorText">{fieldErrors.sku}</div> : null}
-              {/* (Optional tiny hint if sku index isn't ready) */}
               {!skuIndexReady ? <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>Checking SKUs…</div> : null}
             </div>
 
             <div className="field">
-              <input className="input" placeholder="Barcode" value={form.barcode} onChange={(e) => updateField("barcode", e.target.value)} disabled={anyBusy} />
+              <input
+                className="input"
+                placeholder="Barcode"
+                value={form.barcode}
+                onChange={(e) => updateField("barcode", e.target.value)}
+                disabled={anyBusy}
+              />
             </div>
 
             <div className="field">
-              <select className="input" value={form.category_id} onChange={(e) => updateField("category_id", e.target.value)} disabled={anyBusy}>
+              <select
+                className="input"
+                value={form.category_id}
+                onChange={(e) => updateField("category_id", e.target.value)}
+                disabled={anyBusy}
+              >
                 <option value="">Select category</option>
                 {categories.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -1526,15 +1720,39 @@ export default function Products({ user }) {
             </div>
 
             <div className="field">
-              <input className="input" type="number" placeholder="Quantity" value={form.quantity} onChange={(e) => updateField("quantity", e.target.value)} disabled={anyBusy} inputMode="numeric" />
+              <input
+                className="input"
+                type="number"
+                placeholder="Quantity"
+                value={form.quantity}
+                onChange={(e) => updateField("quantity", e.target.value)}
+                disabled={anyBusy}
+                inputMode="numeric"
+              />
             </div>
 
             <div className="field">
-              <input className="input" type="number" placeholder="Cost price" value={form.cost_price} onChange={(e) => updateField("cost_price", e.target.value)} disabled={anyBusy} inputMode="decimal" />
+              <input
+                className="input"
+                type="number"
+                placeholder="Cost price"
+                value={form.cost_price}
+                onChange={(e) => updateField("cost_price", e.target.value)}
+                disabled={anyBusy}
+                inputMode="decimal"
+              />
             </div>
 
             <div className="field">
-              <input className="input" type="number" placeholder="Selling price" value={form.selling_price} onChange={(e) => updateField("selling_price", e.target.value)} disabled={anyBusy} inputMode="decimal" />
+              <input
+                className="input"
+                type="number"
+                placeholder="Selling price"
+                value={form.selling_price}
+                onChange={(e) => updateField("selling_price", e.target.value)}
+                disabled={anyBusy}
+                inputMode="decimal"
+              />
             </div>
 
             <div className="field">
@@ -1662,7 +1880,7 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* Hard Delete confirm modal (OWNER only) */}
+      {/* Hard Delete confirm modal */}
       {confirmHardDelete && (
         <div style={overlayStyle} onMouseDown={() => (savingId ? null : setConfirmHardDelete(null))}>
           <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
@@ -1691,7 +1909,7 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* ✅ Bulk reconcile modal */}
+      {/* Bulk reconcile modal */}
       {reconModalOpen && (
         <div style={overlayStyle} onMouseDown={() => (reconBusy ? null : setReconModalOpen(false))}>
           <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
@@ -1729,316 +1947,333 @@ export default function Products({ user }) {
         </div>
       )}
 
+      {/* ✅ MODERN TABLE (Name + SKU separated like your old screenshot) */}
       <div className="products-tableWrap" style={{ marginTop: 14 }}>
-        <table border="1" cellPadding="10" style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead style={{ background: "#f3f4f6" }}>
-            <tr>
-              <th>Name</th>
-              <th>SKU</th>
-              <th>Barcode</th>
-              <th>Category</th>
-              <th>Stock</th>
-              <th>Cost</th>
-              <th>Selling</th>
-              <th>Reorder</th>
-              {isAdmin && <th>Actions</th>}
-            </tr>
-          </thead>
+        <div style={{ fontWeight: 900, marginBottom: 10 }}>Products list</div>
 
-          <tbody>
-            {filteredProducts.map((p) => {
-              const deleted = isDeleted(p);
-              const isEditing = editingId === p.id;
-              const isSaving = savingId === p.id;
-              const inlineErr = rowErrors[p.id];
+        <div className="products-tableCard">
+          <table className="products-gridTable">
+            <thead>
+              <tr>
+                <th className="col-check">
+                  <label className="check">
+                    <input type="checkbox" onChange={toggleAllVisible} />
+                    <span className="check-label">Select</span>
+                  </label>
+                </th>
 
-              const threshold = getThresholdForProduct(p, lowThreshold);
-              const low = !deleted && viewMode === "active" ? isLowStock(p, lowThreshold) : false;
+                {/* ✅ Separate columns */}
+                <th>Name</th>
+                <th className="col-name">SKU</th>
 
-              const drift = getDrift(p);
-              const reconReq = !deleted && viewMode === "active" ? isReconRequired(p, driftThreshold) : false;
-              const reconWarn = !deleted && viewMode === "active" ? isReconWarning(p, driftThreshold) : false;
+                <th>Barcode</th>
+                <th>Category</th>
+                <th className="col-num">Stock</th>
+                <th className="col-num">Cost</th>
+                <th className="col-num">Selling</th>
+                {isAdmin && <th className="col-actions">Actions</th>}
+              </tr>
+            </thead>
 
-              const editSkuError =
-                isEditing && (editSkuWarning || (inlineErr && isDuplicateSkuMessage(inlineErr)))
-                  ? (editSkuWarning || "Duplicate SKU not allowed.")
-                  : "";
-
-              return (
-                <tr key={p.id} style={deleted ? { opacity: 0.75 } : undefined}>
-                  <td>
-                    {isEditing ? (
-                      <input className="input" value={editForm?.name ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} disabled={isSaving} />
-                    ) : (
-                      <>
-                        {p.name}
-
-                        {deleted && (
-                          <span
-                            style={{
-                              marginLeft: 8,
-                              padding: "2px 8px",
-                              borderRadius: 999,
-                              fontSize: 11,
-                              fontWeight: 900,
-                              background: "#e5e7eb",
-                              color: "#111827",
-                              border: "1px solid #d1d5db",
-                              verticalAlign: "middle",
-                            }}
-                            title={`Deleted at: ${p.deleted_at}`}
-                          >
-                            DELETED
-                          </span>
-                        )}
-
-                        {low && (
-                          <span
-                            style={{
-                              marginLeft: 8,
-                              padding: "2px 8px",
-                              borderRadius: 999,
-                              fontSize: 11,
-                              fontWeight: 800,
-                              background: "#fee2e2",
-                              color: "#991b1b",
-                              border: "1px solid #fecaca",
-                              verticalAlign: "middle",
-                            }}
-                            title={`LOW: qty ${Number(p?.quantity ?? 0)} ≤ threshold ${threshold}`}
-                          >
-                            LOW
-                          </span>
-                        )}
-
-                        {!deleted && viewMode === "active" && reconReq && (
-                          <span
-                            style={{
-                              marginLeft: 8,
-                              padding: "2px 8px",
-                              borderRadius: 999,
-                              fontSize: 11,
-                              fontWeight: 900,
-                              background: "#fff1f2",
-                              color: "#991b1b",
-                              border: "1px solid #fecaca",
-                              verticalAlign: "middle",
-                            }}
-                            title={`RECONCILE REQUIRED: drift ${drift} (>= ${driftThreshold}). Drift = products.quantity - movement_balance.`}
-                          >
-                            RECONCILE REQUIRED
-                          </span>
-                        )}
-
-                        {!deleted && viewMode === "active" && !reconReq && reconWarn && (
-                          <span
-                            style={{
-                              marginLeft: 8,
-                              padding: "2px 8px",
-                              borderRadius: 999,
-                              fontSize: 11,
-                              fontWeight: 900,
-                              background: "#fffbeb",
-                              color: "#92400e",
-                              border: "1px solid #fde68a",
-                              verticalAlign: "middle",
-                            }}
-                            title={`Drift detected: ${drift}. Threshold is ${driftThreshold}.`}
-                          >
-                            DRIFT
-                          </span>
-                        )}
-                      </>
-                    )}
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan={isAdmin ? 9 : 8} className="td-center">
+                    Loading...
                   </td>
+                </tr>
+              )}
 
-                  <td>
-                    {isEditing ? (
-                      <div className="field">
+              {!loading &&
+                filteredProducts.map((p) => {
+                  const deleted = isDeleted(p);
+                  const isEditing = editingId === p.id;
+                  const isSaving = savingId === p.id;
+                  const inlineErr = rowErrors[p.id];
+
+                  const threshold = getThresholdForProduct(p, lowThreshold);
+                  const low = !deleted && viewMode === "active" ? isLowStock(p, lowThreshold) : false;
+
+                  const drift = getDrift(p);
+                  const reconReq = !deleted && viewMode === "active" ? isReconRequired(p, driftThreshold) : false;
+                  const reconWarn = !deleted && viewMode === "active" ? isReconWarning(p, driftThreshold) : false;
+
+                  const checked = !!selected[p.id];
+
+                  const editSkuError =
+                    isEditing && (editSkuWarning || (inlineErr && isDuplicateSkuMessage(inlineErr)))
+                      ? editSkuWarning || "Duplicate SKU not allowed."
+                      : "";
+
+                  const catColor = getCategoryColor(p.category);
+
+                  return (
+                    <tr key={p.id} className={deleted ? "row-muted" : ""}>
+                      {/* CHECK */}
+                      <td className="col-check">
                         <input
-                          ref={editSkuRef}
-                          className={`input ${editSkuError ? "input-error" : ""}`}
-                          value={editForm?.sku ?? ""}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setEditForm((f) => ({ ...f, sku: v }));
-                            // clear server row error as user types
-                            if (rowErrors[p.id]) setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
-                          }}
-                          disabled={isSaving}
-                          aria-invalid={Boolean(editSkuError)}
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleRow(p.id)}
+                          disabled={deleted}
+                          title={deleted ? "Deleted items cannot be selected" : "Select"}
                         />
-                        {editSkuError ? <div className="field-errorText">{editSkuError}</div> : null}
-                      </div>
-                    ) : (
-                      p.sku || "-"
-                    )}
-                  </td>
+                      </td>
 
-                  <td>
-                    {isEditing ? (
-                      <input className="input" value={editForm?.barcode ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, barcode: e.target.value }))} disabled={isSaving} />
-                    ) : (
-                      p.barcode || "-"
-                    )}
-                  </td>
+                      {/* ✅ NAME COLUMN (Name + badges) */}
+                      <td>
+                        {isEditing ? (
+                          <input
+                            className="input"
+                            value={editForm?.name ?? ""}
+                            onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                            disabled={isSaving}
+                            placeholder="Product name"
+                          />
+                        ) : (
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div className="skuThumb" aria-hidden="true">
+                              <span>{String(p.name || "P").slice(0, 1).toUpperCase()}</span>
+                            </div>
 
-                  <td>
-                    {isEditing ? (
-                      <select className="input" value={editForm?.category_id ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, category_id: e.target.value }))} disabled={isSaving}>
-                        <option value="">None</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      p.category ?? "-"
-                    )}
-                  </td>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                              <div style={{ fontWeight: 800, color: "#111827" }} title={p.name || ""}>
+                                {shortText(p.name || "-", 30)}
 
-                  <td>
-                    {isEditing ? (
-                      <input
-                        className="input"
-                        type="number"
-                        inputMode="numeric"
-                        value={editForm?.quantity ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, quantity: e.target.value }))}
-                        disabled={isSaving}
-                      />
-                    ) : (
-                      <>
-                        {p.quantity}
-                        {!deleted && viewMode === "active" && abs(drift) > 0 && (
-                          <div style={{ fontSize: 11, color: reconReq ? "#991b1b" : "#92400e", marginTop: 4 }}>
-                            drift: {drift > 0 ? "+" : ""}
-                            {drift}
+                                {deleted && <span className="badge muted" style={{ marginLeft: 8 }}>DELETED</span>}
+                                {low && (
+                                  <span
+                                    className="badge danger"
+                                    style={{ marginLeft: 8 }}
+                                    title={`LOW: qty ${Number(p?.quantity ?? 0)} ≤ threshold ${threshold}`}
+                                  >
+                                    LOW
+                                  </span>
+                                )}
+                                {!deleted && viewMode === "active" && reconReq && (
+                                  <span className="badge danger" style={{ marginLeft: 8 }} title={`Drift ${drift} (>= ${driftThreshold})`}>
+                                    RECONCILE
+                                  </span>
+                                )}
+                                {!deleted && viewMode === "active" && !reconReq && reconWarn && (
+                                  <span className="badge warn" style={{ marginLeft: 8 }} title={`Drift detected: ${drift}`}>
+                                    DRIFT
+                                  </span>
+                                )}
+                              </div>
+
+                              {!deleted && viewMode === "active" && abs(drift) > 0 ? (
+                                <div style={{ fontSize: 12, color: reconReq ? "#991b1b" : "#92400e" }}>
+                                  drift: {drift > 0 ? "+" : ""}{drift}
+                                </div>
+                              ) : null}
+                            </div>
                           </div>
                         )}
-                      </>
-                    )}
-                  </td>
+                      </td>
 
-                  <td>
-                    {isEditing ? (
-                      <input className="input" type="number" inputMode="decimal" value={editForm?.cost_price ?? ""} onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))} disabled={isSaving} />
-                    ) : (
-                      p.cost_price
-                    )}
-                  </td>
-
-                  <td>
-                    {isEditing ? (
-                      <input
-                        className="input"
-                        type="number"
-                        inputMode="decimal"
-                        value={editForm?.selling_price ?? ""}
-                        onChange={(e) => setEditForm((f) => ({ ...f, selling_price: e.target.value }))}
-                        disabled={isSaving}
-                      />
-                    ) : (
-                      p.selling_price
-                    )}
-                  </td>
-
-                  <td>
-                    {isEditing ? (
-                      <input
-                        className="input"
-                        type="number"
-                        inputMode="numeric"
-                        value={editForm?.reorder_level ?? 0}
-                        onChange={(e) => setEditForm((f) => ({ ...f, reorder_level: e.target.value }))}
-                        disabled={isSaving}
-                        placeholder={`0 = default ${lowThreshold}`}
-                        title={`Set 0 to use tenant default (${lowThreshold})`}
-                      />
-                    ) : Number(p.reorder_level || 0) > 0 ? (
-                      p.reorder_level
-                    ) : (
-                      <span title={`Using default ${lowThreshold}`}>0*</span>
-                    )}
-                  </td>
-
-                  {isAdmin && (
-                    <td style={{ minWidth: 320 }}>
-                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                        {!deleted ? (
-                          <>
-                            {!isEditing ? (
-                              <button className="btn" onClick={() => startEdit(p)} disabled={anyBusy}>
-                                Edit
-                              </button>
-                            ) : (
-                              <>
-                                <button className="btn" onClick={() => saveEdit(p.id)} disabled={isSaving || Boolean(editSkuWarning)}>
-                                  {isSaving ? "Saving..." : "Save"}
-                                </button>
-                                <button className="btn" onClick={cancelEdit} disabled={isSaving}>
-                                  Cancel
-                                </button>
-                              </>
-                            )}
-
-                            <button className="btn" onClick={() => askDelete(p)} disabled={anyBusy || isEditing}>
-                              Delete
-                            </button>
-
-                            {viewMode === "active" && abs(drift) > 0 && (
-                              <button
-                                className="btn"
-                                onClick={() => reconcileOne(p)}
-                                disabled={anyBusy || isEditing}
-                                title="Create adjustment movement so movements match products.quantity"
-                                style={{
-                                  borderRadius: 999,
-                                  border: reconReq ? "2px solid #991b1b" : "1px solid rgba(17,24,39,.12)",
-                                  fontWeight: 900,
-                                }}
-                              >
-                                Reconcile
-                              </button>
-                            )}
-                          </>
+                      {/* ✅ SKU COLUMN (only SKU) */}
+                      <td className="col-name">
+                        {isEditing ? (
+                          <div className="field">
+                            <input
+                              ref={editSkuRef}
+                              className={`input ${editSkuError ? "input-error" : ""}`}
+                              value={editForm?.sku ?? ""}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setEditForm((f) => ({ ...f, sku: v }));
+                                if (rowErrors[p.id]) setRowErrors((prev) => ({ ...prev, [p.id]: "" }));
+                              }}
+                              disabled={isSaving}
+                              aria-invalid={Boolean(editSkuError)}
+                              placeholder="SKU"
+                            />
+                            {editSkuError ? <div className="field-errorText">{editSkuError}</div> : null}
+                          </div>
                         ) : (
-                          <>
-                            {isOwner ? (
+                          <span className="mono">{p.sku || "-"}</span>
+                        )}
+                      </td>
+
+                      {/* BARCODE */}
+                      <td>
+                        {isEditing ? (
+                          <input
+                            className="input"
+                            value={editForm?.barcode ?? ""}
+                            onChange={(e) => setEditForm((f) => ({ ...f, barcode: e.target.value }))}
+                            disabled={isSaving}
+                          />
+                        ) : (
+                          <span className="mono">{p.barcode || "-"}</span>
+                        )}
+                      </td>
+
+                      {/* CATEGORY */}
+                      <td>
+                        {isEditing ? (
+                          <select
+                            className="input"
+                            value={editForm?.category_id ?? ""}
+                            onChange={(e) => setEditForm((f) => ({ ...f, category_id: e.target.value }))}
+                            disabled={isSaving}
+                          >
+                            <option value="">None</option>
+                            {categories.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span
+                            className="catPill"
+                            style={{
+                              background: catColor.bg,
+                              color: catColor.text,
+                              border: `1px solid ${catColor.border}`,
+                            }}
+                          >
+                            {p.category || "—"}
+                          </span>
+                        )}
+                      </td>
+
+                      {/* STOCK */}
+                      <td className="col-num">
+                        {isEditing ? (
+                          <input
+                            className="input"
+                            type="number"
+                            inputMode="numeric"
+                            value={editForm?.quantity ?? ""}
+                            onChange={(e) => setEditForm((f) => ({ ...f, quantity: e.target.value }))}
+                            disabled={isSaving}
+                          />
+                        ) : (
+                          <span>{intComma(p.quantity)}</span>
+                        )}
+                      </td>
+
+                      {/* COST */}
+                      <td className="col-num">
+                        {isEditing ? (
+                          <input
+                            className="input"
+                            type="number"
+                            inputMode="decimal"
+                            value={editForm?.cost_price ?? ""}
+                            onChange={(e) => setEditForm((f) => ({ ...f, cost_price: e.target.value }))}
+                            disabled={isSaving}
+                          />
+                        ) : (
+                          <span>{moneyUSD(p.cost_price)}</span>
+                        )}
+                      </td>
+
+                      {/* SELLING */}
+                      <td className="col-num">
+                        {isEditing ? (
+                          <input
+                            className="input"
+                            type="number"
+                            inputMode="decimal"
+                            value={editForm?.selling_price ?? ""}
+                            onChange={(e) => setEditForm((f) => ({ ...f, selling_price: e.target.value }))}
+                            disabled={isSaving}
+                          />
+                        ) : (
+                          <span>{moneyUSD(p.selling_price)}</span>
+                        )}
+                      </td>
+
+                      {/* ACTIONS: ICONS ONLY */}
+                      {isAdmin && (
+                        <td className="col-actions">
+                          <div className="actionIcons">
+                            {!deleted ? (
                               <>
-                                <button className="btn" onClick={() => handleRestore(p)} disabled={anyBusy}>
-                                  Restore
-                                </button>
-                                <button className="btn" onClick={() => askHardDelete(p)} disabled={anyBusy}>
-                                  Delete permanently
-                                </button>
+                                {!isEditing ? (
+                                  <IconButton className="iconEdit" title="Edit" disabled={anyBusy} onClick={() => startEdit(p)}>
+                                    <IconEdit />
+                                  </IconButton>
+                                ) : (
+                                  <>
+                                    <IconButton
+                                      className="iconSave products-smallBtn"
+                                      title="Save"
+                                      disabled={isSaving || Boolean(editSkuWarning)}
+                                      onClick={() => saveEdit(p.id)}
+                                    >
+                                      <IconCheck />
+                                    </IconButton>
+
+                                    <IconButton title="Cancel" disabled={isSaving} onClick={cancelEdit}>
+                                      <IconX />
+                                    </IconButton>
+                                  </>
+                                )}
+
+                                <IconButton className="iconTrash" title="Delete" disabled={anyBusy || isEditing} onClick={() => askDelete(p)}>
+                                  <IconTrash />
+                                </IconButton>
+
+                                {viewMode === "active" && abs(drift) > 0 && (
+                                  <IconButton
+                                    className={reconReq ? "iconWarn" : ""}
+                                    title="Reconcile"
+                                    disabled={anyBusy || isEditing}
+                                    onClick={() => reconcileOne(p)}
+                                  >
+                                    <IconSync />
+                                  </IconButton>
+                                )}
                               </>
                             ) : (
-                              <span style={{ fontSize: 12, color: "#6b7280" }}>Owner required to restore/delete permanently</span>
+                              <>
+                                {isOwner ? (
+                                  <>
+                                    <IconButton className="iconRestore" title="Restore" disabled={anyBusy} onClick={() => handleRestore(p)}>
+                                      <IconRestore />
+                                    </IconButton>
+
+                                    <IconButton className="iconTrash" title="Delete permanently" disabled={anyBusy} onClick={() => askHardDelete(p)}>
+                                      <IconTrash />
+                                    </IconButton>
+                                  </>
+                                ) : (
+                                  <span className="mutedText">Owner required</span>
+                                )}
+                              </>
                             )}
-                          </>
-                        )}
-                      </div>
+                          </div>
 
-                      {inlineErr && !isEditing ? <div style={{ marginTop: 6, color: "#991b1b", fontSize: 12 }}>{inlineErr}</div> : null}
-                    </td>
-                  )}
+                          {inlineErr && !isEditing ? (
+                            <div className="field-errorText" style={{ marginTop: 6 }}>
+                              {inlineErr}
+                            </div>
+                          ) : null}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+
+              {!loading && filteredProducts.length === 0 && (
+                <tr>
+                  <td colSpan={isAdmin ? 9 : 8} className="td-center">
+                    No products found
+                  </td>
                 </tr>
-              );
-            })}
+              )}
+            </tbody>
+          </table>
+        </div>
 
-            {!loading && filteredProducts.length === 0 && (
-              <tr>
-                <td colSpan={isAdmin ? 9 : 8} style={{ textAlign: "center" }}>
-                  No products found
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-
-        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>* Reorder “0” means “use tenant default threshold ({lowThreshold})”.</div>
+        <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+          * Reorder “0” means “use tenant default threshold ({lowThreshold})”.
+        </div>
       </div>
     </div>
   );

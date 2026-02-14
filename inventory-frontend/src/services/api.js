@@ -868,6 +868,80 @@ export async function updateStockDriftThreshold(value) {
   );
 }
 
+// ✅ Deactivate one user from tenant (soft delete)
+export async function deactivateUserFromTenant(userId) {
+  const res = await fetch(`${API_BASE}/users/${userId}/deactivate`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data?.message || "Deactivate failed");
+  return data;
+}
+
+// ✅ Restore a deactivated user
+export async function restoreUserToTenant(userId) {
+  const res = await fetch(`${API_BASE}/users/${userId}/restore`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data?.message || "Restore failed");
+  return data;
+}
+
+// ✅ Bulk deactivate
+export async function bulkDeactivateUsersFromTenant(userIds) {
+  const res = await fetch(`${API_BASE}/users/bulk-deactivate`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+    body: JSON.stringify({ userIds }),
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data?.message || "Bulk deactivate failed");
+  return data;
+}
+
+export async function deactivateUser(userId) {
+  const res = await fetch(`${API_BASE}/users/${userId}/deactivate`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data?.message || "Failed to deactivate user");
+  return data;
+}
+
+export async function restoreUser(userId) {
+  const res = await fetch(`${API_BASE}/users/${userId}/restore`, {
+    method: "POST",
+    headers: { ...authHeaders(), "Content-Type": "application/json" },
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data?.message || "Failed to restore user");
+  return data;
+}
+
+export async function hardDeleteTenantMember(userId) {
+  const res = await fetch(`${API_BASE}/users/${userId}/hard`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data?.message || "Failed to permanently delete user");
+  return data;
+}
+
+export async function hardDeleteUserFromTenant(userId) {
+  const res = await fetch(`${API_BASE}/users/${userId}/hard`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  const data = await safeJson(res);
+  if (!res.ok) throw new Error(data?.message || "Failed to permanently delete user");
+  return data;
+}
+
 // // ✅ Public helper used by small service wrappers (Billing, etc.)
 // export async function apiFetch(path, options = {}, cfg = {}) {
 //   const p = String(path || "");

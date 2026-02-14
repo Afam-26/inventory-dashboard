@@ -10,10 +10,8 @@ import {
   importProductsRows,
   getSettings,
   updateLowStockThreshold,
-  // ✅ soft delete restore + hard delete
   restoreProduct,
   hardDeleteProduct,
-  // ✅ RECONCILE
   reconcileProductStock,
   reconcileAllStock,
   updateStockDriftThreshold,
@@ -129,20 +127,24 @@ function getThresholdForProduct(p, tenantDefault = 10) {
   const r = Number(p?.reorder_level ?? 0);
   return Number.isFinite(r) && r > 0 ? r : tenantDefault;
 }
+
 function isLowStock(p, tenantDefault = 10) {
   const qty = Number(p?.quantity ?? 0);
   const threshold = getThresholdForProduct(p, tenantDefault);
   return qty <= threshold;
 }
+
 function urgencyScore(p, tenantDefault = 10) {
   const qty = Number(p?.quantity ?? 0);
   const threshold = getThresholdForProduct(p, tenantDefault);
   return qty - threshold;
 }
+
 function sortProductsUrgentFirst(list, tenantDefault = 10) {
   return [...list].sort((a, b) => {
     const aLow = isLowStock(a, tenantDefault) ? 1 : 0;
     const bLow = isLowStock(b, tenantDefault) ? 1 : 0;
+
     if (aLow !== bLow) return bLow - aLow;
 
     const au = urgencyScore(a, tenantDefault);
@@ -152,6 +154,7 @@ function sortProductsUrgentFirst(list, tenantDefault = 10) {
     return String(a.name || "").localeCompare(String(b.name || ""));
   });
 }
+
 function isDeleted(p) {
   return Boolean(p?.deleted_at);
 }
@@ -183,126 +186,141 @@ function normSku(v) {
 }
 
 /* ============================
-   UI helpers (formatting)
+   UI helpers
 ============================ */
-function shortText(s, max = 24) {
-  const str = String(s ?? "");
-  if (str.length <= max) return str;
-  return str.slice(0, Math.max(0, max - 1)) + "…";
+function shortText(s, max = 26) {
+  const t = String(s || "");
+  if (t.length <= max) return t;
+  return t.slice(0, Math.max(0, max - 1)) + "…";
 }
+
 function intComma(n) {
   const v = Number(n ?? 0);
   if (!Number.isFinite(v)) return "0";
-  return Math.round(v).toLocaleString("en-US");
+  return Math.trunc(v).toLocaleString();
 }
+
 function moneyUSD(n) {
   const v = Number(n ?? 0);
-  const safe = Number.isFinite(v) ? v : 0;
-  return safe.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  if (!Number.isFinite(v)) return "$0.00";
+  return v.toLocaleString(undefined, { style: "currency", currency: "USD" });
 }
 
-/* ============================
-   Category color (stable per name)
-============================ */
-function hashToHue(str) {
+// deterministic category colors
+function hashString(str) {
   const s = String(str || "");
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h % 360;
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
-function getCategoryColor(catName) {
-  const name = String(catName || "").trim();
-  if (!name) return { bg: "rgba(107,114,128,.10)", text: "#6b7280", border: "rgba(107,114,128,.18)" };
+function getCategoryColor(categoryName) {
+  const name = String(categoryName || "").trim();
+  if (!name) {
+    return { bg: "rgba(107,114,128,.10)", text: "#6b7280", border: "rgba(107,114,128,.18)" };
+  }
 
-  const hue = hashToHue(name);
-  // premium-ish soft pill
-  return {
-    bg: `hsla(${hue}, 80%, 92%, 1)`,
-    text: `hsl(${hue}, 55%, 28%)`,
-    border: `hsla(${hue}, 55%, 55%, .22)`,
-  };
+  const palette = [
+    { bg: "rgba(59,130,246,.14)", text: "#1d4ed8", border: "rgba(59,130,246,.22)" }, // blue
+    { bg: "rgba(16,185,129,.14)", text: "#047857", border: "rgba(16,185,129,.22)" }, // green
+    { bg: "rgba(245,158,11,.16)", text: "#92400e", border: "rgba(245,158,11,.24)" }, // amber
+    { bg: "rgba(168,85,247,.14)", text: "#6d28d9", border: "rgba(168,85,247,.22)" }, // purple
+    { bg: "rgba(244,63,94,.12)", text: "#be123c", border: "rgba(244,63,94,.20)" }, // rose
+    { bg: "rgba(20,184,166,.14)", text: "#0f766e", border: "rgba(20,184,166,.22)" }, // teal
+    { bg: "rgba(100,116,139,.14)", text: "#334155", border: "rgba(100,116,139,.22)" }, // slate
+  ];
+
+  const idx = hashString(name) % palette.length;
+  return palette[idx];
 }
 
 /* ============================
-   Icon components (no deps)
+   Icon components (SVG)
 ============================ */
 function IconButton({ className = "", title, disabled, onClick, children }) {
   return (
-    <button className={`iconBtn ${className}`} title={title} disabled={disabled} onClick={onClick} type="button">
+    <button
+      type="button"
+      className={`iconBtn ${className}`}
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
+      aria-label={title}
+    >
       {children}
     </button>
   );
 }
+
 function IconEdit() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
-        d="M12 20h9"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-      <path
-        d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"
+        d="M4 20h4l10.5-10.5a2.12 2.12 0 0 0 0-3L16.5 4.5a2.12 2.12 0 0 0-3 0L3 15v5z"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinejoin="round"
       />
+      <path d="M13.5 6.5l4 4" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
     </svg>
   );
 }
+
 function IconTrash() {
+  // modern trash can
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
-        d="M3 6h18"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8 6V4h8v2"
+        d="M9 3h6l1 2h4v2H4V5h4l1-2z"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinejoin="round"
       />
+      <path d="M6 7l1 14h10l1-14" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M10 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path d="M14 11v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconCheck() {
+  // ✅ check mark for green box
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
-        d="M19 6l-1 14H6L5 6"
+        d="M20 6L9 17l-5-5"
         stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M10 11v6M14 11v6"
-        stroke="currentColor"
-        strokeWidth="2"
+        strokeWidth="2.5"
         strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
 }
+
+function IconX() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+      <path d="M6 6l12 12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function IconRestore() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
-        d="M3 12a9 9 0 0 1 15.364-6.364"
+        d="M3 12a9 9 0 0 1 15.36-6.36"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
       />
+      <path d="M18 3v6h-6" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
       <path
-        d="M18 4v6h-6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M21 12a9 9 0 0 1-15.364 6.364"
+        d="M21 12a9 9 0 0 1-15.36 6.36"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
@@ -310,58 +328,24 @@ function IconRestore() {
     </svg>
   );
 }
-function IconCheck() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M20 6 9 17l-5-5"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-function IconX() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M18 6 6 18M6 6l12 12"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
+
 function IconSync() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
-        d="M21 12a9 9 0 0 0-15.364-6.364"
+        d="M21 12a9 9 0 0 0-15.36-6.36L3 8"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
       />
+      <path d="M3 8V3h5" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
       <path
-        d="M6 4v6h6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M3 12a9 9 0 0 0 15.364 6.364"
+        d="M3 12a9 9 0 0 0 15.36 6.36L21 16"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
       />
-      <path
-        d="M18 20v-6h-6"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
+      <path d="M21 16v5h-5" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -407,7 +391,7 @@ export default function Products({ user }) {
   const [reconBusy, setReconBusy] = useState(false);
   const [reconMsg, setReconMsg] = useState("");
 
-  // ✅ selection (for “Select” column)
+  // ✅ NEW: row selection (for the “Select” column)
   const [selected, setSelected] = useState({}); // { [id]: true }
 
   const [form, setForm] = useState({
@@ -426,7 +410,7 @@ export default function Products({ user }) {
   const nameRef = useRef(null);
   const skuRef = useRef(null);
 
-  // ✅ edit refs
+  // ✅ edit refs (for auto-focus + inline duplicate)
   const editSkuRef = useRef(null);
 
   // optional: shake animation toggles
@@ -533,6 +517,7 @@ export default function Products({ user }) {
 
   /* ============================
      SKU Index (include deleted)
+     - Used for "warning as you type"
 ============================ */
   const [skuIndex, setSkuIndex] = useState(() => new Map()); // Map<skuLower, { count:number, ids:number[] }>
   const [skuIndexReady, setSkuIndexReady] = useState(false);
@@ -595,9 +580,7 @@ export default function Products({ user }) {
 
       setProducts(finalList);
       setCategories(cats);
-
-      // reset selection when reloading
-      setSelected({});
+      setSelected({}); // reset selection on load
     } catch (e2) {
       setError(e2?.message || "Failed to load");
     } finally {
@@ -627,6 +610,7 @@ export default function Products({ user }) {
 
   function updateField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
+
     if (error) setError("");
 
     setFieldErrors((prev) => {
@@ -812,7 +796,10 @@ export default function Products({ user }) {
     } catch (e2) {
       const msg = e2?.message || "Update failed";
       setRowErrors((prev) => ({ ...prev, [id]: msg }));
-      if (isDuplicateSkuMessage(msg)) window.setTimeout(() => editSkuRef.current?.focus(), 0);
+
+      if (isDuplicateSkuMessage(msg)) {
+        window.setTimeout(() => editSkuRef.current?.focus(), 0);
+      }
     } finally {
       setSavingId(null);
     }
@@ -834,10 +821,12 @@ export default function Products({ user }) {
 
     try {
       await deleteProduct(p.id);
+
       setProducts((prev) => prev.filter((x) => x.id !== p.id));
 
       const expiresAt = Date.now() + 10_000;
       setUndo({ id: p.id, expiresAt });
+
       window.setTimeout(() => {
         setUndo((u) => {
           if (!u) return null;
@@ -1055,7 +1044,8 @@ export default function Products({ user }) {
       quantity: mapping.quantity >= 0 ? Number(obj.quantity) || 0 : 0,
       cost_price: mapping.cost_price >= 0 ? Number(obj.cost_price) || 0 : 0,
       selling_price: mapping.selling_price >= 0 ? Number(obj.selling_price) || 0 : 0,
-      reorder_level: mapping.reorder_level >= 0 ? (obj.reorder_level === "" ? 0 : Number(obj.reorder_level) || 0) : 0,
+      reorder_level:
+        mapping.reorder_level >= 0 ? (obj.reorder_level === "" ? 0 : Number(obj.reorder_level) || 0) : 0,
     };
   }
 
@@ -1259,7 +1249,9 @@ export default function Products({ user }) {
       const r = await reconcileAllStock(v);
       setReconMsg(`Reconciled ${Number(r?.reconciled || 0)} product(s).`);
       await loadAll(search, viewMode);
-      window.setTimeout(() => setReconModalOpen(false), 900);
+      window.setTimeout(() => {
+        setReconModalOpen(false);
+      }, 900);
     } catch (e) {
       setReconMsg(e?.message || "Bulk reconcile failed");
     } finally {
@@ -1278,18 +1270,20 @@ export default function Products({ user }) {
     return products.filter((p) => !isDeleted(p) && isReconRequired(p, driftThreshold));
   }, [products, showReconOnly, viewMode, driftThreshold]);
 
-  // ✅ checkbox helpers
+  /* ============================
+     Selection helpers (table checkbox column)
+============================ */
   function toggleRow(id) {
     setSelected((prev) => ({ ...prev, [id]: !prev[id] }));
   }
-  function allVisibleSelectableIds() {
-    return filteredProducts
-      .filter((p) => !isDeleted(p)) // no deleted
-      .map((p) => Number(p.id))
-      .filter((n) => Number.isFinite(n) && n > 0);
+
+  function visibleSelectableIds() {
+    // only allow selecting NON-deleted visible rows
+    return filteredProducts.filter((p) => !isDeleted(p)).map((p) => Number(p.id));
   }
+
   function toggleAllVisible() {
-    const ids = allVisibleSelectableIds();
+    const ids = visibleSelectableIds();
     if (!ids.length) return;
 
     const allOn = ids.every((id) => selected[id]);
@@ -1302,28 +1296,37 @@ export default function Products({ user }) {
 
   return (
     <div className="products-page">
-      {/* Header */}
+      {/* =========================
+          HEADER (search left)
+          ========================= */}
       <div className="products-header">
-        <div>
-          <h1 className="products-title">Products</h1>
-          {!isAdmin && <div className="products-pill">Read-only (Staff)</div>}
+        <div style={{ minWidth: 260, flex: "1 1 520px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <h1 className="products-title" style={{ margin: 0 }}>
+              Products
+            </h1>
+            {!isAdmin && <div className="products-pill">Read-only (Staff)</div>}
+          </div>
+
+          <div style={{ marginTop: 10 }}>
+            <input
+              className="input"
+              placeholder="Search (name, SKU, category)"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              disabled={anyBusy}
+              style={{ width: "min(560px, 100%)" }}
+            />
+          </div>
         </div>
 
-        <div className="products-actions">
-          <input
-            className="input"
-            placeholder="Search (name, SKU, category)"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            disabled={anyBusy}
-          />
-
-          <button className="btn products-smallBtn" onClick={handleExportCsv} disabled={anyBusy}>
+        <div className="products-actions" style={{ flex: "1 1 420px", justifyContent: "flex-end" }}>
+          <button className="btn" onClick={handleExportCsv} disabled={anyBusy}>
             Export CSV
           </button>
 
           {isAdmin && (
-            <label className="btn products-fileBtn products-smallBtn">
+            <label className="btn products-fileBtn">
               Choose CSV
               <input
                 type="file"
@@ -1338,10 +1341,9 @@ export default function Products({ user }) {
             </label>
           )}
 
-          {/* Bulk reconcile */}
           {isAdmin && viewMode === "active" && (
             <button
-              className="btn products-smallBtn"
+              className="btn"
               onClick={openBulkReconModal}
               disabled={anyBusy}
               title="Create stock movement adjustments so movements match product.quantity"
@@ -1363,7 +1365,9 @@ export default function Products({ user }) {
         </div>
       </div>
 
-      {/* View mode tabs */}
+      {/* =========================
+          VIEW MODE
+          ========================= */}
       <div style={{ display: "flex", gap: 10, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
         {[
           { key: "active", label: "Active" },
@@ -1372,7 +1376,7 @@ export default function Products({ user }) {
         ].map((t) => (
           <button
             key={t.key}
-            className="btn products-smallBtn"
+            className="btn"
             type="button"
             disabled={anyBusy}
             onClick={() => {
@@ -1388,6 +1392,7 @@ export default function Products({ user }) {
               opacity: viewMode === t.key ? 1 : 0.7,
               outline: viewMode === t.key ? "2px solid #111827" : "none",
             }}
+            title={t.key === "deleted" ? "Show soft-deleted products" : t.key === "all" ? "Show active + deleted" : ""}
           >
             {t.label}
           </button>
@@ -1423,11 +1428,12 @@ export default function Products({ user }) {
         )}
       </div>
 
-      <br />
-      {error && <p style={{ color: "red" }}>{error}</p>}
-      {importMsg && <p style={{ color: "green" }}>{importMsg}</p>}
+      {error && <p style={{ color: "red", marginTop: 12 }}>{error}</p>}
+      {importMsg && <p style={{ color: "green", marginTop: 12 }}>{importMsg}</p>}
 
-      {/* Reconcile banner */}
+      {/* =========================
+          RECONCILE BANNER
+          ========================= */}
       {viewMode === "active" && activeDriftCount > 0 && (
         <div className="card" style={{ marginTop: 12, background: "#fff1f2", border: "1px solid #fecaca", color: "#991b1b" }}>
           <div style={{ fontWeight: 900 }}>Reconcile required</div>
@@ -1437,7 +1443,9 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* Inventory thresholds */}
+      {/* =========================
+          INVENTORY THRESHOLDS
+          ========================= */}
       {isAdmin && (
         <div className="card" style={{ marginTop: 12, background: "#f9fafb" }}>
           <div style={{ fontWeight: 900, marginBottom: 8 }}>Inventory thresholds</div>
@@ -1455,11 +1463,13 @@ export default function Products({ user }) {
                   style={{ width: 160 }}
                   disabled={anyBusy}
                 />
-                <button className="btn products-smallBtn" type="button" onClick={saveThreshold} disabled={anyBusy}>
+                <button className="btn" type="button" onClick={saveThreshold} disabled={anyBusy}>
                   {savingThreshold ? "Saving..." : "Save"}
                 </button>
               </div>
-              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>Used when a product’s Reorder level is blank/0.</div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 6 }}>
+                Used when a product’s Reorder level is blank/0.
+              </div>
             </div>
 
             <div>
@@ -1474,7 +1484,7 @@ export default function Products({ user }) {
                   style={{ width: 160 }}
                   disabled={anyBusy}
                 />
-                <button className="btn products-smallBtn" type="button" onClick={saveDriftThreshold} disabled={anyBusy}>
+                <button className="btn" type="button" onClick={saveDriftThreshold} disabled={anyBusy}>
                   {savingDriftThreshold ? "Saving..." : "Save"}
                 </button>
               </div>
@@ -1486,7 +1496,9 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* CSV Import Panel */}
+      {/* =========================
+          CSV IMPORT
+          ========================= */}
       {isAdmin && (
         <div className="products-import card" style={{ background: "#f9fafb", marginTop: 12 }}>
           <div className="products-importTop">
@@ -1508,12 +1520,12 @@ export default function Products({ user }) {
                 Auto-create missing categories
               </label>
 
-              <button className="btn products-smallBtn" onClick={startImport} disabled={anyBusy || !csvRows.length}>
+              <button className="btn" onClick={startImport} disabled={anyBusy || !csvRows.length}>
                 {importing ? "Importing..." : "Start Import"}
               </button>
 
               <button
-                className="btn products-smallBtn"
+                className="btn"
                 onClick={downloadErrorReport}
                 disabled={anyBusy || (!importErrors.length && !validation.issues.length)}
                 title="Download validation + server errors"
@@ -1660,7 +1672,9 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* Add Product */}
+      {/* =========================
+          CREATE PRODUCT
+          ========================= */}
       {isAdmin && (
         <form onSubmit={handleCreate} className="products-create card" style={{ marginTop: 12 }}>
           <div style={{ fontWeight: 900, marginBottom: 10 }}>Add product</div>
@@ -1782,7 +1796,9 @@ export default function Products({ user }) {
         </form>
       )}
 
-      {/* Barcode scanner modal */}
+      {/* =========================
+          BARCODE SCANNER MODAL
+          ========================= */}
       {scannerOpen && (
         <div
           style={{
@@ -1853,7 +1869,9 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* Soft Delete confirm modal */}
+      {/* =========================
+          DELETE CONFIRM MODAL
+          ========================= */}
       {confirmDelete && (
         <div style={overlayStyle} onMouseDown={() => (savingId ? null : setConfirmDelete(null))}>
           <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
@@ -1875,12 +1893,16 @@ export default function Products({ user }) {
               </button>
             </div>
 
-            {rowErrors[confirmDelete.id] ? <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmDelete.id]}</div> : null}
+            {rowErrors[confirmDelete.id] ? (
+              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmDelete.id]}</div>
+            ) : null}
           </div>
         </div>
       )}
 
-      {/* Hard Delete confirm modal */}
+      {/* =========================
+          HARD DELETE (OWNER) MODAL
+          ========================= */}
       {confirmHardDelete && (
         <div style={overlayStyle} onMouseDown={() => (savingId ? null : setConfirmHardDelete(null))}>
           <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
@@ -1904,12 +1926,16 @@ export default function Products({ user }) {
               </button>
             </div>
 
-            {rowErrors[confirmHardDelete.id] ? <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmHardDelete.id]}</div> : null}
+            {rowErrors[confirmHardDelete.id] ? (
+              <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{rowErrors[confirmHardDelete.id]}</div>
+            ) : null}
           </div>
         </div>
       )}
 
-      {/* Bulk reconcile modal */}
+      {/* =========================
+          BULK RECONCILE MODAL
+          ========================= */}
       {reconModalOpen && (
         <div style={overlayStyle} onMouseDown={() => (reconBusy ? null : setReconModalOpen(false))}>
           <div style={modalStyle} onMouseDown={(e) => e.stopPropagation()}>
@@ -1930,7 +1956,9 @@ export default function Products({ user }) {
                 style={{ width: 180 }}
                 placeholder={`${driftThreshold}`}
               />
-              <div style={{ fontSize: 12, color: "#6b7280" }}>Leave as {driftThreshold} to match your warning threshold.</div>
+              <div style={{ fontSize: 12, color: "#6b7280" }}>
+                Leave as {driftThreshold} to match your warning threshold.
+              </div>
             </div>
 
             {reconMsg && <div style={{ marginTop: 10, fontSize: 12, color: "#111827" }}>{reconMsg}</div>}
@@ -1947,10 +1975,10 @@ export default function Products({ user }) {
         </div>
       )}
 
-      {/* ✅ MODERN TABLE (Name + SKU separated like your old screenshot) */}
+      {/* =========================
+          MODERN TABLE (name + SKU separated)
+          ========================= */}
       <div className="products-tableWrap" style={{ marginTop: 14 }}>
-        <div style={{ fontWeight: 900, marginBottom: 10 }}>Products list</div>
-
         <div className="products-tableCard">
           <table className="products-gridTable">
             <thead>
@@ -1962,9 +1990,9 @@ export default function Products({ user }) {
                   </label>
                 </th>
 
-                {/* ✅ Separate columns */}
-                <th>Name</th>
-                <th className="col-name">SKU</th>
+                {/* ✅ FIX: keep Name separate from SKU (per your screenshot) */}
+                <th className="col-name">Name</th>
+                <th>SKU</th>
 
                 <th>Barcode</th>
                 <th>Category</th>
@@ -2005,8 +2033,6 @@ export default function Products({ user }) {
                       ? editSkuWarning || "Duplicate SKU not allowed."
                       : "";
 
-                  const catColor = getCategoryColor(p.category);
-
                   return (
                     <tr key={p.id} className={deleted ? "row-muted" : ""}>
                       {/* CHECK */}
@@ -2020,27 +2046,31 @@ export default function Products({ user }) {
                         />
                       </td>
 
-                      {/* ✅ NAME COLUMN (Name + badges) */}
-                      <td>
+                      {/* NAME (thumb + name + badges) */}
+                      <td className="col-name">
                         {isEditing ? (
                           <input
                             className="input"
                             value={editForm?.name ?? ""}
                             onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
                             disabled={isSaving}
-                            placeholder="Product name"
                           />
                         ) : (
-                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <div className="skuCell">
                             <div className="skuThumb" aria-hidden="true">
                               <span>{String(p.name || "P").slice(0, 1).toUpperCase()}</span>
                             </div>
 
-                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                              <div style={{ fontWeight: 800, color: "#111827" }} title={p.name || ""}>
-                                {shortText(p.name || "-", 30)}
+                            <div className="skuMeta">
+                              <div className="skuTitle" title={p.name || ""}>
+                                {shortText(p.name || "-", 28)}
 
-                                {deleted && <span className="badge muted" style={{ marginLeft: 8 }}>DELETED</span>}
+                                {deleted && (
+                                  <span className="badge muted" style={{ marginLeft: 8 }}>
+                                    DELETED
+                                  </span>
+                                )}
+
                                 {low && (
                                   <span
                                     className="badge danger"
@@ -2050,30 +2080,32 @@ export default function Products({ user }) {
                                     LOW
                                   </span>
                                 )}
+
                                 {!deleted && viewMode === "active" && reconReq && (
-                                  <span className="badge danger" style={{ marginLeft: 8 }} title={`Drift ${drift} (>= ${driftThreshold})`}>
+                                  <span
+                                    className="badge danger"
+                                    style={{ marginLeft: 8 }}
+                                    title={`RECONCILE REQUIRED: drift ${drift} (>= ${driftThreshold}).`}
+                                  >
                                     RECONCILE
                                   </span>
                                 )}
+
                                 {!deleted && viewMode === "active" && !reconReq && reconWarn && (
-                                  <span className="badge warn" style={{ marginLeft: 8 }} title={`Drift detected: ${drift}`}>
+                                  <span className="badge warn" style={{ marginLeft: 8 }} title={`Drift detected: ${drift}.`}>
                                     DRIFT
                                   </span>
                                 )}
                               </div>
 
-                              {!deleted && viewMode === "active" && abs(drift) > 0 ? (
-                                <div style={{ fontSize: 12, color: reconReq ? "#991b1b" : "#92400e" }}>
-                                  drift: {drift > 0 ? "+" : ""}{drift}
-                                </div>
-                              ) : null}
+                              <div className="skuSub">ID: {p.id}</div>
                             </div>
                           </div>
                         )}
                       </td>
 
-                      {/* ✅ SKU COLUMN (only SKU) */}
-                      <td className="col-name">
+                      {/* SKU (separate column) */}
+                      <td>
                         {isEditing ? (
                           <div className="field">
                             <input
@@ -2087,7 +2119,6 @@ export default function Products({ user }) {
                               }}
                               disabled={isSaving}
                               aria-invalid={Boolean(editSkuError)}
-                              placeholder="SKU"
                             />
                             {editSkuError ? <div className="field-errorText">{editSkuError}</div> : null}
                           </div>
@@ -2110,7 +2141,7 @@ export default function Products({ user }) {
                         )}
                       </td>
 
-                      {/* CATEGORY */}
+                      {/* CATEGORY (square-ish pill + per-category colors) */}
                       <td>
                         {isEditing ? (
                           <select
@@ -2126,18 +2157,29 @@ export default function Products({ user }) {
                               </option>
                             ))}
                           </select>
-                        ) : (
-                          <span
-                            className="catPill"
-                            style={{
-                              background: catColor.bg,
-                              color: catColor.text,
-                              border: `1px solid ${catColor.border}`,
-                            }}
-                          >
-                            {p.category || "—"}
-                          </span>
-                        )}
+                        ) : (() => {
+                            const color = getCategoryColor(p.category);
+                            return (
+                              <span
+                                className="catPill"
+                                style={{
+                                  background: color.bg,
+                                  color: color.text,
+                                  border: `1px solid ${color.border}`,
+                                  borderRadius: 10, // ✅ not a circle anymore
+                                  padding: "5px 10px",
+                                  fontWeight: 800,
+                                  fontSize: 12,
+                                  letterSpacing: "0.2px",
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                }}
+                                title={p.category || ""}
+                              >
+                                {p.category || "—"}
+                              </span>
+                            );
+                          })()}
                       </td>
 
                       {/* STOCK */}
@@ -2188,20 +2230,25 @@ export default function Products({ user }) {
                         )}
                       </td>
 
-                      {/* ACTIONS: ICONS ONLY */}
+                      {/* ACTIONS: ICONS ONLY + ✅ green check mark in save */}
                       {isAdmin && (
                         <td className="col-actions">
                           <div className="actionIcons">
                             {!deleted ? (
                               <>
                                 {!isEditing ? (
-                                  <IconButton className="iconEdit" title="Edit" disabled={anyBusy} onClick={() => startEdit(p)}>
+                                  <IconButton
+                                    className="iconEdit"
+                                    title="Edit"
+                                    disabled={anyBusy}
+                                    onClick={() => startEdit(p)}
+                                  >
                                     <IconEdit />
                                   </IconButton>
                                 ) : (
                                   <>
                                     <IconButton
-                                      className="iconSave products-smallBtn"
+                                      className="iconSave"
                                       title="Save"
                                       disabled={isSaving || Boolean(editSkuWarning)}
                                       onClick={() => saveEdit(p.id)}
@@ -2215,7 +2262,12 @@ export default function Products({ user }) {
                                   </>
                                 )}
 
-                                <IconButton className="iconTrash" title="Delete" disabled={anyBusy || isEditing} onClick={() => askDelete(p)}>
+                                <IconButton
+                                  className="iconTrash"
+                                  title="Delete"
+                                  disabled={anyBusy || isEditing}
+                                  onClick={() => askDelete(p)}
+                                >
                                   <IconTrash />
                                 </IconButton>
 
@@ -2234,11 +2286,21 @@ export default function Products({ user }) {
                               <>
                                 {isOwner ? (
                                   <>
-                                    <IconButton className="iconRestore" title="Restore" disabled={anyBusy} onClick={() => handleRestore(p)}>
+                                    <IconButton
+                                      className="iconRestore"
+                                      title="Restore"
+                                      disabled={anyBusy}
+                                      onClick={() => handleRestore(p)}
+                                    >
                                       <IconRestore />
                                     </IconButton>
 
-                                    <IconButton className="iconTrash" title="Delete permanently" disabled={anyBusy} onClick={() => askHardDelete(p)}>
+                                    <IconButton
+                                      className="iconTrash"
+                                      title="Delete permanently"
+                                      disabled={anyBusy}
+                                      onClick={() => askHardDelete(p)}
+                                    >
                                       <IconTrash />
                                     </IconButton>
                                   </>

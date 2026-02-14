@@ -16,6 +16,9 @@ import { getStripe, stripeIsEnabled } from "../services/stripe/stripe.js";
 const router = express.Router();
 router.use(requireAuth, requireTenant);
 
+/* =========================
+   Helpers
+========================= */
 async function getTenantRow(tenantId) {
   const [[t]] = await db.query(
     `SELECT id, name, plan_key, status,
@@ -69,7 +72,6 @@ function makeUsageLine({ used, limit }) {
 function mapTenantStatusFromStripe(subStatus) {
   if (subStatus === "active" || subStatus === "trialing") return "active";
   if (subStatus === "past_due" || subStatus === "unpaid") return "past_due";
-  // treat anything else as canceled/locked
   return "canceled";
 }
 
@@ -80,7 +82,7 @@ async function safeAudit(req, entry) {
 }
 
 // Fix “No such customer” when switching test/live
-async function ensureStripeCustomer({ stripe, tenantId, existingCustomerId }) {
+async function ensureStripeCustomer({ stripe, tenantId, existingCustomerId, tenantName }) {
   if (existingCustomerId) {
     try {
       const c = await stripe.customers.retrieve(existingCustomerId);
@@ -91,6 +93,7 @@ async function ensureStripeCustomer({ stripe, tenantId, existingCustomerId }) {
   }
 
   const customer = await stripe.customers.create({
+    name: tenantName || undefined,
     metadata: { tenantId: String(tenantId) },
   });
 
@@ -98,6 +101,9 @@ async function ensureStripeCustomer({ stripe, tenantId, existingCustomerId }) {
   return customer.id;
 }
 
+/* =========================
+   Routes
+========================= */
 router.get("/plans", async (req, res) => {
   res.json({
     plans: Object.values(PLANS).map((p) => ({
@@ -127,7 +133,7 @@ router.get("/current", async (req, res) => {
 
     const ent = getTenantEntitlements(t);
     const limits = ent?.limits || {};
-    const usage = await getTenantUsage(tenantId);
+    const usage = await getTenantUsage(tenantId);    
 
     res.json({
       tenantId,
@@ -161,8 +167,8 @@ router.get("/current", async (req, res) => {
  * POST /api/billing/stripe/checkout
  * Body: { planKey, interval }
  *
- * ✅ 7-day trial ONLY for Starter
- * ✅ Bussine/Pro = NO trial
+ * ✅ 7-day trial ONLY for Starter (first time only)
+ * ✅ Business/Pro = NO trial
  */
 router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async (req, res) => {
   const stripe = getStripe();
@@ -189,11 +195,17 @@ router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async
       stripe,
       tenantId,
       existingCustomerId: t.stripe_customer_id,
+      tenantName: t.name,
     });
 
-    // ✅ trial eligibility: ONLY starter AND only once per tenant
     const isStarter = planKey === "starter";
     const isTrialEligible = isStarter && !t.trial_used_at;
+
+    const metadata = { tenantId: String(tenantId), planKey, interval };
+
+    const subscription_data = isTrialEligible
+      ? { trial_period_days: 7, metadata }
+      : { metadata };
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -203,19 +215,26 @@ router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async
       cancel_url: cancelUrl,
       allow_promotion_codes: true,
       client_reference_id: String(tenantId),
-      metadata: { tenantId: String(tenantId), planKey, interval },
       payment_method_collection: "always",
-
-      // ✅ only Starter gets trial
-      subscription_data: isTrialEligible
-        ? { trial_period_days: 7, metadata: { tenantId: String(tenantId) } }
-        : { metadata: { tenantId: String(tenantId) } },
+      metadata,
+      subscription_data,
     });
 
-    // Mark trial as used when we create a Starter trial checkout
+    // mark trial as used when we create a starter trial checkout session
     if (isTrialEligible) {
       await db.query("UPDATE tenants SET trial_used_at=NOW() WHERE id=? AND trial_used_at IS NULL", [tenantId]);
     }
+
+    // optional audit
+    await safeAudit(req, {
+      action: "BILLING_CHECKOUT_CREATED",
+      entity_type: "tenant",
+      entity_id: tenantId,
+      details: { planKey, interval, priceId },
+      user_id: req.user?.id || null,
+      user_email: req.user?.email || null,
+      severity: SEVERITY.INFO,
+    });
 
     res.json({ url: session.url });
   } catch (e) {
@@ -227,61 +246,51 @@ router.post("/stripe/checkout", requireRole("owner"), requireBillingAdmin, async
 /**
  * POST /api/billing/stripe/portal
  */
-// routes/billings.js
-router.post(
-  "/stripe/portal",
-  requireRole("owner"),
-  requireBillingAdmin,
-  async (req, res) => {
-    const stripe = getStripe();
-    if (!stripe) return res.status(400).json({ message: "Stripe not configured" });
+router.post("/stripe/portal", requireRole("owner"), requireBillingAdmin, async (req, res) => {
+  const stripe = getStripe();
+  if (!stripe) return res.status(400).json({ message: "Stripe not configured" });
 
-    try {
-      const tenantId = req.tenantId;
-      const t = await getTenantRow(tenantId);
-      if (!t) return res.status(404).json({ message: "Tenant not found" });
+  try {
+    const tenantId = req.tenantId;
+    const t = await getTenantRow(tenantId);
+    if (!t) return res.status(404).json({ message: "Tenant not found" });
 
-      const front =
-        process.env.FRONTEND_URL ||
-        process.env.APP_URL ||
-        "http://localhost:5173";
+    const front = process.env.FRONTEND_URL || process.env.APP_URL || "http://localhost:5173";
 
-      let customerId = t.stripe_customer_id || null;
+    let customerId = t.stripe_customer_id || null;
 
-      async function createAndSaveCustomer() {
-        const customer = await stripe.customers.create({
-          name: t.name,
-          metadata: { tenant_id: String(t.id) },
-        });
-
-        await updateTenantStripeCustomerId(tenantId, customer.id);
-        customerId = customer.id;
-      }
-
-      if (!customerId) {
-        await createAndSaveCustomer();
-      } else {
-        try {
-          const existing = await stripe.customers.retrieve(customerId);
-          if (!existing || existing.deleted) throw new Error("Invalid");
-        } catch {
-          // customer does not exist in this Stripe account/mode
-          await createAndSaveCustomer();
-        }
-      }
-
-      const portal = await stripe.billingPortal.sessions.create({
-        customer: customerId,
-        return_url: `${front}/billing`,
+    async function createAndSaveCustomer() {
+      const customer = await stripe.customers.create({
+        name: t.name,
+        metadata: { tenantId: String(t.id) },
       });
-
-      res.json({ url: portal.url });
-    } catch (e) {
-      console.error("STRIPE PORTAL ERROR:", e);
-      res.status(500).json({ message: "Stripe error" });
+      await updateTenantStripeCustomerId(tenantId, customer.id);
+      customerId = customer.id;
     }
+
+    if (!customerId) {
+      await createAndSaveCustomer();
+    } else {
+      try {
+        const existing = await stripe.customers.retrieve(customerId);
+        if (!existing || existing.deleted) throw new Error("Invalid");
+      } catch {
+        await createAndSaveCustomer();
+      }
+    }
+
+    const portal = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: `${front}/billing`,
+      configuration: process.env.STRIPE_PORTAL_CONFIG_ID || undefined,
+    });
+
+    res.json({ url: portal.url });
+  } catch (e) {
+    console.error("STRIPE PORTAL ERROR:", e);
+    res.status(500).json({ message: "Stripe error" });
   }
-);
+});
 
 router.get("/stripe/prices", requireRole("owner"), requireBillingAdmin, async (req, res) => {
   const stripe = getStripe();
@@ -309,8 +318,8 @@ router.get("/stripe/prices", requireRole("owner"), requireBillingAdmin, async (r
       return {
         id: p.id,
         currency: p.currency,
-        unit_amount: p.unit_amount, // cents
-        recurring: p.recurring?.interval || null, // "month" / "year"
+        unit_amount: p.unit_amount,
+        recurring: p.recurring?.interval || null,
       };
     }
 
@@ -330,8 +339,7 @@ router.get("/stripe/prices", requireRole("owner"), requireBillingAdmin, async (r
 });
 
 /**
- * Webhook handler (unchanged from your working version)
- * - keeps tenants.plan_key updated from subscription price
+ * Webhook handler (your working version + checkout.session.completed binding)
  */
 export async function billingWebhookHandler(req, res) {
   const stripe = getStripe();
@@ -348,7 +356,7 @@ export async function billingWebhookHandler(req, res) {
     return res.status(400).send("Bad signature");
   }
 
-  // 1) Idempotency: record event id (dedupe)
+  // idempotency row
   try {
     await db.query(
       `INSERT INTO stripe_webhook_events (event_id, type, livemode, status)
@@ -357,12 +365,11 @@ export async function billingWebhookHandler(req, res) {
       [event.id, event.type, event.livemode ? 1 : 0]
     );
   } catch (e) {
-    // If DB is shaky, ACK 200 so Stripe doesn't hammer retries
     console.error("WEBHOOK EVENT LOG INSERT ERROR (ack anyway):", e?.message || e);
     return res.json({ received: true });
   }
 
-  // If already processed, ACK immediately
+  // dedupe processed
   try {
     const [[row]] = await db.query(
       `SELECT status FROM stripe_webhook_events WHERE event_id=? LIMIT 1`,
@@ -370,14 +377,11 @@ export async function billingWebhookHandler(req, res) {
     );
     if (row?.status === "processed") return res.json({ received: true, deduped: true });
   } catch (e) {
-    // Even if this fails, continue; processing may still work
     console.error("WEBHOOK EVENT STATUS READ ERROR:", e?.message || e);
   }
 
-  // 2) ACK quickly (fast response to Stripe)
   res.json({ received: true });
 
-  // 3) Process in background (best effort)
   (async () => {
     try {
       async function resolveTenantId({ subId, customerId, metadata }) {
@@ -401,6 +405,26 @@ export async function billingWebhookHandler(req, res) {
         if (metaTenantId) return Number(metaTenantId) || null;
 
         return null;
+      }
+
+      if (event.type === "checkout.session.completed") {
+        const session = event.data.object;
+
+        const tenantId =
+          Number(session?.metadata?.tenantId || session?.metadata?.tenant_id || 0) || null;
+        const customerId = session.customer || null;
+        const subId = session.subscription || null;
+
+        if (tenantId && customerId) {
+          await db.query(
+            `UPDATE tenants
+             SET
+               stripe_customer_id = COALESCE(stripe_customer_id, ?),
+               stripe_subscription_id = COALESCE(stripe_subscription_id, ?)
+             WHERE id=?`,
+            [customerId, subId, tenantId]
+          );
+        }
       }
 
       if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.created") {

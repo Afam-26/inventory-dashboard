@@ -804,6 +804,19 @@ export async function openStripePortal() {
   return baseFetch(`${API_BASE}/billing/stripe/portal`, { method: "POST" }, { useAuth: true });
 }
 
+// ✅ Smart: portal if active subscription, otherwise checkout
+export async function portalOrCheckout({ planKey, interval }) {
+  return baseFetch(
+    `${API_BASE}/billing/stripe/portal-or-checkout`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ planKey, interval }),
+    },
+    { useAuth: true }
+  );
+}
+
 /**
  * ============================
  * SETTINGS
@@ -854,3 +867,14 @@ export async function updateStockDriftThreshold(value) {
     { useAuth: true }
   );
 }
+
+// // ✅ Public helper used by small service wrappers (Billing, etc.)
+// export async function apiFetch(path, options = {}, cfg = {}) {
+//   const p = String(path || "");
+//   const url = p.startsWith("http")
+//     ? p
+//     : `${API_BASE}${p.startsWith("/") ? p : `/${p}`}`;
+
+//   // default: auth + tenant header (matches the rest of your app)
+//   return baseFetch(url, options, { useAuth: true, useTenantHeader: true, ...cfg });
+// }

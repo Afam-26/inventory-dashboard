@@ -1,9 +1,14 @@
 // inventory-frontend/src/services/billing.js
-import { getPlans, getCurrentPlan, startStripeCheckout, openStripePortal, updateCurrentPlan } from "./api";
+import {
+  getPlans,
+  getCurrentPlan,
+  startStripeCheckout,
+  openStripePortal,
+  updateCurrentPlan,
+  // ✅ add this import
+  portalOrCheckout,
+} from "./api";
 
-/**
- * Simple wrapper so Billing.jsx stays clean.
- */
 export async function fetchBillingPlans() {
   return getPlans();
 }
@@ -20,7 +25,11 @@ export async function openBillingPortal() {
   return openStripePortal();
 }
 
-// optional: manual plan override when Stripe disabled
 export async function setPlanManually(planKey) {
   return updateCurrentPlan(planKey);
+}
+
+// ✅ new
+export async function openPortalOrCheckout({ planKey, interval }) {
+  return portalOrCheckout({ planKey, interval });
 }

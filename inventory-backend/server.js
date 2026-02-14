@@ -85,6 +85,7 @@ app.post(
 ====================================================== */
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+app.use(express.urlencoded({ extended: true }));
 
 /* ======================================================
    API NO-CACHE

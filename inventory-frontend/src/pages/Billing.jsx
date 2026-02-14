@@ -4,7 +4,7 @@ import {
   fetchBillingPlans,
   fetchBillingCurrent,
   beginCheckout,
-  openBillingPortal,
+  openPortalOrCheckout,
   setPlanManually,
 } from "../services/billing";
 import PlanBanner from "../components/billing/PlanBanner";
@@ -47,6 +47,20 @@ export default function Billing({ user }) {
   const trialUsedAt = current?.trial?.usedAt || null;
   const isTrialActive = stripeStatus === "trialing";
 
+  const hasStripeCustomer = Boolean(current?.stripe?.customerId);
+  const hasStripeSubscription = Boolean(current?.stripe?.subscriptionId);
+
+  // Treat these as "portal-worthy": you may still want portal to update payment method on past_due/unpaid.
+  const subLooksActive =
+    stripeStatus === "active" || stripeStatus === "trialing" || stripeStatus === "past_due" || stripeStatus === "unpaid";
+
+  // ✅ Backend says when portal is available (optional). If not present, compute safely.
+  const portalAvailableFromApi = Boolean(current?.stripe?.portalAvailable);
+  const canUsePortal = stripeEnabled && hasStripeCustomer && hasStripeSubscription && subLooksActive && (portalAvailableFromApi || true);
+
+  // For canceled/no-sub cases, we want a Subscribe CTA that triggers checkout automatically.
+  const shouldShowSubscribeCta = stripeEnabled && isAdmin && hasStripeCustomer && (!hasStripeSubscription || !subLooksActive);
+
   function limitLabel(v) {
     if (v == null) return "Unlimited";
     return String(v);
@@ -68,7 +82,6 @@ export default function Billing({ user }) {
   }
 
   const currentPriceText = useMemo(() => {
-    // Prefer backend-provided label if present, otherwise compute from Stripe price map
     const label = String(current?.priceLabel || "").trim();
     if (label) return label;
 
@@ -100,17 +113,14 @@ export default function Billing({ user }) {
 
   async function loadStripePrices() {
     try {
-      // Route you added on backend: GET /api/billing/stripe/prices
       const res = await fetch(`${API_BASE}/billing/stripe/prices`, {
         method: "GET",
         headers: { ...authHeaders() },
       });
 
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // non-fatal: page still works without price display
-        return;
-      }
+      if (!res.ok) return;
+
       setStripePrices(data || null);
     } catch {
       // non-fatal
@@ -144,7 +154,8 @@ export default function Billing({ user }) {
         return;
       }
 
-      // Stripe checkout for ALL plans (Starter includes trial; Growth/Pro no trial)
+      // ✅ Stripe checkout for ALL plans
+      // Starter includes trial (first time only), business/pro no trial (handled by backend)
       const r = await beginCheckout({ planKey: key, interval });
       if (r?.url) {
         window.location.href = r.url;
@@ -161,18 +172,27 @@ export default function Billing({ user }) {
     }
   }
 
-  async function openPortal() {
+  // ✅ One button that does the right thing:
+  // - If active-ish subscription exists -> portal
+  // - Else -> checkout for the plan you pass
+  async function openPortalOrSubscribe(defaultPlanKey = "business") {
+    if (!isAdmin) {
+      setErr("Owner/Admin only");
+      return;
+    }
+
     setChanging(true);
     setErr("");
     setMsg("");
+
     try {
-      const r = await openBillingPortal();
+      const r = await openPortalOrCheckout({ planKey: defaultPlanKey, interval });
       if (r?.url) window.location.href = r.url;
-      else setErr("Stripe portal not available");
+      else setErr("Billing action not available");
     } catch (e) {
       const b = getPlanBannerFromApiError(e);
       if (b) setBanner(b);
-      setErr(e?.message || "Failed to open Stripe portal");
+      setErr(e?.message || "Failed to open billing");
     } finally {
       setChanging(false);
     }
@@ -185,7 +205,7 @@ export default function Billing({ user }) {
     <div style={{ width: "100%", maxWidth: 1100 }}>
       <h1 style={{ marginBottom: 6 }}>Billing Plans</h1>
       <div style={{ color: "#6b7280", marginBottom: 14 }}>
-        Starter includes a 7-day free trial (first time only). Growth/Pro have no trial.
+        Starter includes a 7-day free trial (first time only). Business/Pro have no trial.
       </div>
 
       <style>{`
@@ -247,7 +267,15 @@ export default function Billing({ user }) {
         <>
           {/* Current plan + usage */}
           {current && (
-            <div style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 12, background: "#fff", marginBottom: 14 }}>
+            <div
+              style={{
+                border: "1px solid #e5e7eb",
+                borderRadius: 12,
+                padding: 12,
+                background: "#fff",
+                marginBottom: 14,
+              }}
+            >
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
                 <div>
                   <div style={{ fontWeight: 900 }}>
@@ -255,21 +283,64 @@ export default function Billing({ user }) {
                     <span style={{ color: "#6b7280", fontWeight: 600 }}>
                       ({currentPriceText || (stripeEnabled ? "Price unavailable" : "Manual")})
                     </span>
+
+                    {tenantStatus === "canceled" ? (
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          fontSize: 12,
+                          padding: "3px 8px",
+                          borderRadius: 999,
+                          background: "#991b1b",
+                          color: "#fff",
+                        }}
+                      >
+                        CANCELED
+                      </span>
+                    ) : null}
+
                     {isTrialActive ? (
-                      <span style={{ marginLeft: 8, fontSize: 12, padding: "3px 8px", borderRadius: 999, background: "#111827", color: "#fff" }}>
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          fontSize: 12,
+                          padding: "3px 8px",
+                          borderRadius: 999,
+                          background: "#111827",
+                          color: "#fff",
+                        }}
+                      >
                         TRIAL
                       </span>
                     ) : null}
                   </div>
+
                   <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
                     Tenant ID: {current.tenantId} • Status: {tenantStatus}
+                    {tenantStatus === "canceled" ? " • Choose a plan below to resubscribe" : ""}
                   </div>
                 </div>
 
+                {/* ✅ Right side actions */}
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  {stripeEnabled && current?.stripe?.customerId ? (
-                    <button className="btn" onClick={openPortal} disabled={!isAdmin || changing}>
+                  {/* If subscription exists and is manageable -> portal */}
+                  {stripeEnabled && isAdmin && canUsePortal ? (
+                    <button className="btn" onClick={() => openPortalOrSubscribe("business")} disabled={changing}>
                       Manage Billing
+                    </button>
+                  ) : null}
+
+                  {/* If no active sub -> show Subscribe that triggers checkout automatically */}
+                  {shouldShowSubscribeCta ? (
+                    <button className="btn" onClick={() => openPortalOrSubscribe("business")} disabled={changing}>
+                      Subscribe / Restore access
+                    </button>
+                  ) : null}
+
+                  {/* Past due hint: still allow portal if customer exists */}
+                  {stripeEnabled && isAdmin && tenantStatus === "past_due" && hasStripeCustomer ? (
+                    <button className="btn" onClick={() => openPortalOrSubscribe("business")} disabled={changing}>
+                      Update Payment Method
                     </button>
                   ) : null}
                 </div>
@@ -293,7 +364,16 @@ export default function Billing({ user }) {
                         : Math.max(0, Math.min(100, Math.round((used / Math.max(1, limit)) * 100)));
 
                     return (
-                      <div key={label} style={{ border: "1px solid #e5e7eb", borderRadius: 12, padding: 10, background: "#f9fafb", minWidth: 0 }}>
+                      <div
+                        key={label}
+                        style={{
+                          border: "1px solid #e5e7eb",
+                          borderRadius: 12,
+                          padding: 10,
+                          background: "#f9fafb",
+                          minWidth: 0,
+                        }}
+                      >
                         <div style={{ fontWeight: 800 }}>{label}</div>
                         <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
                           {limit == null ? `${used} / Unlimited` : `${used} / ${limit}`}
@@ -316,21 +396,28 @@ export default function Billing({ user }) {
               const key = String(p.key || "").toLowerCase();
               const isCurrent = key === currentKey;
 
+              // ✅ canceled should NOT block upgrades/resubscribe (checkout fixes it)
+              // ✅ past_due should block direct checkout only if you want to force portal; we’ll keep your current rule.
               const disabledBecause =
                 !isAdmin
                   ? "Owner/Admin only"
-                  : tenantStatus === "canceled"
-                  ? "Subscription canceled (upgrade to restore)"
                   : tenantStatus === "past_due"
-                  ? "Past due (update payment)"
+                  ? "Past due (update payment method)"
                   : isCurrent
                   ? "Already on this plan"
                   : "";
 
-              const disabled = !isAdmin || tenantStatus === "canceled" || tenantStatus === "past_due" || isCurrent || changing;
+              const disabled = !isAdmin || tenantStatus === "past_due" || isCurrent || changing;
 
               const cardPrice = priceTextFor(key, intervalKey);
               const intervalLabel = interval === "year" ? "Yearly" : "Monthly";
+
+              const primaryCta =
+                tenantStatus === "canceled" && !isCurrent
+                  ? "Resubscribe"
+                  : isCurrent
+                  ? "Current plan"
+                  : "Upgrade";
 
               return (
                 <div
@@ -349,15 +436,12 @@ export default function Billing({ user }) {
                     <div style={{ color: "#111827", fontWeight: 800 }}>{intervalLabel}</div>
                   </div>
 
-                  {/* ✅ Price row */}
                   <div style={{ marginTop: 8, display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
                     <div style={{ fontSize: 22, fontWeight: 950, color: "#111827" }}>
                       {cardPrice ? cardPrice : stripeEnabled ? "—" : "Manual"}
                     </div>
                     {stripeEnabled ? (
-                      <div style={{ fontSize: 12, color: "#6b7280" }}>
-                        {stripePrices ? "" : "Loading prices…"}
-                      </div>
+                      <div style={{ fontSize: 12, color: "#6b7280" }}>{stripePrices ? "" : "Loading prices…"}</div>
                     ) : null}
                   </div>
 
@@ -383,19 +467,27 @@ export default function Billing({ user }) {
                     disabled={disabled}
                     title={disabled ? disabledBecause : ""}
                   >
-                    {isCurrent ? "Current plan" : changing ? "Please wait..." : "Upgrade"}
+                    {changing ? "Please wait..." : primaryCta}
                   </button>
 
                   {/* Trial note only for starter */}
                   {stripeEnabled && key === "starter" && !trialUsedAt ? (
-                    <div style={{ marginTop: 8, fontSize: 12, color: "#065f46" }}>
-                      Includes a 7-day free trial (first time only).
-                    </div>
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#065f46" }}>Includes a 7-day free trial (first time only).</div>
                   ) : null}
 
                   {stripeEnabled && key !== "starter" ? (
-                    <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-                      No trial on this plan.
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>No trial on this plan.</div>
+                  ) : null}
+
+                  {tenantStatus === "past_due" ? (
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#92400e" }}>
+                      This workspace is past due. Use “Update Payment Method” above.
+                    </div>
+                  ) : null}
+
+                  {tenantStatus === "canceled" && key !== "starter" ? (
+                    <div style={{ marginTop: 8, fontSize: 12, color: "#991b1b" }}>
+                      Subscription is canceled. Click “Resubscribe” to start a new subscription.
                     </div>
                   ) : null}
                 </div>

@@ -1326,7 +1326,7 @@ export default function Products({ user }) {
           </button>
 
           {isAdmin && (
-            <label className="btn products-fileBtn">
+            <label className="btn products-fileBtn products-smallBtn">
               Choose CSV
               <input
                 type="file"
@@ -1343,7 +1343,7 @@ export default function Products({ user }) {
 
           {isAdmin && viewMode === "active" && (
             <button
-              className="btn"
+              className="btn products-smallBtn"
               onClick={openBulkReconModal}
               disabled={anyBusy}
               title="Create stock movement adjustments so movements match product.quantity"
@@ -1376,7 +1376,7 @@ export default function Products({ user }) {
         ].map((t) => (
           <button
             key={t.key}
-            className="btn"
+            className="btn products-smallBtn"
             type="button"
             disabled={anyBusy}
             onClick={() => {
@@ -1463,7 +1463,7 @@ export default function Products({ user }) {
                   style={{ width: 160 }}
                   disabled={anyBusy}
                 />
-                <button className="btn" type="button" onClick={saveThreshold} disabled={anyBusy}>
+                <button className="btn products-smallBtn" type="button" onClick={saveThreshold} disabled={anyBusy}>
                   {savingThreshold ? "Saving..." : "Save"}
                 </button>
               </div>
@@ -1484,7 +1484,7 @@ export default function Products({ user }) {
                   style={{ width: 160 }}
                   disabled={anyBusy}
                 />
-                <button className="btn" type="button" onClick={saveDriftThreshold} disabled={anyBusy}>
+                <button className="btn products-smallBtn" type="button" onClick={saveDriftThreshold} disabled={anyBusy}>
                   {savingDriftThreshold ? "Saving..." : "Save"}
                 </button>
               </div>
